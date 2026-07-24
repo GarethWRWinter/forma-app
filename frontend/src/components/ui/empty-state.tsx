@@ -1,12 +1,12 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
-import { CoachGlyph } from "@/components/ui/coach-glyph";
+import { CoachDot } from "@/components/ui/coach-glyph";
 import { Kicker } from "@/components/ui/kicker";
 
 /**
  * FORMA empty state — never "No data". Forma turns every empty
- * surface into an invitation: glyph, one line in the coach's voice,
- * one action.
+ * surface into an invitation: the dot PULSES because the coach is
+ * actively asking, not idling; one line in the coach's voice; one action.
  */
 export function EmptyState({
   kicker,
@@ -28,7 +28,9 @@ export function EmptyState({
         className
       )}
     >
-      <CoachGlyph className="h-12 w-12" />
+      <span className="flex h-12 w-12 items-center justify-center">
+        <CoachDot state="pulsing" size="34%" />
+      </span>
       {kicker && <Kicker className="mt-5">{kicker}</Kicker>}
       <h3 className="f-display mt-2 text-2xl text-vb-text">{title}</h3>
       {children && (

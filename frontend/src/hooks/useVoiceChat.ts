@@ -192,6 +192,34 @@ export function useVoiceChat({
     recognition.interimResults = true;
     recognition.lang = lang;
 
+    // A thinking pause is not the end of a thought. The browser finalises a
+    // speech segment after well under a second of silence, so we buffer the
+    // finalised text and only send after a real grace window with no new
+    // speech. Talking again during the window resets it and appends.
+    const SILENCE_GRACE_MS = 2000;
+    let finalBuffer = "";
+    let sendTimer: number | null = null;
+
+    const flushBuffer = () => {
+      if (sendTimer !== null) {
+        window.clearTimeout(sendTimer);
+        sendTimer = null;
+      }
+      const text = finalBuffer.trim();
+      finalBuffer = "";
+      if (text) {
+        setInterimTranscript("");
+        recognition.stop();
+        setIsListening(false);
+        onTranscriptRef.current(text);
+      }
+    };
+
+    const armSendTimer = () => {
+      if (sendTimer !== null) window.clearTimeout(sendTimer);
+      sendTimer = window.setTimeout(flushBuffer, SILENCE_GRACE_MS);
+    };
+
     recognition.onstart = () => {
       setIsListening(true);
       setInterimTranscript("");
@@ -210,15 +238,17 @@ export function useVoiceChat({
         }
       }
 
-      setInterimTranscript(interim);
-
       if (finalTranscript.trim()) {
-        setInterimTranscript("");
-        // Stop listening when we have a final transcript
-        recognition.stop();
-        setIsListening(false);
-        onTranscriptRef.current(finalTranscript.trim());
+        finalBuffer += (finalBuffer ? " " : "") + finalTranscript.trim();
       }
+      // Show what's buffered + what's in flight, so the rider sees the
+      // whole thought building, not fragments vanishing.
+      setInterimTranscript(
+        [finalBuffer, interim.trim()].filter(Boolean).join(" ")
+      );
+
+      // Any speech (interim or final) resets the grace window.
+      if (finalBuffer || interim.trim()) armSendTimer();
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
@@ -226,11 +256,16 @@ export function useVoiceChat({
       if (event.error !== "no-speech" && event.error !== "aborted") {
         console.warn("Speech recognition error:", event.error);
       }
+      // Don't lose a buffered thought to a recognition hiccup.
+      flushBuffer();
       setIsListening(false);
       setInterimTranscript("");
     };
 
     recognition.onend = () => {
+      // Browser can end recognition on its own after long silence —
+      // send whatever was said rather than dropping it.
+      flushBuffer();
       setIsListening(false);
     };
 
