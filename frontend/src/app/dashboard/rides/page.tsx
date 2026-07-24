@@ -30,6 +30,31 @@ const ZONE_LABELS: Record<string, string> = {
   z7: "Sprint",
 };
 
+/** The ride's fingerprint: power over time as zone-coloured bars. You can
+    SEE the workout — warmup, blocks, recoveries — before reading a word. */
+function RideShape({ ride }: { ride: Ride }) {
+  const shape = ride.zone_summary?.shape;
+  if (!shape || !shape.length) return null;
+  const keys = ["z1", "z2", "z3", "z4", "z5", "z6", "z7"] as const;
+  return (
+    <span
+      className="mt-2.5 flex h-8 w-full max-w-[280px] items-end gap-px"
+      aria-label="Ride power shape"
+    >
+      {shape.map(([h, z], i) => (
+        <span
+          key={i}
+          className="flex-1"
+          style={{
+            height: `${h}%`,
+            background: ZONES[keys[(z || 1) - 1]],
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
 /** The ride's zones as proportional colour blocks — the shape of the effort
     at a glance. Zone inks are data colours; this is data. */
 function ZoneStrip({ ride }: { ride: Ride }) {
@@ -211,13 +236,14 @@ export default function RidesPage() {
                       <ZoneTag ride={ride} />
                     </div>
                     <p className="truncate text-base font-medium text-vb-text">
-                      {ride.title}
+                      {ride.forma_title || ride.title}
                     </p>
-                    {rideStory(ride) && (
+                    {(ride.story || rideStory(ride)) && (
                       <p className="mt-1 max-w-xl text-xs leading-relaxed text-vb-text-dim">
-                        {rideStory(ride)}
+                        {ride.story || rideStory(ride)}
                       </p>
                     )}
+                    <RideShape ride={ride} />
                     <ZoneStrip ride={ride} />
                   </div>
 

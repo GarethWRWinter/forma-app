@@ -45,6 +45,8 @@ class RideResponse(BaseModel):
     pr_count: int | None = None
     kudos_count: int | None = None
     zone_summary: dict | None = None
+    forma_title: str | None = None
+    story: str | None = None
     created_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)

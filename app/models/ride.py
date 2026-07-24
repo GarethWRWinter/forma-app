@@ -70,9 +70,16 @@ class Ride(TimestampMixin, Base):
     debrief_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Cached time-in-zone summary for list views:
-    # {"z": [s1..s7 seconds], "dom": "z3"} or {"none": true} when no power data.
-    # Computed lazily on first list render, then free forever.
+    # {"z": [s1..s7 seconds], "dom": "z3", "shape": [[h0_100, zone1_7], ...]}
+    # or {"none": true} when no power data. "shape" is the ride's power over
+    # time in ~48 buckets — the thumbnail fingerprint. Computed lazily on
+    # first list render, then free forever.
     zone_summary: Mapped[dict | None] = mapped_column(SA_JSON, nullable=True)
+
+    # Forma's voice on the list: a name for the ride and a one-line story
+    # that teaches. Written once by the coach (Haiku), never regenerated.
+    forma_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    story: Mapped[str | None] = mapped_column(Text, nullable=True)
     debrief_generated_at: Mapped[str | None] = mapped_column(DateTime, nullable=True)
 
     # Relationships

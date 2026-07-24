@@ -87,6 +87,7 @@ TASKS: dict[str, TaskConfig] = {
     "explain": TaskConfig(HAIKU, 200),         # metric explanation
     "memory_extraction": TaskConfig(HAIKU, 1500),
     "memory_reading": TaskConfig(HAIKU, 220),  # Brain page narration
+    "ride_story": TaskConfig(HAIKU, 160),      # ride title + one-line story
 }
 
 # USD per million tokens, matched by model-id prefix. Cache reads bill at

@@ -235,8 +235,17 @@ export interface Ride {
   achievement_count: number | null;
   pr_count: number | null;
   kudos_count: number | null;
-  /** Cached time-in-zone: {"z": [s1..s7], "dom": "z3"} or {"none": true} */
-  zone_summary?: { z?: number[]; dom?: string; none?: boolean } | null;
+  /** Cached time-in-zone: {"z": [s1..s7], "dom": "z3", "shape": [[h,z],...]} or {"none": true} */
+  zone_summary?: {
+    z?: number[];
+    dom?: string;
+    none?: boolean;
+    shape?: [number, number][];
+  } | null;
+  /** Forma's name for the ride (falls back to source title) */
+  forma_title?: string | null;
+  /** Forma's one-line story (falls back to the deterministic line) */
+  story?: string | null;
 }
 
 export interface RideListResponse {

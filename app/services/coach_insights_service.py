@@ -346,6 +346,62 @@ def _build_debrief_context(
     return context
 
 
+RIDE_STORY_SYSTEM = """You write two tiny pieces for one ride in a cycling
+training log, in the coach Forma's voice: warm, specific, a fan of the sport.
+
+1. "title": a name for the ride, 2-6 words, evocative but honest — from the
+   ride's actual character (its zones, duration, structure). Examples of the
+   register: "Tempo blocks, three deep", "The long steady one", "Forty hard
+   minutes". Never generic ("Morning Ride"), never cheesy, no exclamation marks.
+2. "story": ONE sentence (max ~22 words) saying what the ride achieved and
+   teaching one thing. Use the jargon AND gloss it simply, never condescending.
+   No em dashes. British register.
+
+Return STRICT JSON: {"title": "...", "story": "..."}"""
+
+
+def generate_ride_story(db: Session, user: User, ride: Ride) -> None:
+    """Write Forma's title + one-line story for a ride. Once, then cached."""
+    if ride.story and ride.forma_title:
+        return
+    zs = ride.zone_summary or {}
+    context = {
+        "original_title": ride.title,
+        "date": str(ride.ride_date)[:10],
+        "duration_min": round(ride.duration_seconds / 60) if ride.duration_seconds else None,
+        "distance_km": round(ride.distance_meters / 1000, 1) if ride.distance_meters else None,
+        "elevation_m": round(ride.elevation_gain_meters) if ride.elevation_gain_meters else None,
+        "avg_power": round(ride.average_power) if ride.average_power else None,
+        "intensity_factor": ride.intensity_factor,
+        "tss": round(ride.tss) if ride.tss else None,
+        "dominant_zone": zs.get("dom"),
+        "seconds_per_zone_z1_to_z7": zs.get("z"),
+        "linked_to_planned_workout": bool(ride.workout_id),
+    }
+    try:
+        response = forma_core.call(
+            user_id=user.id,
+            task="ride_story",
+            surface="rides_list",
+            system=RIDE_STORY_SYSTEM,
+            messages=[{
+                "role": "user",
+                "content": f"The ride:\n```json\n{json.dumps(context, default=str)}\n```",
+            }],
+        )
+        raw = response_text(response).strip()
+        data = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
+        title = (data.get("title") or "").strip()[:255]
+        story = (data.get("story") or "").strip()
+        if title:
+            ride.forma_title = title
+        if story:
+            ride.story = humanize(story)
+        db.commit()
+    except Exception:
+        logger.exception("Ride story generation failed (ride=%s)", ride.id)
+
+
 def generate_ride_debrief(
     db: Session, user: User, ride: Ride, force: bool = False
 ) -> dict:

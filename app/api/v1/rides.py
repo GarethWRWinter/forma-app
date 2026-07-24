@@ -113,6 +113,7 @@ def record_ride(
 
 @router.get("", response_model=RideListResponse)
 def list_rides(
+    background_tasks: BackgroundTasks,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     start_date: datetime | None = None,
@@ -125,36 +126,94 @@ def list_rides(
         db, current_user.id, page, per_page, start_date, end_date
     )
     _warm_zone_summaries(db, current_user, rides)
+
+    # Forma names and narrates rides that don't have it yet — in the
+    # background, a few per view, so the list is never blocked. The client
+    # shows a deterministic line until the coach's own words land.
+    missing = [r for r in rides if not r.story or not r.forma_title][:8]
+    if missing:
+        background_tasks.add_task(_generate_stories_bg, db, current_user, missing)
+
     return RideListResponse(
         rides=[RideResponse.model_validate(r) for r in rides],
         total=total, page=page, per_page=per_page,
     )
 
 
-def _warm_zone_summaries(db: Session, user: User, rides: list) -> None:
-    """Lazily cache a compact time-in-zone summary on each ride.
+def _generate_stories_bg(db: Session, user: User, rides: list) -> None:
+    """Background: Forma writes title + story for rides missing them."""
+    from app.services.coach_insights_service import generate_ride_story
 
-    Computed once from the power stream on first list view, then served
-    from the rides row forever. Rides without power data cache {"none": true}
-    so they're never recomputed.
+    for ride in rides:
+        try:
+            generate_ride_story(db, user, ride)
+        except Exception:
+            _logger.exception("Story generation failed for ride %s", ride.id)
+
+
+_SHAPE_BUCKETS = 48
+
+
+def _warm_zone_summaries(db: Session, user: User, rides: list) -> None:
+    """Lazily cache a compact time-in-zone summary + shape on each ride.
+
+    One pass over the power stream produces both the zone totals and the
+    "shape": the ride's power over time in ~48 buckets, each [height 0-100,
+    zone 1-7] — the thumbnail fingerprint that makes every ride look like
+    itself. Cached on the row forever; {"none": true} when no power data.
     """
-    from app.services.metrics_service import get_ride_zone_distribution
+    from app.core.formulas import power_zones
+    from app.models.ride import RideData
 
     dirty = False
     for ride in rides:
-        if ride.zone_summary is not None:
-            continue
+        zs = ride.zone_summary
+        if zs is not None and (zs.get("none") or "shape" in zs):
+            continue  # cached in current format
         try:
             ftp = ride.ftp_at_time or user.ftp or 0
-            dist = get_ride_zone_distribution(db, ride.id, ftp)
-            zones = dist.get("zones") or []
-            total = dist.get("total_seconds") or 0
-            if not zones or total <= 0:
+            powers = [
+                p for (p,) in (
+                    db.query(RideData.power)
+                    .filter(RideData.ride_id == ride.id, RideData.power.isnot(None))
+                    .order_by(RideData.elapsed_seconds)
+                    .all()
+                )
+                if p is not None and p >= 0
+            ]
+            if not powers or ftp <= 0:
                 ride.zone_summary = {"none": True}
-            else:
-                secs = [z["seconds"] for z in zones]
-                dom_idx = max(range(len(secs)), key=lambda i: secs[i])
-                ride.zone_summary = {"z": secs, "dom": f"z{dom_idx + 1}"}
+                dirty = True
+                continue
+
+            zones = power_zones(ftp)
+            bounds = [(zones[k]["low"], zones[k]["high"]) for k in sorted(zones.keys())]
+
+            def zone_of(p: float) -> int:
+                for i, (low, high) in enumerate(bounds):
+                    if low <= p <= high:
+                        return i
+                return len(bounds) - 1  # above Z7
+
+            secs = [0] * len(bounds)
+            for p in powers:
+                secs[zone_of(p)] += 1
+
+            # Shape: average power per bucket, height relative to the ride's
+            # strongest bucket, coloured by that bucket's zone.
+            n = min(_SHAPE_BUCKETS, len(powers))
+            size = len(powers) / n
+            buckets = []
+            for i in range(n):
+                seg = powers[int(i * size): max(int((i + 1) * size), int(i * size) + 1)]
+                buckets.append(sum(seg) / len(seg))
+            peak = max(buckets) or 1
+            shape = [
+                [max(6, round(b / peak * 100)), zone_of(b) + 1] for b in buckets
+            ]
+
+            dom_idx = max(range(len(secs)), key=lambda i: secs[i])
+            ride.zone_summary = {"z": secs, "dom": f"z{dom_idx + 1}", "shape": shape}
             dirty = True
         except Exception:
             _logger.exception("Zone summary failed for ride %s", ride.id)
