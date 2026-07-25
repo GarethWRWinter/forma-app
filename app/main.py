@@ -60,6 +60,27 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(resume_incomplete_backfills())
     logger.info("Scheduled Strava backfill resume check")
 
+    # Warm the embedding model + embed any memories that predate the RAG
+    # layer. Background thread: model load is CPU/disk work.
+    async def _warm_embeddings() -> None:
+        def _run() -> None:
+            from app.database import SessionLocal
+            from app.services.memory_service import embed_missing_entities
+
+            db = SessionLocal()
+            try:
+                embed_missing_entities(db)
+            finally:
+                db.close()
+
+        try:
+            await asyncio.to_thread(_run)
+        except Exception:
+            logger.exception("Embedding warm-up failed (semantic retrieval degrades gracefully)")
+
+    asyncio.create_task(_warm_embeddings())
+    logger.info("Scheduled embedding warm-up + backfill")
+
     yield
     # --- Shutdown ---
     stop_auto_sync()

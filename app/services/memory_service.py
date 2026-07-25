@@ -147,6 +147,15 @@ def extract_memories(
             source=source,
             source_ref=source_ref,
         )
+        # Semantic fingerprint at write time — the RAG layer's index.
+        try:
+            from app.core import embeddings as emb
+
+            vecs = emb.embed_texts([f"{label}. {node.summary or ''}".strip()])
+            if vecs:
+                node.embedding = vecs[0]
+        except Exception:
+            pass  # embeddings are an enhancement, never a blocker
         if observed_at is not None:
             # Backfill: date the memory when it actually happened, so the
             # Brain's growth replay tells the true story.
@@ -245,11 +254,19 @@ def get_graph(db: Session, user: User, include_hidden: bool = False) -> dict:
     }
 
 
-def get_context(db: Session, user: User, limit: int = 24) -> str:
+def get_context(
+    db: Session, user: User, limit: int = 24, query: str | None = None
+) -> str:
     """Compact memory block for Forma's prompts.
 
-    Recency + connectedness weighted. Hidden entities ARE included (Forma keeps
-    coaching around a hidden injury) but flagged never-quote.
+    Without a query: recency + connectedness weighted (the stable digest).
+    With a query: semantic retrieval — cosine similarity to the rider's
+    message leads the score, so asking about saddle pain surfaces the
+    saddle memories from months ago, not just whatever's recent. Falls
+    back to the recency scorer when embeddings are unavailable.
+
+    Hidden entities ARE included (Forma keeps coaching around a hidden
+    injury) but flagged never-quote.
     """
     entities = (
         db.query(MemoryEntity)
@@ -266,18 +283,76 @@ def get_context(db: Session, user: User, limit: int = 24) -> str:
 
     now = datetime.utcnow()
 
-    def score(e: MemoryEntity) -> float:
+    def base_score(e: MemoryEntity) -> float:
         age_days = max(1.0, (now - (e.updated_at or e.created_at)).total_seconds() / 86400)
         type_boost = {"goal": 3, "gap": 2.5, "procedural": 2.5, "value": 2, "habit": 1.5}.get(e.type, 1)
         return (degree.get(e.id, 0) + 1) * type_boost / (age_days ** 0.4)
 
-    top = sorted(entities, key=score, reverse=True)[:limit]
-    lines = ["WHAT YOU KNOW ABOUT THIS RIDER (long-term memory — weave in naturally):"]
+    semantic: dict[str, float] = {}
+    if query:
+        from app.core import embeddings as emb
+
+        qvec = emb.embed_query(query[:1000])
+        if qvec is not None:
+            sims = emb.cosine_scores(qvec, [e.embedding for e in entities])
+            semantic = {e.id: s for e, s in zip(entities, sims)}
+
+    if semantic:
+        # Similarity leads; base score (normalised) keeps the load-bearing
+        # memories (goals, rules) from vanishing on off-topic questions.
+        max_base = max(base_score(e) for e in entities) or 1.0
+        top = sorted(
+            entities,
+            key=lambda e: 0.7 * semantic.get(e.id, 0.0) + 0.3 * (base_score(e) / max_base),
+            reverse=True,
+        )[:limit]
+        header = (
+            "WHAT YOU REMEMBER, MOST RELEVANT TO THIS MESSAGE "
+            "(long-term memory — weave in naturally):"
+        )
+    else:
+        top = sorted(entities, key=base_score, reverse=True)[:limit]
+        header = "WHAT YOU KNOW ABOUT THIS RIDER (long-term memory — weave in naturally):"
+
+    lines = [header]
     for e in top:
         flag = " [HIDDEN — use for judgement, never mention]" if e.hidden_at else ""
         kind = f"/{e.kind}" if e.kind else ""
         lines.append(f"- ({e.type}{kind}) {e.label}{': ' + e.summary if e.summary else ''}{flag}")
     return "\n".join(lines)
+
+
+def embed_missing_entities(db: Session, batch: int = 64) -> int:
+    """Embed every memory entity that doesn't have a vector yet.
+
+    Runs as a startup background task (also warms the model so the first
+    chat message never pays the load cost). Returns how many were embedded.
+    """
+    from app.core import embeddings as emb
+
+    if not emb.is_available():
+        return 0
+    done = 0
+    while True:
+        rows = (
+            db.query(MemoryEntity)
+            .filter(MemoryEntity.embedding.is_(None))
+            .limit(batch)
+            .all()
+        )
+        if not rows:
+            break
+        texts = [f"{e.label}. {e.summary or ''}".strip() for e in rows]
+        vecs = emb.embed_texts(texts)
+        if vecs is None:
+            break
+        for e, v in zip(rows, vecs):
+            e.embedding = v
+        db.commit()
+        done += len(rows)
+    if done:
+        logger.info("Embedded %d memory entities", done)
+    return done
 
 
 def set_hidden(db: Session, user: User, entity_id: str, hidden: bool) -> MemoryEntity | None:

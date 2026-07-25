@@ -685,7 +685,9 @@ Updated 2026-07-16 after the auth + data-security build.
 
 ### Product gaps (from the 2026-07-15 PRD reconciliation)
 - [x] `forma-core` single Claude funnel + `forma_calls` cost ledger + per-user monthly budget
-- [ ] **pgvector** for memory embeddings (currently string-similarity matching)
+- [x] **Semantic memory retrieval (RAG)** — in-process embeddings (fastembed, 384d) on every
+      memory, per-message similarity recall in coach prompts (2026-07-25). pgvector INDEX
+      deferred until a rider passes ~5k memories; the seams don't change.
 - [ ] **ASR / voice input** — browser STT only today; decide on server-side ASR or confirm browser-only is acceptable
 - [ ] **ElevenLabs voice** = the OQ2-locked pick (currently a different default voice id)
 - [ ] **Conversational onboarding** — currently a form wizard (Milestone 2)

@@ -101,7 +101,7 @@ When a rider has recently completed a goal event, proactively offer to debrief:
 COACH_SYSTEM_PROMPT = compose_education() + "\n\n" + COACH_APP_PLAYBOOK
 
 
-def _system_blocks(user: User, dynamic: str) -> list:
+def _system_blocks(user: User, dynamic: str, volatile: str | None = None) -> list:
     """System as [cached personalised education] + [per-turn dynamic context].
 
     The education is personalised (coach name + tone) but stable per user, so
@@ -120,7 +120,7 @@ def _system_blocks(user: User, dynamic: str) -> list:
         f"THE RIDER'S NAME IS {rider_name}. Address them as {rider_name} and "
         f"nothing else — never invent, substitute or vary their name."
     )
-    return [
+    blocks = [
         {
             "type": "text",
             "text": identity + "\n\n" + education + "\n\n" + COACH_APP_PLAYBOOK,
@@ -136,6 +136,28 @@ def _system_blocks(user: User, dynamic: str) -> list:
             "cache_control": {"type": "ephemeral"},
         },
     ]
+    # Per-turn block (RAG): small, changes every message, deliberately
+    # UNCACHED so it never invalidates the big cached blocks above.
+    if volatile:
+        blocks.append({"type": "text", "text": volatile})
+    return blocks
+
+
+def _relevant_memories(db: Session, user: User, message: str) -> str | None:
+    """Semantic recall for THIS message (the RAG layer's read path).
+
+    Small per-turn block: the memories most similar in meaning to what the
+    rider just said, so saddle memories surface for saddle questions
+    regardless of age. Kept out of the cached blocks on purpose.
+    """
+    try:
+        from app.services.memory_service import get_context
+
+        block = get_context(db, user, limit=14, query=message)
+        return block or None
+    except Exception:
+        logger.exception("Semantic recall failed for user %s", user.id)
+        return None
 
 
 def _dossier_block(db: Session, user: User) -> str:
@@ -820,12 +842,13 @@ async def stream_response(
     rider_context = _build_rider_context(db, user)
     dossier_block = _dossier_block(db, user)
 
-    # Build system prompt with rider context
+    # Build system prompt with rider context + per-message semantic recall
     system = _system_blocks(
         user,
         f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
         f"{dossier_block}"
-        f"Today's date: {date.today().isoformat()}"
+        f"Today's date: {date.today().isoformat()}",
+        volatile=_relevant_memories(db, user, user_message),
     )
 
     # Build message history
@@ -1031,13 +1054,14 @@ async def stream_voice_response(
     rider_context = _build_rider_context(db, user)
     dossier_block = _dossier_block(db, user)
 
-    # Build system prompt with voice mode addendum
+    # Build system prompt with voice mode addendum + per-message recall
     system = _system_blocks(
         user,
         f"{VOICE_MODE_ADDENDUM}\n\n"
         f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
         f"{dossier_block}"
-        f"Today's date: {date.today().isoformat()}"
+        f"Today's date: {date.today().isoformat()}",
+        volatile=_relevant_memories(db, user, user_message),
     )
 
     # Build message history
