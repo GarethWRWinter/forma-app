@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = "onwK4e9ZLuTAKqWW03F9"  # "Daniel" — warm, authoritative
     elevenlabs_model_id: str = "eleven_turbo_v2_5"  # Low latency (~300ms)
+    # Riders don't have amazing patience: a touch quicker than natural.
+    # ElevenLabs caps speed at 1.2 (floor 0.7).
+    elevenlabs_voice_speed: float = 1.15
 
     # Strava
     strava_client_id: str = ""

@@ -28,6 +28,8 @@ def _get_voice_settings() -> dict:
         "similarity_boost": 0.8,  # Stay close to base voice
         "style": 0.3,  # Some expressiveness
         "use_speaker_boost": True,
+        # ElevenLabs clamps to 0.7–1.2; we run a touch quick by default.
+        "speed": max(0.7, min(1.2, settings.elevenlabs_voice_speed)),
     }
 
 

@@ -18,6 +18,8 @@ import {
   ArchiveRestore,
   Pencil,
   Trash2,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -101,8 +103,8 @@ function CoachPageInner() {
               return updated;
             });
           } else if (chunk.type === "audio" && chunk.content) {
-            // Only play audio if not muted by interruption
-            if (!audioMutedRef.current) {
+            // Only play audio if not muted by interruption or preference
+            if (!audioMutedRef.current && !audioOffRef.current) {
               playAudioChunk(chunk.content);
             }
           } else if (chunk.type === "plan_updated") {
@@ -141,6 +143,43 @@ function CoachPageInner() {
   } = useVoiceChat({
     onTranscript: handleVoiceSend,
   });
+
+  // Persistent "text only" preference: some riders never want audio.
+  const [audioOff, setAudioOff] = useState(false);
+  useEffect(() => {
+    setAudioOff(localStorage.getItem("forma:coach-audio-off") === "1");
+  }, []);
+  const toggleAudioOff = () => {
+    setAudioOff((v) => {
+      const next = !v;
+      localStorage.setItem("forma:coach-audio-off", next ? "1" : "0");
+      if (next) stopAudio(); // silences immediately, mid-sentence included
+      return next;
+    });
+  };
+  const audioOffRef = useRef(audioOff);
+  useEffect(() => {
+    audioOffRef.current = audioOff;
+  }, [audioOff]);
+
+  // ⌥Space toggles the mic — the desktop voice shortcut.
+  // (The Mac dictation key is OS-owned and never reaches a web page, but it
+  // still types into the input via Apple's own engine as a bonus path.)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && e.code === "Space") {
+        e.preventDefault();
+        if (isListening) {
+          stopListening();
+        } else if (voiceSupported && !streaming) {
+          setVoiceMode(true);
+          startListening();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isListening, voiceSupported, streaming, startListening, stopListening]);
 
   // Determine voice indicator mode
   const voiceIndicatorMode = isListening
@@ -800,7 +839,33 @@ function CoachPageInner() {
               }}
             />
 
-            {/* Voice button */}
+            {/* Coach audio on/off — some riders want text only. Also stops
+                playback mid-sentence when switched off. */}
+            {voiceSupported && (
+              <button
+                onClick={toggleAudioOff}
+                title={
+                  audioOff
+                    ? "Coach voice is off — click to hear Forma"
+                    : "Mute coach voice (text only)"
+                }
+                aria-label={audioOff ? "Unmute coach voice" : "Mute coach voice"}
+                className={cn(
+                  "flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-sm border transition-colors",
+                  audioOff
+                    ? "border-vb-border bg-vb-sunken text-vb-text-muted"
+                    : "border-vb-border bg-vb-surface text-vb-text-dim hover:text-vb-text"
+                )}
+              >
+                {audioOff ? (
+                  <VolumeX className="h-4 w-4" />
+                ) : (
+                  <Volume2 className="h-4 w-4" />
+                )}
+              </button>
+            )}
+
+            {/* Voice button — click or ⌥space */}
             <VoiceButton
               isListening={isListening}
               isSpeaking={isSpeaking}
