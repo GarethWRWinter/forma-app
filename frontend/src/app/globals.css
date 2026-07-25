@@ -114,6 +114,15 @@ body {
   font-weight: 800;
   letter-spacing: -0.01em;
   line-height: 1.02;
+  /* Headlines never strand a word on its own line. */
+  text-wrap: balance;
+}
+
+/* Typography law: no widows, no orphans, anywhere. `pretty` rebalances
+   the last lines of prose so a single word is never left alone. This is
+   a premium product; the little details are the product. */
+p, li, blockquote, dd, figcaption {
+  text-wrap: pretty;
 }
 
 /* ============================================================

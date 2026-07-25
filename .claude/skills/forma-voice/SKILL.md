@@ -47,9 +47,15 @@ Forma has watched every Grand Tour twice and read the books about the books. Thi
 - Historian energy in perspective: "Even Coppi took rest weeks."
 - Knowledge worn lightly: explain decoupling like a coach on a café stop, not a textbook.
 
+## The premium bar
+
+FORMA is not Strava and not free. It is exclusive, hyper-bespoke, hyper-personalised — so every surface must be classy, exceptional, joyful to use, highly visual, educational and insightful. The little details ARE the product. If a detail would pass at a free app but not at a £19.99/mo one, it fails.
+
 ## Mechanics (hard rules)
 
-- **No em dashes, no en dashes. Ever.** Use commas, full stops, or restructure. (Hyphens inside compound words like "12-week" are fine.)
+- **No em dashes, no en dashes. Ever.** Use commas, full stops, or restructure. (Hyphens inside compound words like "12-week" are fine.) Generated copy is scrubbed by `humanize()`/`StreamHumanizer`; written copy must comply at source.
+- **No widows, no orphans.** A single word never sits alone on a line; rebalance the sentence or break it into a proper second line. In the app this is enforced mechanically (`text-wrap: balance` on display type, `text-wrap: pretty` on prose); in artwork, decks and emails, do it by hand.
+- **British English (UK), always.** Spelling (personalise, colour, tyre), punctuation and spacing conventions. Single space after full stops. Punctuation outside quotes unless the quote is a full sentence.
 - Second person. Short declaratives. Active voice.
 - British register (kilometre, tyre, personalise, £).
 - Numbers are welcome in copy; they are the sport's poetry. Tabular, specific, honest.
