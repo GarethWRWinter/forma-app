@@ -1,6 +1,6 @@
 """AI Coach chat API endpoints with SSE streaming."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -117,20 +117,37 @@ def delete_chat_session(
 @router.get("/sessions/{session_id}", response_model=ChatSessionDetailResponse)
 def get_chat_session(
     session_id: str,
+    limit: int = Query(60, ge=1, le=200),
+    before: str | None = Query(None, description="Message id — return messages older than this"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Get a chat session with all messages."""
+    """Get a chat session with a window of messages (newest page by default).
+
+    The thread can be years long; the client renders the latest `limit`
+    messages and pages backwards with `before` as the rider scrolls up.
+    """
     session = get_session(db, session_id, current_user.id)
     if not session:
         raise NotFoundException(detail="Chat session not found")
 
+    ordered = sorted(session.messages or [], key=lambda m: m.created_at)
+    if before:
+        idx = next((i for i, m in enumerate(ordered) if m.id == before), len(ordered))
+        ordered = ordered[:idx]
+    window = ordered[-limit:]
+    has_more = len(ordered) > len(window)
+
     return ChatSessionDetailResponse(
         id=session.id,
         title=session.title,
+        pinned=session.pinned,
+        starred=session.starred,
+        archived_at=session.archived_at,
         created_at=session.created_at,
         updated_at=session.updated_at,
         message_count=len(session.messages) if session.messages else 0,
+        has_more=has_more,
         messages=[
             ChatMessageResponse(
                 id=m.id,
@@ -139,7 +156,7 @@ def get_chat_session(
                 tokens_used=m.tokens_used,
                 created_at=m.created_at,
             )
-            for m in (session.messages or [])
+            for m in window
         ],
     )
 

@@ -829,6 +829,7 @@ export interface ChatSession {
   archived_at?: string | null;
   message_count: number;
   created_at: string;
+  updated_at?: string | null;
 }
 
 export interface ChatSessionUpdate {
@@ -866,8 +867,15 @@ export const chat = {
   deleteSession: (id: string) =>
     request<null>(`/chat/sessions/${id}`, { method: "DELETE" }),
 
-  getSession: (id: string) =>
-    request<ChatSession & { messages: ChatMessage[] }>(`/chat/sessions/${id}`),
+  getSession: (id: string, opts?: { limit?: number; before?: string }) => {
+    const p = new URLSearchParams();
+    if (opts?.limit) p.set("limit", String(opts.limit));
+    if (opts?.before) p.set("before", opts.before);
+    const qs = p.toString();
+    return request<ChatSession & { messages: ChatMessage[]; has_more: boolean }>(
+      `/chat/sessions/${id}${qs ? `?${qs}` : ""}`
+    );
+  },
 
   sendMessage: async function* (sessionId: string, content: string) {
     const token = getToken();

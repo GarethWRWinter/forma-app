@@ -126,7 +126,15 @@ def _system_blocks(user: User, dynamic: str) -> list:
             "text": identity + "\n\n" + education + "\n\n" + COACH_APP_PLAYBOOK,
             "cache_control": {"type": "ephemeral"},
         },
-        {"type": "text", "text": dynamic},
+        # The rider context is stable WITHIN a conversation (fitness, plan,
+        # dossier only move when data moves), so cache this block too:
+        # turn 2+ reads the whole system from cache — faster first token,
+        # ~90% cheaper. A mid-conversation data change just re-caches once.
+        {
+            "type": "text",
+            "text": dynamic,
+            "cache_control": {"type": "ephemeral"},
+        },
     ]
 
 
@@ -896,17 +904,22 @@ async def stream_response(
     except forma_core.BudgetExceededError:
         full_response = forma_core.QUOTA_MESSAGE
         yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
-    except anthropic.APIError as e:
-        # Never leak provider errors into the coach's mouth — log the real
-        # cause, tell the rider something honest and human.
-        logger.error("Coach chat stream failed: %s", e)
+    except Exception as e:
+        # ANY failure — provider error, timeout, tool bug — must never leave
+        # the rider staring at an empty bubble. Log the real cause; the rider
+        # gets something honest and human.
+        logger.exception("Coach chat stream failed: %s", e)
         error_msg = "That one didn't reach me. Give it a second and send it again."
-        full_response = error_msg
-        yield f'data: {json.dumps({"type": "text", "content": error_msg})}\n\n'
+        # Don't double up if some text already streamed before the failure.
+        if not full_response.strip():
+            full_response = error_msg
+            yield f'data: {json.dumps({"type": "text", "content": error_msg})}\n\n'
 
-    # Save assistant response
-    context_snapshot = json.loads(rider_context) if rider_context else None
-    add_assistant_message(db, session, full_response, context_snapshot, tokens_used)
+    # Save assistant response — never persist an empty reply (it renders as a
+    # blank bubble forever).
+    if full_response.strip():
+        context_snapshot = json.loads(rider_context) if rider_context else None
+        add_assistant_message(db, session, full_response, context_snapshot, tokens_used)
 
     # Final plan_updated signal if tools were used (in case frontend missed it)
     if plan_was_updated:
@@ -933,6 +946,9 @@ async def stream_response(
             "Memory extraction after chat failed (user=%s)", user.id
         )
 
+    # Name the thread from its content while it still wears the default name.
+    maybe_autotitle_session(db, user, session)
+
 
 VOICE_MODE_ADDENDUM = """
 ## Voice Mode Instructions
@@ -948,6 +964,42 @@ You are speaking out loud to the rider. Adjust your style:
 
 # Regex for detecting sentence boundaries in streamed text
 _SENTENCE_END = re.compile(r'[.!?]\s+|[.!?]$')
+
+# The default name a session is born with ("Chat - 24 Jul 2026").
+_DEFAULT_TITLE_RE = re.compile(r"^Chat( - |$)")
+
+
+def maybe_autotitle_session(db: Session, user: User, session: ChatSession) -> None:
+    """Name the thread from its content — only while it wears the default name.
+
+    A title the rider typed (or previously auto-generated) is never touched.
+    Cheap Haiku call, runs after the reply has already streamed.
+    """
+    try:
+        if session.title and not _DEFAULT_TITLE_RE.match(session.title):
+            return
+        msgs = sorted(session.messages, key=lambda m: m.created_at)
+        if len(msgs) < 2:
+            return
+        sample = "\n".join(f"{m.role}: {m.content[:300]}" for m in msgs[:6])
+        resp = forma_core.call(
+            user_id=user.id,
+            task="chat_title",
+            surface="coach",
+            system=(
+                "Name this cycling-coach conversation in 2-5 words for a sidebar. "
+                "Specific and plain, sentence case, no quotes, no trailing "
+                "punctuation, no emoji. Examples: Fuelling for the 312 · "
+                "Tuesday intervals rethink · Saddle pain fix"
+            ),
+            messages=[{"role": "user", "content": sample}],
+        )
+        title = response_text(resp).strip().strip('"').strip()
+        if title:
+            session.title = title[:255]
+            db.commit()
+    except Exception:
+        logger.exception("Auto-title failed for session %s", session.id)
 
 
 async def stream_voice_response(
@@ -1094,21 +1146,26 @@ async def stream_voice_response(
                 )
                 audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
                 yield f'data: {json.dumps({"type": "audio", "content": audio_b64, "sentence_index": sentence_index})}\n\n'
-            except Exception:
-                pass
+            except Exception as tts_err:
+                # Degrade to text-only but say so in the logs — a dead
+                # ElevenLabs key should never be an invisible failure.
+                logger.warning("TTS failed (text continues): %s", tts_err)
 
     except forma_core.BudgetExceededError:
         full_response = forma_core.QUOTA_MESSAGE
         yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
-    except anthropic.APIError as e:
-        logger.error("Coach voice stream failed: %s", e)
+    except Exception as e:
+        # Never leave the rider with silence AND an empty bubble.
+        logger.exception("Coach voice stream failed: %s", e)
         error_msg = "That one didn't reach me. Give it a second and send it again."
-        full_response = error_msg
-        yield f'data: {json.dumps({"type": "text", "content": error_msg})}\n\n'
+        if not full_response.strip():
+            full_response = error_msg
+            yield f'data: {json.dumps({"type": "text", "content": error_msg})}\n\n'
 
-    # Save assistant response
-    context_snapshot = json.loads(rider_context) if rider_context else None
-    add_assistant_message(db, session, full_response, context_snapshot, tokens_used)
+    # Save assistant response — never persist an empty reply.
+    if full_response.strip():
+        context_snapshot = json.loads(rider_context) if rider_context else None
+        add_assistant_message(db, session, full_response, context_snapshot, tokens_used)
 
     if plan_was_updated:
         yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
@@ -1130,6 +1187,9 @@ async def stream_voice_response(
         logging.getLogger(__name__).exception(
             "Memory extraction after voice chat failed (user=%s)", user.id
         )
+
+    # Name the thread from its content while it still wears the default name.
+    maybe_autotitle_session(db, user, session)
 
 
 def get_non_streaming_response(

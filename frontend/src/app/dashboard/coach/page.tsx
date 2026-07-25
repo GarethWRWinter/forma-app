@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, useRef, useEffect, useCallback, Suspense } from "react";
+import React, { useState, useRef, useEffect, useCallback, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -40,8 +40,11 @@ function CoachPageInner() {
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<
-    { role: "user" | "assistant"; content: string }[]
+    { role: "user" | "assistant"; content: string; id?: string; created_at?: string }[]
   >([]);
+  const [hasEarlier, setHasEarlier] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const resumedRef = useRef(false);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [goalMessagePrefilled, setGoalMessagePrefilled] = useState(false);
@@ -273,12 +276,28 @@ function CoachPageInner() {
     setRenamingId(null);
   };
 
-  // Load active session messages
+  // Load active session messages (latest window; older pages on demand)
   const { data: sessionData } = useQuery({
     queryKey: ["chat-session", activeSessionId],
-    queryFn: () => chat.getSession(activeSessionId!),
+    queryFn: () => chat.getSession(activeSessionId!, { limit: 60 }),
     enabled: !!activeSessionId,
   });
+
+  // The conversation continues: opening COACH resumes the most recent
+  // thread instead of an empty page. "New chat" stays for deliberate splits.
+  useEffect(() => {
+    if (resumedRef.current || activeSessionId || goalId || isDebrief) return;
+    if (!sessions || sessions.length === 0) return;
+    const live = sessions.filter((s) => !s.archived_at);
+    if (!live.length) return;
+    const latest = [...live].sort((a, b) =>
+      (b.updated_at || b.created_at || "").localeCompare(
+        a.updated_at || a.created_at || ""
+      )
+    )[0];
+    resumedRef.current = true;
+    setActiveSessionId(latest.id);
+  }, [sessions, activeSessionId, goalId, isDebrief]);
 
   // When session data loads, set messages
   useEffect(() => {
@@ -287,10 +306,39 @@ function CoachPageInner() {
         sessionData.messages.map((m) => ({
           role: m.role,
           content: m.content,
+          id: m.id,
+          created_at: m.created_at,
         }))
       );
+      setHasEarlier(!!sessionData.has_more);
     }
   }, [sessionData]);
+
+  // Page backwards through history as the rider scrolls up
+  const loadEarlier = async () => {
+    if (!activeSessionId || loadingEarlier) return;
+    const oldest = messages.find((m) => m.id);
+    if (!oldest?.id) return;
+    setLoadingEarlier(true);
+    try {
+      const older = await chat.getSession(activeSessionId, {
+        limit: 60,
+        before: oldest.id,
+      });
+      setMessages((prev) => [
+        ...older.messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+          id: m.id,
+          created_at: m.created_at,
+        })),
+        ...prev,
+      ]);
+      setHasEarlier(!!older.has_more);
+    } finally {
+      setLoadingEarlier(false);
+    }
+  };
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -620,14 +668,51 @@ function CoachPageInner() {
           )}
 
           <div className="space-y-4">
-            {messages.map((msg, i) => (
-              <div
-                key={i}
-                className={cn(
-                  "flex gap-3",
-                  msg.role === "user" ? "justify-end" : "justify-start"
-                )}
-              >
+            {hasEarlier && (
+              <div className="flex justify-center pb-2">
+                <button
+                  onClick={loadEarlier}
+                  disabled={loadingEarlier}
+                  className="f-kicker text-vb-text-muted transition-colors hover:text-vb-text"
+                >
+                  {loadingEarlier ? "Loading…" : "↑ Earlier"}
+                </button>
+              </div>
+            )}
+            {messages.map((msg, i) => {
+              // A saved-empty reply renders as a ghost bubble — never show it.
+              if (
+                msg.role === "assistant" &&
+                !msg.content &&
+                !(streaming && i === messages.length - 1)
+              ) {
+                return null;
+              }
+              // Day divider: the thread reads like a training diary.
+              const day = msg.created_at?.slice(0, 10);
+              const prevDay = messages[i - 1]?.created_at?.slice(0, 10);
+              const showDivider = day && day !== prevDay;
+              return (
+                <React.Fragment key={msg.id || i}>
+                  {showDivider && (
+                    <div className="flex items-center gap-3 py-2">
+                      <span className="h-px flex-1 bg-vb-border-subtle" />
+                      <span className="f-kicker text-vb-text-muted">
+                        {new Date(day!).toLocaleDateString("en-GB", {
+                          weekday: "short",
+                          day: "numeric",
+                          month: "short",
+                        })}
+                      </span>
+                      <span className="h-px flex-1 bg-vb-border-subtle" />
+                    </div>
+                  )}
+                  <div
+                    className={cn(
+                      "flex gap-3",
+                      msg.role === "user" ? "justify-end" : "justify-start"
+                    )}
+                  >
                 {msg.role === "assistant" && (
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center">
                     <CoachDot
@@ -672,13 +757,15 @@ function CoachPageInner() {
                     )}
                   </div>
                 )}
-                {msg.role === "user" && (
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-vb-sunken">
-                    <User className="h-4 w-4 text-vb-text" />
+                    {msg.role === "user" && (
+                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-vb-sunken">
+                        <User className="h-4 w-4 text-vb-text" />
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            ))}
+                </React.Fragment>
+              );
+            })}
             <div ref={messagesEndRef} />
           </div>
         </div>

@@ -54,5 +54,6 @@ class ChatSessionResponse(BaseModel):
 
 
 class ChatSessionDetailResponse(ChatSessionResponse):
-    """Chat session with messages."""
+    """Chat session with a window of messages."""
     messages: list[ChatMessageResponse] = []
+    has_more: bool = False
