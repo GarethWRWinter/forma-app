@@ -11,8 +11,10 @@ import { RiderProfileRadar } from "@/components/charts/rider-profile-radar";
 import { Kicker } from "@/components/ui/kicker";
 import { SectionHeader } from "@/components/ui/section-header";
 import { DataTile } from "@/components/ui/data-tile";
-import { SeatedBanner, ZoneChip } from "@/components/ui/seated-banner";
+import { ZoneChip } from "@/components/ui/seated-banner";
 import { zoneFromIF } from "@/lib/zones";
+import { ZONES } from "@/lib/palette";
+import { dailyInkscape, WORKOUT_ZONE } from "@/lib/dailyInkscape";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Card, CardBody } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -68,6 +70,21 @@ export default function DashboardPage() {
     retry: false,
   });
 
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const { data: todayWorkouts } = useQuery({
+    queryKey: ["today-workouts", todayISO],
+    queryFn: () => training.getWorkouts(todayISO),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  const { data: weeklyLoad } = useQuery({
+    queryKey: ["weekly-load-12"],
+    queryFn: () => metrics.getWeeklyLoad(12),
+    staleTime: 30 * 60 * 1000,
+    retry: false,
+  });
+
   const latestRide = recentRides?.rides?.[0];
   const { data: latestDebrief } = useQuery({
     queryKey: ["ride-debrief", latestRide?.id],
@@ -107,45 +124,171 @@ export default function DashboardPage() {
 
   const firstName = user?.full_name?.split(" ")[0] || "Rider";
 
+  // Today's pass: the hero inkscape rotates daily with the quote.
+  const ink = dailyInkscape(daily?.date);
+
+  // Week X of Y from the active plan
+  const activePlan = plans?.plans.find((p) => p.status === "active");
+  let weekOf: string | null = null;
+  if (activePlan) {
+    const start = new Date(activePlan.start_date).getTime();
+    const week = Math.max(1, Math.ceil((Date.now() - start) / (7 * 86400000)));
+    if (week <= activePlan.total_weeks) weekOf = `Week ${week} of ${activePlan.total_weeks}`;
+  }
+
+  // Today's session (first planned workout today)
+  const todaySession = todayWorkouts?.find((w) => w.status !== "skipped");
+  const sessionZone = todaySession
+    ? WORKOUT_ZONE[todaySession.workout_type] || { z: "z2", name: todaySession.workout_type }
+    : null;
+
+  // The climb: 12 weeks of load, coloured cold→hot, current week flamme.
+  const climbWeeks = weeklyLoad?.weeks ?? [];
+  const maxTss = Math.max(1, ...climbWeeks.map((w) => w.total_tss || 0));
+  const CLIMB_RAMP = [ZONES.z2, ZONES.z2, ZONES.z2, ZONES.z3, ZONES.z3, ZONES.z3, ZONES.z4, ZONES.z4, ZONES.z4, ZONES.z5, ZONES.z5] as string[];
+
   return (
-    <div className="space-y-14">
-      {/* ============ MASTHEAD ============ */}
+    <div className="space-y-12 md:space-y-14">
+      {/* ============ HERO — today's pass + the daily line ============ */}
+      <section className="f-rise relative -mx-4 -mt-4 overflow-hidden md:-mx-8 md:-mt-8">
+        <img
+          src={ink.src}
+          alt={`Ink road art — ${ink.label}`}
+          className="h-[380px] w-full object-cover sm:h-[420px] md:h-[460px]"
+        />
+        {/* scrim for legibility, heavier at the base where the words sit */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-black/5" />
+        {/* Lockup only on md+ — the mobile drawer bar already carries it
+            (one kite moment per screen). */}
+        <div className="absolute inset-x-0 top-0 hidden items-center justify-between p-5 md:flex md:p-8">
+          <span className="f-display flex items-baseline gap-1 text-xl tracking-tight text-white">
+            FORMA
+            <span
+              className="inline-block h-[9px] w-[9px] bg-vb-red"
+              style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }}
+            />
+          </span>
+        </div>
+        {daily && (
+          <blockquote className="absolute inset-x-0 bottom-0 p-5 md:p-8">
+            <span className="f-display block text-5xl leading-[0.6] text-vb-red" aria-hidden>
+              &ldquo;
+            </span>
+            <p className="f-display max-w-2xl text-2xl leading-snug text-white md:text-4xl">
+              {daily.text}
+            </p>
+            <p className="f-kicker mt-4 flex items-center gap-2 text-white/70">
+              <span
+                className="inline-block h-[7px] w-[7px] shrink-0 bg-vb-red"
+                style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }}
+              />
+              {daily.author} · {ink.label} ·{" "}
+              {daily.tag === "wisdom" ? "Daily wisdom" : "Daily quote"}
+            </p>
+          </blockquote>
+        )}
+      </section>
+
+      {/* ============ MASTHEAD — the briefing ============ */}
       <header className="f-rise">
         <Kicker>
           {today}
+          {weekOf && <span> · {weekOf}</span>}
           {nextGoal && (
             <span className="text-vb-red">
-              · {nextGoal.days_until} days to {nextGoal.event_name}
+              {" "}· {nextGoal.days_until} days to {nextGoal.event_name}
             </span>
           )}
         </Kicker>
-        <h1 className="f-display mt-3 text-5xl leading-[1.04] md:text-6xl">
+        <h1 className="f-display mt-3 text-4xl leading-[1.04] md:text-6xl">
           {greeting}, {firstName}.
         </h1>
+        {nudge && (
+          <p className="mt-3 max-w-2xl text-base leading-relaxed text-vb-text-dim md:text-lg">
+            {nudge.nudge}{" "}
+            <Link
+              href="/dashboard/coach"
+              className="f-kicker whitespace-nowrap text-vb-text-muted transition-colors hover:text-vb-red"
+            >
+              Reply <span className="f-arrow-head">→</span>
+            </Link>
+          </p>
+        )}
       </header>
 
-      {/* ============ A NOTE FROM FORMA (seated banner) ============ */}
-      {nudge && (
-        <div className="f-rise">
-          <SeatedBanner src="/orbs/forma-rest-seated.webp">
-            <div className="flex items-start justify-between gap-4">
-              <Kicker flamme>A note from {coach}</Kicker>
-              <Link
-                href="/dashboard/coach"
-                className="f-kicker f-arrow shrink-0 text-vb-text-muted transition-colors hover:text-vb-red"
-              >
-                Reply <span className="f-arrow-head">→</span>
-              </Link>
-            </div>
-            <p className="mt-3 max-w-md text-lg leading-relaxed text-vb-text">
-              {nudge.nudge}
+      {/* ============ GOAL BAND (carbon) ============ */}
+      {nextGoal && (
+        <section className="f-rise flex items-center gap-4 bg-[#101012] px-5 py-5 text-white md:gap-6 md:px-8">
+          <div
+            className="relative flex h-16 w-[74px] shrink-0 flex-col items-center bg-vb-red pt-2"
+            style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }}
+          >
+            <span className="f-data text-xl font-bold leading-none">
+              {nextGoal.days_until}
+            </span>
+            <span className="f-kicker mt-0.5 text-[8px] text-white/85">days</span>
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="f-kicker text-vb-red">Your goal · {nextGoal.days_until} days out</p>
+            <p className="f-display mt-1 truncate text-xl leading-tight md:text-2xl">
+              {nextGoal.event_name}
             </p>
-            <p className="mt-4">
-              <span className="f-signature text-2xl leading-none">{coach}</span>
-              <span className="ml-2 text-xs text-vb-text-muted">your coach</span>
+            <p className="f-kicker mt-1 text-white/50">
+              {nextGoal.priority?.replace("_", "-")} · {formatDate(nextGoal.event_date)}
             </p>
-          </SeatedBanner>
-        </div>
+          </div>
+          <div className="hidden shrink-0 border-l border-white/15 pl-6 text-right sm:block">
+            <p className="f-kicker text-white/50">Form · TSB</p>
+            <p className={cn("f-data mt-1 text-3xl font-bold leading-none", tsb >= 0 ? "text-vb-red" : "text-white")}>
+              {tsb > 0 ? `+${tsb}` : tsb}
+            </p>
+            <p className="f-kicker mt-1 text-white/50">
+              {tsb > 10 ? "Fresh" : tsb < -20 ? "Deep fatigue" : "On track"}
+            </p>
+          </div>
+        </section>
+      )}
+
+      {/* ============ TODAY'S SESSION ============ */}
+      {todaySession && sessionZone ? (
+        <section className="f-rise flex flex-col gap-4 border border-vb-border bg-vb-surface p-5 sm:flex-row sm:items-center md:px-8 md:py-6">
+          <div className="min-w-0 flex-1">
+            <p className="f-kicker flex items-center gap-2">
+              <span
+                className="inline-block h-2.5 w-2.5"
+                style={{ background: ZONES[sessionZone.z as keyof typeof ZONES] }}
+              />
+              <span className="text-vb-text-muted">
+                Today · {sessionZone.z.toUpperCase()} · {sessionZone.name}
+              </span>
+            </p>
+            <p className="f-display mt-2 text-2xl leading-tight md:text-3xl">
+              {todaySession.title}
+            </p>
+            <p className="f-data mt-1.5 text-xs text-vb-text-dim">
+              {todaySession.planned_duration_seconds
+                ? formatDuration(todaySession.planned_duration_seconds)
+                : ""}
+              {todaySession.planned_tss ? ` · ${Math.round(todaySession.planned_tss)} TSS` : ""}
+              {todaySession.status === "completed" ? " · done ✓" : ""}
+            </p>
+          </div>
+          {todaySession.status !== "completed" && (
+            <Link
+              href={`/dashboard/training/${todaySession.id}/session`}
+              className={cn(buttonVariants({ variant: "flamme" }), "shrink-0 self-start sm:self-center")}
+            >
+              Start ride <span className="f-arrow-head">→</span>
+            </Link>
+          )}
+        </section>
+      ) : (
+        <section className="f-rise border border-vb-border-subtle bg-vb-surface px-5 py-5 md:px-8">
+          <p className="f-kicker text-vb-text-muted">Today</p>
+          <p className="mt-1.5 text-base text-vb-text-dim">
+            Nothing on the sheet. Feet up, or spin easy. Even Coppi took rest days.
+          </p>
+        </section>
       )}
 
       {/* ============ FITNESS STAT STRIP ============ */}
@@ -173,25 +316,41 @@ export default function DashboardPage() {
         />
       </section>
 
-      {/* ============ THE DAILY LINE (quote / wisdom) ============ */}
-      {daily && (
-        <section className="f-rise border-y border-vb-border bg-vb-surface px-6 py-8 md:px-10 md:py-10">
-          <Kicker className="text-vb-text-muted">
-            {daily.tag === "wisdom" ? "Daily wisdom" : "Daily quote"}
-          </Kicker>
-          <blockquote className="mt-4 max-w-3xl">
-            <p className="f-display text-2xl leading-snug text-vb-text md:text-3xl">
-              &ldquo;{daily.text}&rdquo;
-            </p>
-          </blockquote>
-          <p className="f-kicker mt-5 text-vb-text-dim">
-            {daily.detail || daily.author}
-          </p>
-          {daily.context && (
-            <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-vb-text-muted">
-              {daily.context}
-            </p>
-          )}
+      {/* ============ THE CLIMB — 12 weeks of work ============ */}
+      {climbWeeks.length > 1 && (
+        <section className="f-rise">
+          <SectionHeader
+            kicker="The climb · 12 weeks"
+            title="How far you've come"
+            action={
+              fitness?.ramp_rate != null && fitness.ramp_rate !== 0 ? (
+                <span className="f-data text-sm text-vb-text-dim">
+                  {fitness.ramp_rate > 0 ? "+" : ""}
+                  {Math.round(fitness.ramp_rate)} CTL/wk
+                </span>
+              ) : undefined
+            }
+          />
+          <div className="flex h-36 items-end gap-1.5 md:h-44 md:gap-2">
+            {climbWeeks.map((w, i) => {
+              const isNow = i === climbWeeks.length - 1;
+              return (
+                <div
+                  key={w.week_start}
+                  title={`${w.week_start} · ${Math.round(w.total_tss || 0)} TSS`}
+                  className="flex-1"
+                  style={{
+                    height: `${Math.max(5, ((w.total_tss || 0) / maxTss) * 100)}%`,
+                    background: isNow ? "#FF3D00" : CLIMB_RAMP[Math.min(i, CLIMB_RAMP.length - 1)],
+                  }}
+                />
+              );
+            })}
+          </div>
+          <div className="mt-2 flex items-center justify-between">
+            <span className="f-kicker text-vb-text-muted">12 weeks ago</span>
+            <span className="f-kicker text-vb-red">You are here</span>
+          </div>
         </section>
       )}
 
@@ -221,11 +380,11 @@ export default function DashboardPage() {
           </Link>
         ))}
 
-      {/* ============ LATEST DEBRIEF (seated banner) ============ */}
+      {/* ============ LATEST DEBRIEF (rail card — Forma speaks) ============ */}
       {latestDebrief && latestRide && (() => {
         const zone = zoneFromIF(latestRide.intensity_factor);
         return (
-          <SeatedBanner src={`/orbs/${zone.orb}-seated.webp`}>
+          <section className="f-rise border border-vb-border-subtle border-l-[3px] border-l-vb-red bg-vb-surface p-6 md:p-8">
             <ZoneChip color={zone.color}>
               {zone.name} · {zone.key.toUpperCase()}
             </ZoneChip>
@@ -246,7 +405,7 @@ export default function DashboardPage() {
             >
               Full ride <span className="f-arrow-head">→</span>
             </Link>
-          </SeatedBanner>
+          </section>
         );
       })()}
 

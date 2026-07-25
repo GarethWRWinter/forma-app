@@ -50,7 +50,9 @@ Forma is a **flamme dot**, no avatar, no face, no disc. `CoachDot` in `component
 
 ## Brand imagery — the Abstract (ink-dispersion terrain)
 
-The second imagery register beside hard photography: **iconic climbs rendered as ink-in-water abstractions** (exemplar: Sa Calobra, its 26 stacked switchbacks read as flow and sediment). Softer, editorial — for covers, chapter breaks, hero art and merch, not UI chrome.
+The second imagery register beside hard photography: **iconic climbs rendered as ink-in-water abstractions** (exemplar: Sa Calobra, its 26 stacked switchbacks read as flow and sediment). Source set: `frontend/public/inkscapes/` (Ventoux, Stelvio, Sa Calobra, Tourmalet + two road-art plates), rotated daily in the app via `lib/dailyInkscape.ts`.
+- **IN THE APP this register IS the imagery** — the TODAY hero is a daily inkscape with the daily quote overlaid (chalk display text on a dark scrim, IB2 lockup, mono kite-marked attribution).
+- **Orbs are editorial-only** (blog, covers, merch, guidelines) — they no longer appear inside app surfaces (decision 2026-07-25).
 - Lockup over the art: **chalk wordmark + flamme kite** (IB2, the approved treatment; all-chalk IB1 is the quiet fallback). Never ink-on-ink.
 - The lockup sits in the **quiet corner**, clear of the busiest ink.
 - Caption pattern: mono kicker, `SA CALOBRA · 26 BENDS`.
