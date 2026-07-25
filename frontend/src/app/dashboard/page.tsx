@@ -220,17 +220,16 @@ export default function DashboardPage() {
       {nextGoal && (
         <section className="f-rise flex items-center gap-4 bg-[#101012] px-5 py-5 text-white md:gap-6 md:px-8">
           <div
-            className="relative flex h-16 w-[74px] shrink-0 flex-col items-center bg-vb-red pt-2"
+            className="flex h-14 w-16 shrink-0 items-start justify-center bg-vb-red pt-2.5 sm:h-16 sm:w-[74px]"
             style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }}
           >
-            <span className="f-data text-xl font-bold leading-none">
+            <span className="f-data text-xl font-bold leading-none sm:text-2xl">
               {nextGoal.days_until}
             </span>
-            <span className="f-kicker mt-0.5 text-[8px] text-white/85">days</span>
           </div>
           <div className="min-w-0 flex-1">
             <p className="f-kicker text-vb-red">Your goal · {nextGoal.days_until} days out</p>
-            <p className="f-display mt-1 truncate text-xl leading-tight md:text-2xl">
+            <p className="f-display mt-1 line-clamp-2 text-lg leading-tight sm:text-xl md:text-2xl">
               {nextGoal.event_name}
             </p>
             <p className="f-kicker mt-1 text-white/50">
