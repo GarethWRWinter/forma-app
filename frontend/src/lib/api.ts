@@ -819,6 +819,46 @@ export const inspiration = {
   today: () => request<DailyInspiration>("/inspiration/today"),
 };
 
+// === Palmarès ===
+
+export interface PalmaresGoal {
+  id: string;
+  name: string;
+  date: string;
+  year: number | null;
+  priority: string;
+  event_type: string;
+  status: string;
+  achieved: boolean;
+  satisfaction: number | null;
+  assessed: boolean;
+}
+
+export interface PalmaresRecord {
+  key: string;
+  label: string;
+  value: string;
+  unit: string;
+  detail: string;
+}
+
+export interface Palmares {
+  goals: PalmaresGoal[];
+  records: PalmaresRecord[];
+  totals: { rides: number; km: number; hours: number };
+  milestones: { key: string; text: string }[];
+  segment_prs: {
+    name: string;
+    time_seconds: number;
+    date: string | null;
+    distance_m: number | null;
+  }[];
+}
+
+export const palmares = {
+  get: () => request<Palmares>("/palmares"),
+};
+
 // === Chat ===
 
 export interface ChatSession {

@@ -317,6 +317,30 @@ Sequenced by dependency and user impact. The architecture below uses `forma-core
 
 ---
 
+## Palmarès — the trophy cabinet (added 2026-07-25)
+
+**Purpose.** The retention organ: a rider's whole story of achievement, rendered so opening it
+feels like opening a drawer of medals. Emotional connection = progress made visible. Nav: PALMARÈS.
+
+**Structure (decided, tiered):**
+- **The Cabinet** (rare, earned): conquered goals and true records. Goals enter when raced —
+  *attempts honoured*: `completed` goals carry flamme, `dnf`/`dns`/missed-target entries stay in
+  quiet ink with an honest line ("Finished, 14 min outside target"). A coach honours the attempt.
+- **The Log** (alive, quieter): Strava segment PRs, achievement counts, and a SMALL set of
+  coach-voiced milestones ("Ten thousand kilometres since we started") — no badge spam, no
+  confetti, premium restraint.
+- **Records tracked:** FTP peak (+delta), best 5s/1min/5min/20min power, longest ride, biggest
+  day (TSS), biggest week, all-time totals (rides, km, hours).
+
+**Share cards (v1, decided):** any Cabinet entry exports a beautiful 1080×1350 card (inkscape
+ground, kite mark, mono attribution) for social — organic growth from day one.
+
+**Design language:** the kite IS the trophy — a pennant wall, like race pennants in a clubhouse.
+Reverse-chronological seasons like a pro's palmarès in a race programme.
+
+**Data sources (all existing):** goal_events (+status/assessment), all-time power profile,
+ftp_history, ride aggregates, segment_efforts.pr_rank, weekly load.
+
 ## Appendix A — Current state inventory (5 May 2026)
 
 This is what exists today, walked from the live URL.

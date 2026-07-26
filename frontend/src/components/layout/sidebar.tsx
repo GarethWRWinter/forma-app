@@ -23,6 +23,7 @@ const navItems = [
   { href: "/dashboard/training", label: "Plan" },
   { href: "/dashboard/brain", label: "Brain" },
   { href: "/dashboard/goals", label: "Goals" },
+  { href: "/dashboard/palmares", label: "Palmarès" },
   { href: "/dashboard/settings", label: "Settings" },
 ];
 
