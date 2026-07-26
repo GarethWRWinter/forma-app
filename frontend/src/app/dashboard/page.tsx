@@ -515,6 +515,7 @@ export default function DashboardPage() {
                   strengths={fitness.strengths}
                   weaknesses={fitness.weaknesses}
                   compact
+                  height={340}
                 />
                 <p className="f-kicker mt-2 text-vb-text-muted">
                   Rings · 25 / 50 / 75 / 100 percentile

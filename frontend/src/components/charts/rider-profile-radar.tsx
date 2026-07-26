@@ -21,6 +21,8 @@ interface RiderProfileRadarProps {
   strengths: string[];
   weaknesses: string[];
   compact?: boolean;
+  /** Explicit chart height in px — overrides the compact/full defaults. */
+  height?: number;
   className?: string;
 }
 
@@ -59,6 +61,7 @@ export function RiderProfileRadar({
   strengths,
   weaknesses,
   compact = false,
+  height,
   className,
 }: RiderProfileRadarProps) {
   const radarData = scores.map((s) => ({
@@ -71,8 +74,8 @@ export function RiderProfileRadar({
   const typeLabel = RIDER_TYPE_LABELS[riderType] || RIDER_TYPE_LABELS.unknown;
   const hasData = scores.some((s) => s.score > 0);
 
-  const chartHeight = compact ? 200 : 280;
-  const outerRadius = compact ? "70%" : "75%";
+  const chartHeight = height ?? (compact ? 200 : 280);
+  const outerRadius = compact && !height ? "70%" : "78%";
   const tickFontSize = compact ? 10 : 11;
   const dotRadius = compact ? 2.5 : 3;
 
