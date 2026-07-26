@@ -26,6 +26,39 @@ import { buttonVariants } from "@/components/ui/button";
  * Hairline editorial rows, huge numbers, Forma speaking from the rail.
  */
 
+// One-line verdict per rider type: the carbon band's insight. Teach,
+// never condescend; no dashes (typography law).
+const RIDER_TYPE_VERDICT: Record<string, string> = {
+  all_rounder:
+    "No single spike, you're competitive across every system. Your edge is versatility; your ceiling comes from sharpening the tails.",
+  sprinter:
+    "Explosive top end, the final 200 metres belong to you. The work is carrying that weapon over the climbs to the finish.",
+  climber:
+    "You go up better than you go along. Your races are decided where the road tilts; protect the watts per kilo.",
+  time_trialist:
+    "A diesel engine that holds monstrous steady power. Your race is against the clock, and the clock is losing.",
+  puncheur:
+    "Short, sharp and vicious. Five-minute power is your weapon; pick finishes with a wall in the last kilometre.",
+  pursuiter:
+    "Big engine in the three-to-eight-minute range. Track DNA on the road; break away and stay away.",
+  rouleur:
+    "Strong everywhere the road is flat and hard. Wind, cobbles and long ranges are where you collect victims.",
+};
+
+// Physiological system → its TRUE zone ink. Data colours mean the data:
+// endurance is Z2 work, threshold Z4, VO2 Z5, anaerobic Z6, sprint Z7.
+const SYSTEM_ZONE_COLOR: Record<string, string> = {
+  endurance: "#4A72AE",
+  tempo: "#439D7C",
+  sustained: "#439D7C",
+  threshold: "#D9AC34",
+  vo2max: "#E86F22",
+  vo2: "#E86F22",
+  anaerobic: "#D92420",
+  sprint: "#B81743",
+  neuromuscular: "#B81743",
+};
+
 export default function DashboardPage() {
   const { user } = useAuth();
 
@@ -142,10 +175,11 @@ export default function DashboardPage() {
     ? WORKOUT_ZONE[todaySession.workout_type] || { z: "z2", name: todaySession.workout_type }
     : null;
 
-  // The climb: 12 weeks of load, coloured cold→hot, current week flamme.
+  // The climb: 12 weeks of work. Height is HOW MUCH (TSS), colour is HOW
+  // HARD (the week's average intensity, mapped to its true training zone).
+  // Zone inks are data colours: they must mean the data, never decoration.
   const climbWeeks = weeklyLoad?.weeks ?? [];
   const maxTss = Math.max(1, ...climbWeeks.map((w) => w.total_tss || 0));
-  const CLIMB_RAMP = [ZONES.z2, ZONES.z2, ZONES.z2, ZONES.z3, ZONES.z3, ZONES.z3, ZONES.z4, ZONES.z4, ZONES.z4, ZONES.z5, ZONES.z5] as string[];
 
   return (
     <div className="space-y-12 md:space-y-14">
@@ -333,16 +367,35 @@ export default function DashboardPage() {
           <div className="flex h-36 items-end gap-1.5 md:h-44 md:gap-2">
             {climbWeeks.map((w, i) => {
               const isNow = i === climbWeeks.length - 1;
+              const hasWork = (w.total_tss || 0) > 0;
+              const zone = hasWork ? zoneFromIF(w.avg_intensity_factor) : null;
               return (
                 <div
                   key={w.week_start}
-                  title={`${w.week_start} · ${Math.round(w.total_tss || 0)} TSS`}
-                  className="flex-1"
-                  style={{
-                    height: `${Math.max(5, ((w.total_tss || 0) / maxTss) * 100)}%`,
-                    background: isNow ? "#FF3D00" : CLIMB_RAMP[Math.min(i, CLIMB_RAMP.length - 1)],
-                  }}
-                />
+                  className="relative flex h-full flex-1 flex-col items-center justify-end"
+                  title={
+                    hasWork
+                      ? `${w.week_start} · ${Math.round(w.total_tss || 0)} TSS · ${zone?.name ?? ""}`
+                      : `${w.week_start} · no riding logged`
+                  }
+                >
+                  {isNow && (
+                    <span
+                      className="mb-1 inline-block h-[7px] w-[9px] bg-vb-red"
+                      style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }}
+                      aria-hidden
+                    />
+                  )}
+                  <div
+                    className="w-full"
+                    style={{
+                      height: hasWork
+                        ? `${Math.max(4, ((w.total_tss || 0) / maxTss) * 100)}%`
+                        : "2px",
+                      background: zone ? zone.color : "#E7E7E1",
+                    }}
+                  />
+                </div>
               );
             })}
           </div>
@@ -350,6 +403,11 @@ export default function DashboardPage() {
             <span className="f-kicker text-vb-text-muted">12 weeks ago</span>
             <span className="f-kicker text-vb-red">You are here</span>
           </div>
+          <p className="mt-2 text-xs leading-relaxed text-vb-text-muted">
+            Height is how much work each week held. Colour is how hard it was:
+            blue and green weeks build the engine, gold and orange weeks
+            sharpen it.
+          </p>
         </section>
       )}
 
@@ -408,12 +466,12 @@ export default function DashboardPage() {
         );
       })()}
 
-      {/* ============ RIDER PROFILE ============ */}
+      {/* ============ RIDER PROFILE — the verdict ============ */}
       {fitness &&
         fitness.rider_type !== "unknown" &&
         fitness.profile_scores &&
         fitness.profile_scores.length > 0 && (
-          <section>
+          <section className="f-rise">
             <SectionHeader
               kicker="Profile"
               title="Rider type"
@@ -426,57 +484,102 @@ export default function DashboardPage() {
                 </Link>
               }
             />
-            <Card>
-              <CardBody className="px-6 py-7 md:px-8">
-                <div className="mb-6 flex flex-wrap items-baseline gap-3">
-                  <span className="f-display text-2xl capitalize leading-none">
-                    {fitness.rider_type.replace("_", " ")}
+            {/* Carbon verdict band */}
+            <div className="flex flex-col gap-3 bg-[#101012] px-6 py-6 text-white sm:flex-row sm:items-center sm:gap-8 md:px-8">
+              <div className="flex shrink-0 items-baseline gap-5">
+                <span className="f-display text-3xl capitalize leading-none md:text-4xl">
+                  {fitness.rider_type.replace("_", " ")}
+                </span>
+                {fitness.w_per_kg && (
+                  <span className="f-data whitespace-nowrap text-2xl font-bold leading-none text-vb-red md:text-3xl">
+                    {fitness.w_per_kg.toFixed(2)}
+                    <span className="ml-1 text-xs font-medium text-white/60">W/kg</span>
                   </span>
-                  {fitness.w_per_kg && (
-                    <span className="f-data text-sm text-vb-text-dim">
-                      {fitness.w_per_kg.toFixed(2)} W/kg
-                    </span>
-                  )}
-                </div>
-                <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-start sm:gap-10">
-                  <div className="w-[200px] shrink-0 sm:w-[240px]">
-                    <RiderProfileRadar
-                      scores={fitness.profile_scores}
-                      riderType={fitness.rider_type ?? "unknown"}
-                      strengths={fitness.strengths}
-                      weaknesses={fitness.weaknesses}
-                      compact
-                    />
+                )}
+              </div>
+              <p className="max-w-xl border-white/15 text-sm leading-relaxed text-white/80 sm:border-l sm:pl-8">
+                {RIDER_TYPE_VERDICT[fitness.rider_type] ||
+                  "Every ride teaches Forma more about the shape of your engine."}
+              </p>
+            </div>
+
+            {/* Radar + per-system bars */}
+            <div className="grid gap-8 border border-t-0 border-vb-border-subtle bg-vb-surface p-6 md:grid-cols-[minmax(240px,1fr)_1.4fr] md:gap-10 md:p-8">
+              <div>
+                <Kicker className="mb-3 text-vb-text-muted">
+                  Power profile · Pentagon
+                </Kicker>
+                <RiderProfileRadar
+                  scores={fitness.profile_scores}
+                  riderType={fitness.rider_type ?? "unknown"}
+                  strengths={fitness.strengths}
+                  weaknesses={fitness.weaknesses}
+                  compact
+                />
+                <p className="f-kicker mt-2 text-vb-text-muted">
+                  Rings · 25 / 50 / 75 / 100 percentile
+                </p>
+              </div>
+              <div>
+                <Kicker className="mb-4 text-vb-text-muted">
+                  By system · Percentile vs field
+                </Kicker>
+                <ul className="space-y-3.5">
+                  {fitness.profile_scores.map((s) => {
+                    const color =
+                      SYSTEM_ZONE_COLOR[s.category] ||
+                      SYSTEM_ZONE_COLOR[s.label.toLowerCase()] ||
+                      "#9A9A94";
+                    return (
+                      <li key={s.category} className="flex items-center gap-4">
+                        <span className="f-kicker w-24 shrink-0 text-vb-text-dim">
+                          {s.label.replace(/ \(.*\)/, "")}
+                        </span>
+                        <span className="h-4 flex-1 bg-vb-sunken">
+                          <span
+                            className="block h-full"
+                            style={{
+                              width: `${Math.max(2, Math.min(100, s.score))}%`,
+                              background: color,
+                            }}
+                          />
+                        </span>
+                        <span className="f-data w-9 shrink-0 text-right text-lg font-bold">
+                          {Math.round(s.score)}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {fitness.weaknesses.length > 0 && (
+                  <div className="mt-6 border-t border-vb-border-subtle pt-5">
+                    <Kicker flamme className="mb-1.5">
+                      To work on
+                    </Kicker>
+                    <p className="mb-3 text-xs leading-relaxed text-vb-text-dim">
+                      Your lowest systems, where the next gains are hiding.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {fitness.weaknesses.map((w) => (
+                        <span
+                          key={w}
+                          className="f-kicker flex items-center gap-1.5 border border-vb-border px-2.5 py-1.5 text-vb-text"
+                        >
+                          <span
+                            className="inline-block h-2 w-2"
+                            style={{
+                              background:
+                                SYSTEM_ZONE_COLOR[w.toLowerCase()] || "#9A9A94",
+                            }}
+                          />
+                          {w}
+                        </span>
+                      ))}
+                    </div>
                   </div>
-                  <div className="flex flex-1 flex-col gap-4">
-                    {fitness.strengths.length > 0 && (
-                      <div>
-                        <Kicker className="mb-2">Strengths</Kicker>
-                        <div className="flex flex-wrap gap-2">
-                          {fitness.strengths.map((s) => (
-                            <Badge key={s} variant="chalk">
-                              {s}
-                            </Badge>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {fitness.weaknesses.length > 0 && (
-                      <div>
-                        <Kicker className="mb-2">To work on</Kicker>
-                        <div className="flex flex-wrap gap-2">
-                          {fitness.weaknesses.map((w) => (
-                            <Badge key={w} variant="outline">
-                              {w}
-                            </Badge>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </CardBody>
-            </Card>
+                )}
+              </div>
+            </div>
           </section>
         )}
 
