@@ -12,7 +12,8 @@ import { Kicker } from "@/components/ui/kicker";
 import { SectionHeader } from "@/components/ui/section-header";
 import { DataTile } from "@/components/ui/data-tile";
 import { ZoneChip } from "@/components/ui/seated-banner";
-import { zoneFromIF } from "@/lib/zones";
+import { zoneFromIF, zoneFromPct } from "@/lib/zones";
+import type { WorkoutStep } from "@/lib/api";
 import { ZONES } from "@/lib/palette";
 import { dailyInkscape, WORKOUT_ZONE } from "@/lib/dailyInkscape";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -44,6 +45,42 @@ const RIDER_TYPE_VERDICT: Record<string, string> = {
   rouleur:
     "Strong everywhere the road is flat and hard. Wind, cobbles and long ranges are where you collect victims.",
 };
+
+/** The planned session's fingerprint: each step as a zone-coloured block,
+    width = its share of the ride, height + colour = how hard. The rider
+    sees the whole effort before clipping in. */
+function WorkoutShape({ steps }: { steps: WorkoutStep[] }) {
+  const segs: { dur: number; pct: number }[] = [];
+  for (const s of [...steps].sort((a, b) => a.step_order - b.step_order)) {
+    const pct =
+      s.power_target_pct ??
+      (s.power_low_pct != null && s.power_high_pct != null
+        ? (s.power_low_pct + s.power_high_pct) / 2
+        : 50);
+    const reps = Math.max(1, s.repeat_count ?? 1);
+    for (let r = 0; r < reps; r++) segs.push({ dur: s.duration_seconds, pct });
+  }
+  const total = segs.reduce((a, s) => a + s.dur, 0);
+  if (!segs.length || total <= 0) return null;
+  const maxPct = Math.max(...segs.map((s) => s.pct), 1);
+  return (
+    <span
+      className="mt-3 flex h-9 w-full max-w-[420px] items-end gap-px"
+      aria-label="Planned session shape"
+    >
+      {segs.map((s, i) => (
+        <span
+          key={i}
+          style={{
+            width: `${(s.dur / total) * 100}%`,
+            height: `${Math.max(12, (s.pct / maxPct) * 100)}%`,
+            background: zoneFromPct(s.pct).color,
+          }}
+        />
+      ))}
+    </span>
+  );
+}
 
 // Physiological system → its TRUE zone ink. Data colours mean the data:
 // endurance is Z2 work, threshold Z4, VO2 Z5, anaerobic Z6, sprint Z7.
@@ -107,6 +144,16 @@ export default function DashboardPage() {
   const { data: todayWorkouts } = useQuery({
     queryKey: ["today-workouts", todayISO],
     queryFn: () => training.getWorkouts(todayISO),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  // The planned session's structure (steps live on the detail endpoint)
+  const todayId = todayWorkouts?.find((w) => w.status !== "skipped")?.id;
+  const { data: todayDetail } = useQuery({
+    queryKey: ["today-workout-detail", todayId],
+    queryFn: () => training.getWorkout(todayId!),
+    enabled: !!todayId,
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
@@ -305,6 +352,9 @@ export default function DashboardPage() {
               {todaySession.planned_tss ? ` · ${Math.round(todaySession.planned_tss)} TSS` : ""}
               {todaySession.status === "completed" ? " · done ✓" : ""}
             </p>
+            {todayDetail?.steps && todayDetail.steps.length > 0 && (
+              <WorkoutShape steps={todayDetail.steps} />
+            )}
           </div>
           {todaySession.status !== "completed" && (
             <Link

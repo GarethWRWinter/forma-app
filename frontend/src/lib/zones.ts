@@ -51,6 +51,18 @@ export function zoneFromIF(intensityFactor: number | null | undefined): ZoneInfo
 }
 
 /** Map a planned workout_type string (e.g. "endurance", "vo2max") to a zone. */
+/** Zone from a %FTP power target (Coggan bands). */
+export function zoneFromPct(pct: number | null | undefined): ZoneInfo {
+  const p = pct ?? 50;
+  if (p <= 55) return ZONES.z1;
+  if (p <= 75) return ZONES.z2;
+  if (p <= 90) return ZONES.z3;
+  if (p <= 105) return ZONES.z4;
+  if (p <= 120) return ZONES.z5;
+  if (p <= 150) return ZONES.z6;
+  return ZONES.z7;
+}
+
 export function zoneFromWorkoutType(workoutType: string | null | undefined): ZoneInfo {
   const t = (workoutType ?? "").toLowerCase();
   if (t.includes("recovery") || t.includes("rest")) return ZONES.z1;
