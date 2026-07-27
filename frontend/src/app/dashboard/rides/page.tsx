@@ -7,7 +7,8 @@ import { useRef, useState } from "react";
 import { rides, type Ride } from "@/lib/api";
 import { formatDate, formatDuration, formatPower, formatTSS } from "@/lib/utils";
 import { ZONES } from "@/lib/palette";
-import { rideStory, dominantZone, zoneSeconds } from "@/lib/rideStory";
+import { rideStory, dominantZone } from "@/lib/rideStory";
+import { RideShape, ZoneStrip } from "@/components/ui/ride-shape";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Kicker } from "@/components/ui/kicker";
@@ -29,59 +30,6 @@ const ZONE_LABELS: Record<string, string> = {
   z6: "Anaerobic",
   z7: "Sprint",
 };
-
-/** The ride's fingerprint: power over time as zone-coloured bars. You can
-    SEE the workout — warmup, blocks, recoveries — before reading a word. */
-function RideShape({ ride }: { ride: Ride }) {
-  const shape = ride.zone_summary?.shape;
-  if (!shape || !shape.length) return null;
-  const keys = ["z1", "z2", "z3", "z4", "z5", "z6", "z7"] as const;
-  return (
-    <span
-      className="mt-2.5 flex h-8 w-full max-w-[280px] items-end gap-px"
-      aria-label="Ride power shape"
-    >
-      {shape.map(([h, z], i) => (
-        <span
-          key={i}
-          className="flex-1"
-          style={{
-            height: `${h}%`,
-            background: ZONES[keys[(z || 1) - 1]],
-          }}
-        />
-      ))}
-    </span>
-  );
-}
-
-/** The ride's zones as proportional colour blocks — the shape of the effort
-    at a glance. Zone inks are data colours; this is data. */
-function ZoneStrip({ ride }: { ride: Ride }) {
-  const secs = zoneSeconds(ride);
-  if (!secs) return null;
-  const total = secs.reduce((a, b) => a + b, 0);
-  if (total <= 0) return null;
-  const keys = ["z1", "z2", "z3", "z4", "z5", "z6", "z7"] as const;
-  return (
-    <span
-      className="mt-2 flex h-1.5 w-full max-w-[280px] overflow-hidden"
-      aria-label="Time in zones"
-    >
-      {secs.map((s, i) =>
-        s / total >= 0.02 ? (
-          <span
-            key={keys[i]}
-            style={{
-              width: `${(s / total) * 100}%`,
-              background: ZONES[keys[i]],
-            }}
-          />
-        ) : null
-      )}
-    </span>
-  );
-}
 
 /** Dominant-zone tag: a small colour block + the zone's name in mono. */
 function ZoneTag({ ride }: { ride: Ride }) {
@@ -243,8 +191,8 @@ export default function RidesPage() {
                         {ride.story || rideStory(ride)}
                       </p>
                     )}
-                    <RideShape ride={ride} />
-                    <ZoneStrip ride={ride} />
+                    <RideShape ride={ride} className="mt-2.5" />
+                    <ZoneStrip ride={ride} className="mt-1" />
                   </div>
 
                   {/* Compact numbers row, visible always, repositioned on lg */}

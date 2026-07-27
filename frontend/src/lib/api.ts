@@ -157,13 +157,13 @@ export const auth = {
       body: JSON.stringify({ email, password, full_name: fullName }),
     }),
 
-  login: async (email: string, password: string) => {
+  login: async (email: string, password: string, rememberMe: boolean = true) => {
     const data = await request<{
       access_token: string;
       refresh_token: string;
     }>("/auth/login", {
       method: "POST",
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, remember_me: rememberMe }),
     });
     setTokens(data.access_token, data.refresh_token);
     return data;

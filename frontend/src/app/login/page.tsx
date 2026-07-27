@@ -14,6 +14,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
@@ -25,7 +26,7 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      await login(email, password);
+      await login(email, password, rememberMe);
       router.push("/dashboard");
     } catch (err: unknown) {
       const msg =
@@ -102,6 +103,29 @@ export default function LoginPage() {
               </button>
             </div>
           </div>
+
+          <label className="flex cursor-pointer select-none items-center gap-2.5">
+            <button
+              type="button"
+              role="checkbox"
+              aria-checked={rememberMe}
+              onClick={() => setRememberMe((v) => !v)}
+              className={
+                "flex h-4 w-4 shrink-0 items-center justify-center border transition-colors " +
+                (rememberMe ? "border-vb-red bg-vb-red" : "border-vb-border bg-vb-surface")
+              }
+            >
+              {rememberMe && (
+                <span className="text-[10px] leading-none text-white">✓</span>
+              )}
+            </button>
+            <span
+              className="f-kicker text-vb-text-dim"
+              onClick={() => setRememberMe((v) => !v)}
+            >
+              Keep me logged in for 30 days
+            </span>
+          </label>
 
           <Button type="submit" variant="flamme" size="lg" disabled={loading} className="w-full">
             {loading ? "Logging in…" : <>Log in <Arrow /></>}

@@ -27,12 +27,15 @@ def create_access_token(user_id: str) -> str:
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
 
 
-def create_refresh_token(user_id: str, jti: str | None = None) -> str:
+def create_refresh_token(
+    user_id: str, jti: str | None = None, days: int | None = None
+) -> str:
     """Refresh token carrying a `jti` that maps to a RefreshToken row, so the
     token can be revoked and rotated. `jti` is optional only for throwaway
-    (dev) minting; the auth flow always supplies one tied to a DB record."""
+    (dev) minting; the auth flow always supplies one tied to a DB record.
+    `days` overrides the default lifetime (remember-me sessions)."""
     expire = datetime.now(timezone.utc) + timedelta(
-        days=settings.refresh_token_expire_days
+        days=days or settings.refresh_token_expire_days
     )
     to_encode = {"sub": user_id, "exp": expire, "type": "refresh"}
     if jti is not None:

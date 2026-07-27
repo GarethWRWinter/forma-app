@@ -13,7 +13,7 @@ import { auth, users, type UserProfile } from "./api";
 interface AuthContextType {
   user: UserProfile | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, rememberMe?: boolean) => Promise<void>;
   register: (email: string, password: string, name?: string) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
@@ -42,8 +42,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [refreshUser]);
 
-  const login = async (email: string, password: string) => {
-    await auth.login(email, password);
+  const login = async (email: string, password: string, rememberMe: boolean = true) => {
+    await auth.login(email, password, rememberMe);
     await refreshUser();
   };
 

@@ -15,22 +15,32 @@ from app.models.base import generate_uuid
 from app.models.refresh_token import RefreshToken
 
 
-def _new_refresh_record(db: Session, user_id: str, family_id: str) -> str:
+def _new_refresh_record(
+    db: Session, user_id: str, family_id: str, days: int | None = None
+) -> str:
     jti = generate_uuid()
     db.add(RefreshToken(
         id=jti,
         user_id=user_id,
         family_id=family_id,
-        expires_at=datetime.utcnow() + timedelta(days=settings.refresh_token_expire_days),
+        expires_at=datetime.utcnow()
+        + timedelta(days=days or settings.refresh_token_expire_days),
     ))
     return jti
 
 
-def issue_pair(db: Session, user_id: str) -> tuple[str, str]:
-    """Fresh login → a new token family. Returns (access, refresh)."""
-    jti = _new_refresh_record(db, user_id, family_id=generate_uuid())
+def issue_pair(
+    db: Session, user_id: str, remember_me: bool = False
+) -> tuple[str, str]:
+    """Fresh login → a new token family. Returns (access, refresh).
+
+    remember_me extends the session (default 30 days vs 7); the lifetime
+    is preserved across rotations by deriving it from the prior record.
+    """
+    days = settings.remember_me_expire_days if remember_me else None
+    jti = _new_refresh_record(db, user_id, family_id=generate_uuid(), days=days)
     db.commit()
-    return create_access_token(user_id), create_refresh_token(user_id, jti)
+    return create_access_token(user_id), create_refresh_token(user_id, jti, days=days)
 
 
 def rotate(db: Session, refresh_jwt: str) -> tuple[str, str]:
@@ -56,11 +66,18 @@ def rotate(db: Session, refresh_jwt: str) -> tuple[str, str]:
     if rec.expires_at < datetime.utcnow():
         raise UnauthorizedException(detail="Refresh token expired")
 
-    new_jti = _new_refresh_record(db, user_id, family_id=rec.family_id)
+    # Preserve the session's chosen lifetime (remember-me) across rotations
+    # by re-deriving it from the outgoing record.
+    lifetime_days = max(1, (rec.expires_at - rec.issued_at).days) or None
+    new_jti = _new_refresh_record(
+        db, user_id, family_id=rec.family_id, days=lifetime_days
+    )
     rec.revoked_at = datetime.utcnow()
     rec.replaced_by_id = new_jti
     db.commit()
-    return create_access_token(user_id), create_refresh_token(user_id, new_jti)
+    return create_access_token(user_id), create_refresh_token(
+        user_id, new_jti, days=lifetime_days
+    )
 
 
 def revoke_family(db: Session, family_id: str) -> None:

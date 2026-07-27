@@ -53,7 +53,7 @@ def login(user_in: UserLogin, db: Session = Depends(get_db)):
     if not user.is_active or user.deleted_at is not None:
         raise UnauthorizedException(detail="Account is inactive")
 
-    access, refresh = token_service.issue_pair(db, user.id)
+    access, refresh = token_service.issue_pair(db, user.id, remember_me=user_in.remember_me)
     return TokenResponse(access_token=access, refresh_token=refresh)
 
 

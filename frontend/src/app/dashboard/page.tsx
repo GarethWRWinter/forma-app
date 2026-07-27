@@ -14,6 +14,7 @@ import { DataTile } from "@/components/ui/data-tile";
 import { ZoneChip } from "@/components/ui/seated-banner";
 import { zoneFromIF, zoneFromPct } from "@/lib/zones";
 import type { WorkoutStep } from "@/lib/api";
+import { RideShape } from "@/components/ui/ride-shape";
 import { ZONES } from "@/lib/palette";
 import { dailyInkscape, WORKOUT_ZONE } from "@/lib/dailyInkscape";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -674,17 +675,21 @@ export default function DashboardPage() {
                 >
                   <Link
                     href={`/dashboard/rides/${ride.id}`}
-                    className="f-lift -mx-3 flex items-baseline justify-between gap-4 px-3 py-4 transition-colors hover:bg-vb-surface"
+                    className="f-lift -mx-3 flex items-center justify-between gap-4 px-3 py-3.5 transition-colors hover:bg-vb-surface"
                   >
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <Kicker className="mb-0.5">
                         {formatDate(ride.ride_date)}
                         {ride.duration_seconds &&
                           ` · ${formatDuration(ride.duration_seconds)}`}
                       </Kicker>
-                      <p className="truncate font-medium text-vb-text">{ride.title}</p>
+                      <p className="truncate font-medium text-vb-text">
+                        {ride.forma_title || ride.title}
+                      </p>
                     </div>
-                    <div className="f-data flex shrink-0 items-baseline gap-6 text-vb-text">
+                    {/* the fingerprint, compact — same language as the log */}
+                    <RideShape ride={ride} compact className="hidden shrink-0 sm:flex" />
+                    <div className="f-data flex shrink-0 items-baseline gap-5 text-vb-text">
                       {ride.normalized_power != null && (
                         <span className="text-sm">
                           {Math.round(ride.normalized_power)}

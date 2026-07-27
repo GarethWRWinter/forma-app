@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-to-a-random-secret-key"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
+    remember_me_expire_days: int = 30
     algorithm: str = "HS256"
 
     # Encryption for integration tokens at rest (Fernet key, or comma-separated
