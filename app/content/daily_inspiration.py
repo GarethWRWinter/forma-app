@@ -27,13 +27,13 @@ QUOTES: list[dict] = [
     {
         "text": "You are murderers! Yes, murderers!",
         "author": "Octave Lapize",
-        "context": "Shouted at Tour officials on the Tourmalet in 1910, the first crossing of the high Pyrenees — documented in every history of the race",
+        "context": "Shouted at Tour officials on the Tourmalet in 1910, the first crossing of the high Pyrenees. Documented in every history of the race",
         "detail": "OCTAVE LAPIZE · TOURMALET · 1910",
     },
     {
         "text": "The ideal Tour would be one in which only one rider survived the ordeal.",
         "author": "Henri Desgrange",
-        "context": "The Tour's founder — and the first man to set the world hour record, 1893",
+        "context": "The Tour's founder, and the first man to set the world hour record, 1893",
         "detail": "HENRI DESGRANGE · FATHER OF THE TOUR",
     },
     {
@@ -45,7 +45,7 @@ QUOTES: list[dict] = [
     {
         "text": "Good is something you do, not something you talk about. Some medals are pinned to your soul, not to your jacket.",
         "author": "Gino Bartali",
-        "context": "On the things he never mentioned — including cycling secret documents past Nazi checkpoints to save hundreds of Jewish lives",
+        "context": "On the things he never mentioned, including cycling secret documents past Nazi checkpoints to save hundreds of Jewish lives",
         "detail": "GINO BARTALI · GIRO ×3 · TOUR ×2",
     },
     {
@@ -65,7 +65,7 @@ QUOTES: list[dict] = [
     {
         "text": "Ride as much or as little, as long or as short as you feel. But ride.",
         "author": "Eddy Merckx",
-        "context": "The Cannibal's whole philosophy in one sentence — quoted everywhere, including by his own bike company",
+        "context": "The Cannibal's whole philosophy in one sentence, quoted everywhere, including by his own bike company",
         "detail": "EDDY MERCKX · 525 VICTORIES",
     },
     {
@@ -83,7 +83,7 @@ QUOTES: list[dict] = [
     {
         "text": "Put me back on my bike.",
         "author": "Tom Simpson",
-        "context": "The words legend gives him on Mont Ventoux, 1967 — as first reported by Sid Saltmarsh; cycling's most haunting sentence, true in spirit if disputed in letter",
+        "context": "The words legend gives him on Mont Ventoux, 1967, as first reported by Sid Saltmarsh; cycling's most haunting sentence, true in spirit if disputed in letter",
         "detail": "TOM SIMPSON · MONT VENTOUX · 1967",
     },
 
@@ -91,7 +91,7 @@ QUOTES: list[dict] = [
     {
         "text": "As long as I breathe, I attack.",
         "author": "Bernard Hinault",
-        "context": "The Badger's code — 'Tant que je respire, j'attaque' — and he kept to it for five Tours",
+        "context": "The Badger's code, 'Tant que je respire, j'attaque', and he kept to it for five Tours",
         "detail": "BERNARD HINAULT · LE BLAIREAU",
     },
     {
@@ -115,7 +115,7 @@ QUOTES: list[dict] = [
     {
         "text": "To shorten my agony.",
         "author": "Marco Pantani",
-        "context": "Asked by journalist Gianni Mura why he climbed so fast — Tour de France, 1998, the year of the double",
+        "context": "Asked by journalist Gianni Mura why he climbed so fast. Tour de France, 1998, the year of the double",
         "detail": "MARCO PANTANI · IL PIRATA · 1998",
     },
 
@@ -137,13 +137,13 @@ QUOTES: list[dict] = [
     {
         "text": "We're just going to draw the raffle numbers.",
         "author": "Bradley Wiggins",
-        "context": "First words of the winner's speech on the Champs-Élysées, 2012 — the first British Tour winner, pure Kilburn",
+        "context": "First words of the winner's speech on the Champs-Élysées, 2012. The first British Tour winner, pure Kilburn",
         "detail": "SIR BRADLEY WIGGINS · TOUR 2012",
     },
     {
         "text": "This is one yellow jersey that will stand the test of time.",
         "author": "Chris Froome",
-        "context": "From the podium in Paris, 2013 — a pointed promise in a sport rebuilding its word",
+        "context": "From the podium in Paris, 2013. A pointed promise in a sport rebuilding its word",
         "detail": "CHRIS FROOME · TOUR ×4",
     },
 
@@ -151,7 +151,7 @@ QUOTES: list[dict] = [
     {
         "text": "Why so serious?",
         "author": "Peter Sagan",
-        "context": "Three straight world titles, one motto — it's the title of his autobiography",
+        "context": "Three straight world titles, one motto. It's the title of his autobiography",
         "detail": "PETER SAGAN · WORLDS ×3",
     },
     {
@@ -171,19 +171,19 @@ QUOTES: list[dict] = [
     {
         "text": "We're rivals who respect each other a lot. In a way, we're friends too.",
         "author": "Tadej Pogačar",
-        "context": "On Jonas Vingegaard, July 2026 — the duel that defines the era, held with open hands",
+        "context": "On Jonas Vingegaard, July 2026. The duel that defines the era, held with open hands",
         "detail": "TADEJ POGAČAR · ON VINGEGAARD",
     },
     {
         "text": "A few years ago I was working in a fish factory. Now I have won the Tour de France.",
         "author": "Jonas Vingegaard",
-        "context": "Paris, 2022 — from the fish auction in Hirtshals to yellow",
+        "context": "Paris, 2022. From the fish auction in Hirtshals to yellow",
         "detail": "JONAS VINGEGAARD · TOUR ×2",
     },
     {
         "text": "Keep focused, feet on the ground, and work.",
         "author": "Remco Evenepoel",
-        "context": "Rest-day press conference, Tour de France 2026 — the aero bullet's whole method",
+        "context": "Rest-day press conference, Tour de France 2026. The aero bullet's whole method",
         "detail": "REMCO EVENEPOEL · VUELTA + WORLDS + OLYMPICS",
     },
 
@@ -191,19 +191,19 @@ QUOTES: list[dict] = [
     {
         "text": "I would rather finish well up in men's events than win a women's event.",
         "author": "Beryl Burton",
-        "context": "From her autobiography 'Personal Best'. In 1967 she set a 12-hour record beating the men's — offering the men's record holder a liquorice allsort as she rode past",
+        "context": "From her autobiography 'Personal Best'. In 1967 she set a 12-hour record beating the men's, offering the men's record holder a liquorice allsort as she rode past",
         "detail": "BERYL BURTON · BAR ×25 · 1967",
     },
     {
         "text": "I was a double world champion, and it might as well have been the ladies' darts final down at the local as far as Britain was concerned.",
         "author": "Beryl Burton",
-        "context": "From 'Personal Best' — on carrying a sport nobody was watching yet",
+        "context": "From 'Personal Best', on carrying a sport nobody was watching yet",
         "detail": "BERYL BURTON · WORLDS ×7",
     },
     {
         "text": "Winning never gets boring.",
         "author": "Marianne Vos",
-        "context": "The greatest of all time — 250+ wins across road, track and cyclocross — asked why she's still hungry",
+        "context": "The greatest of all time, 250+ wins across road, track and cyclocross, asked why she's still hungry",
         "detail": "MARIANNE VOS · THE GOAT",
     },
     {
@@ -221,11 +221,11 @@ QUOTES: list[dict] = [
     {
         "text": "I had one attack left in my legs, so I had to make it count.",
         "author": "Annemiek van Vleuten",
-        "context": "World champion in Wollongong, 2022 — raced and won with a broken elbow",
+        "context": "World champion in Wollongong, 2022, raced and won with a broken elbow",
         "detail": "ANNEMIEK VAN VLEUTEN · WORLDS 2022",
     },
     {
-        "text": "Getting the best out of yourself — that's what it's really about.",
+        "text": "Getting the best out of yourself, that's what it's really about.",
         "author": "Anna van der Breggen",
         "context": "Seven straight Flèche Wallonne wins, an Olympic title, and this is what she kept",
         "detail": "ANNA VAN DER BREGGEN · FLÈCHE ×7",
@@ -241,7 +241,7 @@ QUOTES: list[dict] = [
     {
         "text": "It is the unknown around the corner that turns my wheels.",
         "author": "Heinz Stücke",
-        "context": "He left home in 1962 and rode 648,000 km through 196 countries — the longest bicycle journey ever made",
+        "context": "He left home in 1962 and rode 648,000 km through 196 countries, the longest bicycle journey ever made",
         "detail": "HEINZ STÜCKE · 648,000 KM",
     },
     {

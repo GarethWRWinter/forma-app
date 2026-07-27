@@ -242,30 +242,27 @@ export default function DashboardPage() {
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-black/5" />
         {/* Lockup only on md+ — the mobile drawer bar already carries it
             (one kite moment per screen). */}
+        {/* All-white IB1 lockup over the ink — the quiet treatment. */}
         <div className="absolute inset-x-0 top-0 hidden items-center justify-between p-5 md:flex md:p-8">
           <span className="f-display flex items-baseline gap-1 text-xl tracking-tight text-white">
             FORMA
             <span
-              className="inline-block h-[9px] w-[9px] bg-vb-red"
+              className="inline-block h-[9px] w-[9px] bg-white"
               style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }}
             />
           </span>
         </div>
         {daily && (
           <blockquote className="absolute inset-x-0 bottom-0 p-5 md:p-8">
-            <span className="f-display block text-5xl leading-[0.6] text-vb-red" aria-hidden>
+            <span className="f-display block text-5xl leading-[0.6] text-white" aria-hidden>
               &ldquo;
             </span>
             <p className="f-display max-w-2xl text-2xl leading-snug text-white md:text-4xl">
               {daily.text}
             </p>
-            <p className="f-kicker mt-4 flex items-center gap-2 text-white/70">
-              <span
-                className="inline-block h-[7px] w-[7px] shrink-0 bg-vb-red"
-                style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }}
-              />
-              {daily.author} · {ink.label} ·{" "}
-              {daily.tag === "wisdom" ? "Daily wisdom" : "Daily quote"}
+            <p className="f-kicker mt-4 flex items-center gap-2.5 text-white/70">
+              <span className="inline-block h-1.5 w-1.5 shrink-0 bg-white" aria-hidden />
+              {daily.author}
             </p>
           </blockquote>
         )}
