@@ -30,6 +30,28 @@ class StravaToken(Base):
     webhook_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class WahooToken(Base):
+    __tablename__ = "wahoo_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), unique=True, nullable=False
+    )
+    access_token: Mapped[str] = mapped_column(EncryptedString, nullable=False)
+    refresh_token: Mapped[str] = mapped_column(EncryptedString, nullable=False)
+    expires_at: Mapped[str] = mapped_column(DateTime, nullable=False)
+    wahoo_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    scope: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_sync_at: Mapped[str | None] = mapped_column(DateTime, nullable=True)
+
+    # Historical import tracking (mirrors StravaToken)
+    backfill_status: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, default=None
+    )  # None=not started, "running", "completed", "failed"
+    backfill_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    backfill_progress: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+
+
 class TrainingPeaksToken(Base):
     __tablename__ = "trainingpeaks_tokens"
 

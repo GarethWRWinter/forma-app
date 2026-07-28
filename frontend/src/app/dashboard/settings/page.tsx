@@ -25,6 +25,8 @@ import { Input } from "@/components/ui/input";
 import { Kicker } from "@/components/ui/kicker";
 import { Badge } from "@/components/ui/badge";
 import { SectionHeader } from "@/components/ui/section-header";
+import { ArchiveImport } from "@/components/settings/archive-import";
+import { WahooCard } from "@/components/settings/wahoo-card";
 
 const EVENT_TYPES = [
   { value: "road_race", label: "Road Race" },
@@ -787,6 +789,19 @@ export default function SettingsPage() {
 
       {/* ============ DATA IN ============ */}
       <SectionHeader kicker="Data in" title="Where your rides come from" />
+      <p className="-mt-4 max-w-2xl text-sm leading-relaxed text-vb-text-dim">
+        Your rides are yours. Forma reads them straight from the source, your
+        head unit, your files, your archive, so no platform can ever stand
+        between you and your coach. Riding Garmin? Import your archive below,
+        then use Dropbox for new rides, a bridge like tapiriik moves each
+        ride there automatically.
+      </p>
+
+      {/* Wahoo: the push door — ride ends, ride arrives */}
+      <WahooCard />
+
+      {/* Account archive: the whole history in one zip */}
+      <ArchiveImport />
 
       {/* Strava Integration */}
       <section className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6">
@@ -986,11 +1001,12 @@ export default function SettingsPage() {
         ) : (
           <div className="mt-4 border border-dashed border-vb-border p-5">
             <p className="text-sm leading-relaxed text-vb-text-dim">
-              Connect Strava and Forma reads every ride you&apos;ve ever
-              logged, overnight.
+              The better way in from Strava is the archive above: one zip,
+              your whole history, no ongoing tie to Strava&apos;s platform
+              rules. Live linking still works if you prefer it.
             </p>
             <Button
-              variant="flamme"
+              variant="ghost"
               className="mt-4"
               onClick={async () => {
                 const { auth_url } = await strava.getAuthUrl();

@@ -53,6 +53,13 @@ async def _generate_debrief_bg(db: Session, user: User, ride):
         _logger.exception("Memory extraction after debrief failed (ride %s)", ride.id)
 
 
+ALLOWED_RIDE_EXTENSIONS = (".fit", ".gpx", ".tcx", ".fit.gz", ".gpx.gz", ".tcx.gz")
+
+
+def _is_supported_ride_file(filename: str | None) -> bool:
+    return bool(filename) and filename.lower().endswith(ALLOWED_RIDE_EXTENSIONS)
+
+
 @router.post("/upload", response_model=RideResponse, status_code=201)
 def upload_fit_file(
     background_tasks: BackgroundTasks,
@@ -60,9 +67,10 @@ def upload_fit_file(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Upload a FIT file, parse it, create ride with calculated metrics."""
-    if not file.filename or not file.filename.lower().endswith(".fit"):
-        raise BadRequestException(detail="File must be a .fit file")
+    """Upload a ride file (FIT, GPX or TCX), parse it, create ride with
+    calculated metrics."""
+    if not _is_supported_ride_file(file.filename):
+        raise BadRequestException(detail="File must be a .fit, .gpx or .tcx file")
 
     file_bytes = file.file.read()
     if len(file_bytes) == 0:
@@ -83,6 +91,95 @@ def upload_fit_file(
     background_tasks.add_task(_generate_debrief_bg, db, current_user, ride)
 
     return ride
+
+
+@router.post("/import-file")
+def import_ride_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """One file from a bulk archive import (Strava/Garmin account export).
+
+    Unlike /upload this never aborts a batch: parse failures come back as
+    {"status": "failed"}, rides already on record come back as
+    {"status": "duplicate"}. No per-ride debrief and no PMC recalculation —
+    the client calls /rides/import-finalize once at the end instead.
+    """
+    if not _is_supported_ride_file(file.filename):
+        return {"status": "unsupported", "filename": file.filename}
+
+    file_bytes = file.file.read()
+    if not file_bytes or len(file_bytes) > 50 * 1024 * 1024:
+        return {"status": "failed", "filename": file.filename, "error": "empty or oversized file"}
+
+    try:
+        parsed = ride_service.parse_ride_file(file_bytes, file.filename)
+    except Exception:
+        _logger.warning("Archive import: could not parse %s", file.filename)
+        return {"status": "failed", "filename": file.filename, "error": "could not read the file"}
+
+    start_time = parsed.get("start_time")
+    records = parsed.get("records") or []
+    if start_time is None or not records:
+        return {"status": "failed", "filename": file.filename, "error": "no ride data in file"}
+
+    duration = None
+    elapsed = [r.get("elapsed_seconds") for r in records if r.get("elapsed_seconds") is not None]
+    if elapsed:
+        duration = max(elapsed)
+
+    existing = ride_service.find_duplicate_ride(db, current_user.id, start_time, duration)
+    if existing:
+        return {"status": "duplicate", "filename": file.filename, "ride_id": existing.id}
+
+    try:
+        ride = ride_service.create_ride_from_fit(
+            db, current_user, file_bytes, filename=file.filename
+        )
+    except Exception:
+        db.rollback()
+        _logger.exception("Archive import: failed to create ride from %s", file.filename)
+        return {"status": "failed", "filename": file.filename, "error": "could not import the ride"}
+
+    return {
+        "status": "imported",
+        "filename": file.filename,
+        "ride_id": ride.id,
+        "title": ride.title,
+        "date": ride.ride_date.isoformat() if ride.ride_date else None,
+    }
+
+
+@router.post("/import-finalize")
+def finalize_import(
+    earliest_date: datetime | None = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """After a bulk import: rebuild the training-load history once from the
+    earliest imported ride, and link recent rides to planned workouts."""
+    from app.models.ride import Ride
+
+    if earliest_date is None:
+        earliest = (
+            db.query(Ride.ride_date)
+            .filter(Ride.user_id == current_user.id)
+            .order_by(Ride.ride_date.asc())
+            .first()
+        )
+        earliest_date = earliest[0] if earliest else None
+
+    if earliest_date is not None:
+        recalculate_from_date(db, current_user.id, earliest_date.date())
+
+    from app.services.workout_assessment_service import backfill_auto_links
+    try:
+        backfill_auto_links(db, current_user.id, days=14)
+    except Exception:
+        _logger.exception("import-finalize: auto-link backfill failed")
+
+    return {"status": "ok", "recalculated_from": earliest_date.isoformat() if earliest_date else None}
 
 
 @router.post("/record", response_model=RideResponse, status_code=201)
@@ -168,8 +265,8 @@ def _warm_zone_summaries(db: Session, user: User, rides: list) -> None:
     dirty = False
     for ride in rides:
         zs = ride.zone_summary
-        if zs is not None and (zs.get("none") or "shape" in zs):
-            continue  # cached in current format
+        if zs is not None and (zs.get("none") or zs.get("v") == 2):
+            continue  # cached in current format (v2 = FTP-anchored heights)
         try:
             ftp = ride.ftp_at_time or user.ftp or 0
             powers = [
@@ -199,21 +296,27 @@ def _warm_zone_summaries(db: Session, user: User, rides: list) -> None:
             for p in powers:
                 secs[zone_of(p)] += 1
 
-            # Shape: average power per bucket, height relative to the ride's
-            # strongest bucket, coloured by that bucket's zone.
+            # Shape: average power per bucket, coloured by that bucket's zone.
+            # Heights share ONE ruler across every ride — FTP. Full height is
+            # 130% of FTP (sprint efforts cap there), so threshold sits at
+            # ~77% and a recovery spin sits honestly low. A ride never looks
+            # harder than it was just because it was its own hardest moment.
             n = min(_SHAPE_BUCKETS, len(powers))
             size = len(powers) / n
             buckets = []
             for i in range(n):
                 seg = powers[int(i * size): max(int((i + 1) * size), int(i * size) + 1)]
                 buckets.append(sum(seg) / len(seg))
-            peak = max(buckets) or 1
+            ceiling = 1.3 * ftp
             shape = [
-                [max(6, round(b / peak * 100)), zone_of(b) + 1] for b in buckets
+                [max(4, min(100, round(b / ceiling * 100))), zone_of(b) + 1]
+                for b in buckets
             ]
 
             dom_idx = max(range(len(secs)), key=lambda i: secs[i])
-            ride.zone_summary = {"z": secs, "dom": f"z{dom_idx + 1}", "shape": shape}
+            ride.zone_summary = {
+                "z": secs, "dom": f"z{dom_idx + 1}", "shape": shape, "v": 2,
+            }
             dirty = True
         except Exception:
             _logger.exception("Zone summary failed for ride %s", ride.id)

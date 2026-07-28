@@ -14,6 +14,7 @@ class RideSource(str, enum.Enum):
     manual = "manual"
     in_app = "in_app"
     dropbox = "dropbox"
+    wahoo = "wahoo"
 
 
 class Ride(TimestampMixin, Base):

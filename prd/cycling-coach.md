@@ -154,7 +154,7 @@ Email + password + OAuth (Google, Apple), per-user data isolation via Postgres R
 
 - Cycling, indoor + outdoor (analytics on outdoor; in-app execution indoor only).
 - Single-rider use (one human, one account).
-- Strava ingestion + Dropbox FIT import + manual FIT upload. **A free Strava account is sufficient** — users do not need a paid Strava subscription. The endpoints we use (athlete, activities, streams, detailed activity) are available to free Strava accounts. The paid-Strava requirement in the developer program applies only to *our* developer-account registration, not to end users.
+- **Data-in stack (revised 28 Jul 2026 — see "Data-in strategy" below):** Wahoo Cloud API per-user OAuth link (push webhooks + history backfill) + **Strava/Garmin account-archive zip import** (browser-side streaming unzip, manifest scan, scope choice, batched upload, server dedupe) + manual FIT/GPX/TCX upload (gz accepted) + Dropbox folder sync. **Strava's direct API is retired as a product data source**: Strava API Agreement §5.3 (2026) prohibits use of Strava API data in any AI application, explicitly including RAG and embedding generation — which is Forma's core architecture. A free Strava account still suffices for users: the bulk archive export (the athlete's own data, no API) carries their complete FIT history into Forma.
 - Goal definition (event date, type, route via GPX, A/B/C tag, history notes).
 - AI plan generation tied to goal + availability + history.
 - Workout detail with targets (power, cadence, duration, zones).
@@ -412,7 +412,20 @@ This is what exists today, walked from the live URL.
 - **Re-evaluate SOC 2 / ISO 27001** — pursue **only** if a customer, partner, or employer (e.g. Mindvalley) contractually requires an audited certification. Revisit trigger: first enterprise/partner deal or procurement request. Until then, do not spend on it.
 - **Postgres row-level security (RLS)** — deferred from the beta build (2026-07-16 decision): beta ships app-layer user filtering + an automated cross-user isolation test suite. Add RLS before public launch so the database refuses cross-user reads by construction (defense-in-depth the isolation audits expect). Pairs with this milestone.
 
-### Strava API budget & Developer Program
+### Data-in strategy (28 Jul 2026 decision)
+
+**Finding:** Strava API Agreement §5.3 prohibits using Strava API data "in connection with the development, training, evaluation, or operation of any AI Application," explicitly naming RAG and embedding generation; §5.16 bans intermediaries; §5.4 bans derived analytics. Forma's architecture (Claude debriefs, memory embeddings, ride stories) is categorically non-compliant, independent of the developer-subscription fee. Garmin's Connect Developer Program is paused to new applicants (Jul 2026, no reopen date).
+
+**Decision — user-owned doors, no single landlord:**
+1. **Wahoo Cloud API** (primary live link): per-user OAuth, workout webhooks push FIT files on sync, full-history backfill. Free, sanctioned, no AI restrictions. Dormant until `WAHOO_CLIENT_ID/SECRET` set (register at developers.wahooligan.com).
+2. **Account-archive import** (history onboarding): Strava/Garmin export zips read browser-side (streaming, photos never uploaded), `activities.csv` manifest drives ride filtering + scope choice (everything / 3 years / 12 months), files upload in batches, server dedupes by start time + duration, one PMC rebuild at the end. Safe to interrupt and re-run.
+3. **File upload:** FIT/GPX/TCX, gzipped accepted.
+4. **Dropbox sync:** ongoing path for Garmin riders (tapiriik-style bridge) and watch-folder workflows.
+5. **Roadmap:** email-in ingest (per-user secret address); Garmin direct on programme reopen, or via aggregator (Terra $499/mo, Spike $450/mo) once ≥~100 paying riders justify the fixed cost.
+
+**Strava live linking** is demoted in-product (kept functional for existing links) and slated for removal before public launch. Positioning survives: the archive path keeps "Free Strava + Forma" true without touching Strava's API.
+
+### Strava API budget & Developer Program (superseded by Data-in strategy above)
 
 - Strava: 100 requests / 15 min / app, 1000 / day / app (Standard Tier).
 - Webhook-driven on new ride; bulk backfill rate-limited to fit window.

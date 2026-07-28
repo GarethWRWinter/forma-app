@@ -98,7 +98,7 @@ export default function RidesPage() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".fit"
+            accept=".fit,.gpx,.tcx,.fit.gz,.gpx.gz,.tcx.gz"
             onChange={handleUpload}
             className="hidden"
           />
@@ -107,7 +107,7 @@ export default function RidesPage() {
             disabled={uploading}
           >
             <Upload className="h-3.5 w-3.5" />
-            {uploading ? "Reading the file…" : "Upload FIT"}
+            {uploading ? "Reading the file…" : "Upload a ride file"}
           </Button>
         </div>
       </header>
@@ -137,9 +137,9 @@ export default function RidesPage() {
             </Button>
           }
         >
-          Upload a FIT file, or connect Strava in Settings and Forma reads
-          every ride you have ever logged, overnight. Each one sharpens your
-          power profile.
+          Upload a ride file, link your Wahoo in Settings, or import your
+          Strava archive and every ride you have ever logged starts working
+          for you. Each one sharpens your power profile.
         </EmptyState>
       ) : (
         <>

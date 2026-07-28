@@ -203,12 +203,12 @@ def _date_name(ride_date: datetime | None) -> str:
     day = ride_date.strftime("%a %d %b")
 
     if hour < 6:
-        return f"Early Morning Ride — {day}"
+        return f"Early Morning Ride, {day}"
     elif hour < 10:
-        return f"Morning Ride — {day}"
+        return f"Morning Ride, {day}"
     elif hour < 14:
-        return f"Midday Ride — {day}"
+        return f"Midday Ride, {day}"
     elif hour < 17:
-        return f"Afternoon Ride — {day}"
+        return f"Afternoon Ride, {day}"
     else:
-        return f"Evening Ride — {day}"
+        return f"Evening Ride, {day}"

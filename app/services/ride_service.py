@@ -126,12 +126,63 @@ def _extract_summary_from_records(records: list[dict]) -> dict:
     return summary
 
 
+def parse_ride_file(file_bytes: bytes, filename: str | None = None) -> dict:
+    """Parse any supported ride file (.fit/.gpx/.tcx, optionally .gz) into
+    the common {summary, records, laps, start_time} shape."""
+    import gzip
+
+    from app.services.file_parsers import parse_gpx, parse_tcx
+
+    name = (filename or "").lower()
+    if name.endswith(".gz") or file_bytes[:2] == b"\x1f\x8b":
+        file_bytes = gzip.decompress(file_bytes)
+        name = name[:-3] if name.endswith(".gz") else name
+
+    if name.endswith(".gpx"):
+        return parse_gpx(file_bytes)
+    if name.endswith(".tcx"):
+        return parse_tcx(file_bytes)
+    # FIT by extension or by default (Strava archives ship bare .fit.gz)
+    return parse_fit_file(file_bytes)
+
+
+def find_duplicate_ride(
+    db: Session, user_id: str, ride_date: datetime, duration_seconds: int | None
+) -> Ride | None:
+    """A ride already on record that is almost certainly the same outing:
+    starts within 2 minutes and (when both know it) runs within 5% or 60s
+    of the same duration. Used so archive re-imports and multi-source
+    overlap (Wahoo + upload) never double-count a ride."""
+    from datetime import timedelta
+
+    if ride_date.tzinfo is None:
+        ride_date = ride_date.replace(tzinfo=timezone.utc)
+    window = timedelta(minutes=2)
+    candidates = (
+        db.query(Ride)
+        .filter(
+            Ride.user_id == user_id,
+            Ride.ride_date >= ride_date - window,
+            Ride.ride_date <= ride_date + window,
+        )
+        .all()
+    )
+    for cand in candidates:
+        if duration_seconds and cand.duration_seconds:
+            tolerance = max(60, int(0.05 * max(duration_seconds, cand.duration_seconds)))
+            if abs(cand.duration_seconds - duration_seconds) > tolerance:
+                continue
+        return cand
+    return None
+
+
 def create_ride_from_fit(
     db: Session, user: User, file_bytes: bytes, filename: str | None = None,
     source: str = "fit_upload",
 ) -> Ride:
     """
-    Parse FIT file, create Ride and RideData rows, calculate metrics.
+    Parse a ride file (FIT/GPX/TCX), create Ride and RideData rows,
+    calculate metrics.
 
     Prioritises device-calculated metrics (NP, TSS, IF, FTP) from the
     FIT session summary over our own re-calculations, because the head
@@ -140,7 +191,7 @@ def create_ride_from_fit(
     """
     from app.services.ride_classifier import classify_ride
 
-    parsed = parse_fit_file(file_bytes)
+    parsed = parse_ride_file(file_bytes, filename)
     records = parsed["records"]
     session_summary = parsed["summary"]
     start_time = parsed.get("start_time")
@@ -288,8 +339,14 @@ def create_ride_from_fit(
                 "speed": _safe_float(rec.get("speed") or rec.get("enhanced_speed")),
                 "distance": _safe_float(rec.get("distance")),
                 "altitude": _safe_float(rec.get("altitude") or rec.get("enhanced_altitude")),
-                "latitude": _semicircles_to_degrees(rec.get("position_lat")),
-                "longitude": _semicircles_to_degrees(rec.get("position_long")),
+                "latitude": (
+                    rec["latitude"] if rec.get("latitude") is not None
+                    else _semicircles_to_degrees(rec.get("position_lat"))
+                ),
+                "longitude": (
+                    rec["longitude"] if rec.get("longitude") is not None
+                    else _semicircles_to_degrees(rec.get("position_long"))
+                ),
                 "temperature": _safe_int(rec.get("temperature")),
                 "left_right_balance": _safe_int(rec.get("left_right_balance")),
                 "torque": _safe_float(rec.get("torque_effectiveness")),

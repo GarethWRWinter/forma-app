@@ -314,6 +314,25 @@ export const rides = {
 
   upload: (file: File) => uploadFile<Ride>("/rides/upload", file),
 
+  /** One file from a bulk archive import. Never throws on a bad file —
+      the status field says what happened, so batches keep moving. */
+  importFile: (name: string, bytes: Uint8Array) => {
+    const blob = new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer]);
+    return uploadFile<{
+      status: "imported" | "duplicate" | "failed" | "unsupported";
+      filename: string;
+      ride_id?: string;
+      error?: string;
+    }>("/rides/import-file", new File([blob], name));
+  },
+
+  /** After a bulk import: rebuild fitness history once from the earliest ride. */
+  finalizeImport: () =>
+    request<{ status: string; recalculated_from: string | null }>(
+      "/rides/import-finalize",
+      { method: "POST" }
+    ),
+
   /**
    * Save an in-app workout recording (from the in-app session player).
    * Backend computes derived metrics (avg power, NP, IF, TSS, ...) and
@@ -1077,6 +1096,33 @@ export const strava = {
   backfillSegments: () =>
     request<{ status: string }>("/integrations/strava/backfill-segments", { method: "POST" }),
   disconnect: () => request("/integrations/strava", { method: "DELETE" }),
+};
+
+// === Wahoo ===
+
+export interface WahooStatus {
+  connected: boolean;
+  configured: boolean;
+  wahoo_user_id?: number | null;
+  last_sync_at?: string | null;
+  backfill?: {
+    status: string; // "running" | "completed" | "failed"
+    progress: number;
+    total: number | null;
+  };
+}
+
+export const wahoo = {
+  getAuthUrl: () => request<{ auth_url: string }>("/integrations/wahoo/auth-url"),
+  getStatus: () => request<WahooStatus>("/integrations/wahoo/status"),
+  sync: () =>
+    request<{
+      synced: number;
+      rides?: { id: string; title: string; date: string }[];
+    }>("/integrations/wahoo/sync", { method: "POST" }),
+  startBackfill: () =>
+    request<{ status: string }>("/integrations/wahoo/backfill", { method: "POST" }),
+  disconnect: () => request("/integrations/wahoo", { method: "DELETE" }),
 };
 
 // === Dropbox ===
