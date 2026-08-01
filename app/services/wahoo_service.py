@@ -143,10 +143,10 @@ async def _import_workout(
         return None
 
     try:
-        file_resp = await client.get(
-            file_url, headers={"Authorization": f"Bearer {access_token}"},
-            follow_redirects=True,
-        )
+        # The file URL is pre-signed (credentials live in the URL itself).
+        # Sending the OAuth header AS WELL makes the CDN reject the request
+        # with a 400, so the download goes bare.
+        file_resp = await client.get(file_url, follow_redirects=True)
         file_resp.raise_for_status()
     except httpx.HTTPError:
         logger.warning("Wahoo file download failed for workout %s", workout.get("id"))

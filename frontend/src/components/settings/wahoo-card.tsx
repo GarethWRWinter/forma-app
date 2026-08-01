@@ -96,6 +96,25 @@ export function WahooCard() {
             </div>
           )}
 
+          {status.backfill?.status !== "running" && (
+            <div className="border border-vb-border-subtle bg-vb-bg p-4">
+              <p className="text-sm text-vb-text-dim">
+                Pull your full Wahoo history. Already-imported rides are
+                skipped, so this is always safe to run.
+              </p>
+              <Button
+                size="sm"
+                className="mt-3"
+                onClick={async () => {
+                  await wahoo.startBackfill();
+                  queryClient.invalidateQueries({ queryKey: ["wahoo-status"] });
+                }}
+              >
+                Import full history
+              </Button>
+            </div>
+          )}
+
           {status.last_sync_at && (
             <p className="f-data text-xs text-vb-text-muted">
               Last synced {formatDate(status.last_sync_at)}
