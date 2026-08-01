@@ -107,23 +107,36 @@ async function request<T>(
   return response.json();
 }
 
-async function tryRefreshToken(): Promise<boolean> {
-  const refresh = localStorage.getItem("refresh_token");
-  if (!refresh) return false;
+// Single-flight: when a page opens with an expired access token, every query
+// 401s at once. They must SHARE one refresh call — parallel refreshes replay
+// the same rotating token, which the backend reads as theft and revokes the
+// whole session (the "logged out every morning" bug).
+let refreshInFlight: Promise<boolean> | null = null;
 
-  try {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: refresh }),
-    });
-    if (!res.ok) return false;
-    const data = await res.json();
-    setTokens(data.access_token, data.refresh_token);
-    return true;
-  } catch {
-    return false;
-  }
+function tryRefreshToken(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    const refresh = localStorage.getItem("refresh_token");
+    if (!refresh) return false;
+    try {
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refresh }),
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      setTokens(data.access_token, data.refresh_token);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setTimeout(() => {
+        refreshInFlight = null;
+      }, 0);
+    }
+  })();
+  return refreshInFlight;
 }
 
 async function uploadFile<T>(path: string, file: File): Promise<T> {

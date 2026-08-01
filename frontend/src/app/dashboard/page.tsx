@@ -240,18 +240,8 @@ export default function DashboardPage() {
         />
         {/* scrim for legibility, heavier at the base where the words sit */}
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-black/5" />
-        {/* Lockup only on md+ — the mobile drawer bar already carries it
-            (one kite moment per screen). */}
-        {/* All-white IB1 lockup over the ink — the quiet treatment. */}
-        <div className="absolute inset-x-0 top-0 hidden items-center justify-between p-5 md:flex md:p-8">
-          <span className="f-display flex items-baseline gap-1 text-xl tracking-tight text-white">
-            FORMA
-            <span
-              className="inline-block h-[9px] w-[9px] bg-white"
-              style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }}
-            />
-          </span>
-        </div>
+        {/* No lockup here — the nav already carries the brand. The ink and
+            the day's line get the whole canvas. */}
         {daily && (
           <blockquote className="absolute inset-x-0 bottom-0 p-5 md:p-8">
             <span className="f-display block text-5xl leading-[0.6] text-white" aria-hidden>

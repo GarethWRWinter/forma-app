@@ -60,7 +60,19 @@ def rotate(db: Session, refresh_jwt: str) -> tuple[str, str]:
     if rec is None:
         raise UnauthorizedException(detail="Invalid refresh token")
     if rec.revoked_at is not None:
-        # This token was already rotated away — someone is replaying it.
+        # A second browser tab racing the first one lands here moments after
+        # the legitimate rotation. Within a short grace window that's benign:
+        # hand back the successor token instead of treating it as theft.
+        # (Industry-standard "reuse interval" — Auth0 uses the same idea.)
+        grace = rec.revoked_at + timedelta(seconds=60)
+        if rec.replaced_by_id and datetime.utcnow() <= grace:
+            successor = db.get(RefreshToken, rec.replaced_by_id)
+            if successor is not None and successor.revoked_at is None:
+                lifetime_days = max(1, (successor.expires_at - successor.issued_at).days) or None
+                return create_access_token(user_id), create_refresh_token(
+                    user_id, successor.id, days=lifetime_days
+                )
+        # Outside the grace window — someone is replaying an old token.
         revoke_family(db, rec.family_id)
         raise UnauthorizedException(detail="Refresh token reuse detected; please log in again")
     if rec.expires_at < datetime.utcnow():
