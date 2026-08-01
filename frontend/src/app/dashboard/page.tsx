@@ -244,11 +244,10 @@ export default function DashboardPage() {
             the day's line get the whole canvas. */}
         {daily && (
           <blockquote className="absolute inset-x-0 bottom-0 p-5 md:p-8">
-            <span className="f-display block text-5xl leading-[0.6] text-white" aria-hidden>
-              &ldquo;
-            </span>
-            <p className="f-display max-w-2xl text-2xl leading-snug text-white md:text-4xl">
-              {daily.text}
+            {/* Real quotation marks, Roman hanging punctuation: the opening
+                mark hangs in the margin so every line's first letter aligns. */}
+            <p className="f-display f-hang-quote max-w-2xl text-2xl leading-snug text-white md:text-4xl">
+              &ldquo;{daily.text}&rdquo;
             </p>
             <p className="f-kicker mt-4 flex items-center gap-2.5 text-white/70">
               <span className="inline-block h-1.5 w-1.5 shrink-0 bg-white" aria-hidden />

@@ -250,6 +250,28 @@ def _generate_stories_bg(db: Session, user: User, rides: list) -> None:
 
 _SHAPE_BUCKETS = 48
 
+# Zone index (0-based) -> cumulative seconds that make that zone the point
+# of the session. Short at the top (sprints last seconds each), longer at
+# the bottom (tempo needs a real block to define a ride).
+_STIMULUS_THRESHOLDS = ((6, 90), (5, 180), (4, 360), (3, 600), (2, 900))
+
+
+def _dominant_zone(secs: list[int]) -> int:
+    """The session's identity: the highest zone holding meaningful work.
+
+    Naming by most-seconds calls every interval day "recovery", because the
+    clock spends most of its time between efforts. A ride with 12 minutes
+    at VO2 is a VO2 day no matter how gently the rest of it rolled.
+    """
+    for idx, needed in _STIMULUS_THRESHOLDS:
+        if len(secs) > idx and secs[idx] >= needed:
+            return idx
+    # Steady rides: endurance carries the ride over soft-pedalling when it
+    # has a real block, even if z1 clocked more total seconds.
+    if len(secs) > 1 and secs[1] >= 600 and secs[1] * 2 >= secs[0]:
+        return 1
+    return max(range(len(secs)), key=lambda i: secs[i])
+
 
 def _warm_zone_summaries(db: Session, user: User, rides: list) -> None:
     """Lazily cache a compact time-in-zone summary + shape on each ride.
@@ -265,8 +287,8 @@ def _warm_zone_summaries(db: Session, user: User, rides: list) -> None:
     dirty = False
     for ride in rides:
         zs = ride.zone_summary
-        if zs is not None and (zs.get("none") or zs.get("v") == 2):
-            continue  # cached in current format (v2 = FTP-anchored heights)
+        if zs is not None and (zs.get("none") or zs.get("v") == 3):
+            continue  # cached in current format (v3 = stimulus-weighted tags)
         try:
             ftp = ride.ftp_at_time or user.ftp or 0
             powers = [
@@ -313,9 +335,16 @@ def _warm_zone_summaries(db: Session, user: User, rides: list) -> None:
                 for b in buckets
             ]
 
-            dom_idx = max(range(len(secs)), key=lambda i: secs[i])
+            dom_idx = _dominant_zone(secs)
+            new_dom = f"z{dom_idx + 1}"
+            # The tag changed identity (e.g. "recovery" -> "vo2"): any story
+            # written against the old reading is wrong. Clear it and the
+            # background pass rewrites it against the truth.
+            if zs is not None and zs.get("dom") and zs["dom"] != new_dom:
+                ride.story = None
+                ride.forma_title = None
             ride.zone_summary = {
-                "z": secs, "dom": f"z{dom_idx + 1}", "shape": shape, "v": 2,
+                "z": secs, "dom": new_dom, "shape": shape, "v": 3,
             }
             dirty = True
         except Exception:

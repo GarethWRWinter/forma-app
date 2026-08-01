@@ -118,6 +118,19 @@ body {
   text-wrap: balance;
 }
 
+/* Roman hanging punctuation: the opening quotation mark sits in the margin
+   so the first letters of every line stay flush. Native where the browser
+   supports it, a measured negative indent everywhere else. */
+.f-hang-quote {
+  text-indent: -0.42em;
+}
+@supports (hanging-punctuation: first) {
+  .f-hang-quote {
+    hanging-punctuation: first;
+    text-indent: 0;
+  }
+}
+
 /* Typography law: no widows, no orphans, anywhere. `pretty` rebalances
    the last lines of prose so a single word is never left alone. This is
    a premium product; the little details are the product. */
