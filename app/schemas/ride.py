@@ -47,6 +47,7 @@ class RideResponse(BaseModel):
     zone_summary: dict | None = None
     forma_title: str | None = None
     story: str | None = None
+    location_name: str | None = None
     created_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)

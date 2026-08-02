@@ -355,6 +355,17 @@ def create_ride_from_fit(
         # Batch insert for performance
         db.execute(insert(RideData), data_rows)
 
+        # Locale from the file's own GPS: the coach's ground truth for
+        # where this ride actually happened.
+        first_fix = next(
+            (r for r in data_rows if r["latitude"] is not None and r["longitude"] is not None),
+            None,
+        )
+        if first_fix is not None:
+            from app.services.geo import locale_for
+
+            ride.location_name = locale_for(first_fix["latitude"], first_fix["longitude"])
+
     db.commit()
     db.refresh(ride)
     return ride

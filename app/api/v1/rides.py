@@ -287,6 +287,26 @@ def _warm_zone_summaries(db: Session, user: User, rides: list) -> None:
     dirty = False
     tss_added_from: object = None
     for ride in rides:
+        # Locale backfill for rides imported before location existed.
+        # "" means "checked, no GPS in this ride" so we never re-query.
+        if ride.location_name is None:
+            try:
+                fix = (
+                    db.query(RideData.latitude, RideData.longitude)
+                    .filter(RideData.ride_id == ride.id, RideData.latitude.isnot(None))
+                    .order_by(RideData.elapsed_seconds)
+                    .first()
+                )
+                if fix is not None:
+                    from app.services.geo import locale_for
+
+                    ride.location_name = locale_for(fix[0], fix[1]) or ""
+                else:
+                    ride.location_name = ""
+                dirty = True
+            except Exception:
+                _logger.exception("Locale backfill failed for ride %s", ride.id)
+
         zs = ride.zone_summary
         if zs is not None and zs.get("v") == 4:
             continue  # cached in current format (v4 = HR/elevation fallbacks)

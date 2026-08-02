@@ -90,6 +90,7 @@ export default function RideDetailPage() {
           </Link>
           <Kicker className="mb-2">
             {formatDate(ride.ride_date)}
+            {ride.location_name && ` · ${ride.location_name}`}
             {ride.source && ` · ${ride.source.replace("_", " ")}`}
             {ride.ftp_at_time && ` · FTP ${ride.ftp_at_time}W`}
           </Kicker>

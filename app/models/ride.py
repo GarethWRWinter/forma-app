@@ -81,6 +81,10 @@ class Ride(TimestampMixin, Base):
     # that teaches. Written once by the coach (Haiku), never regenerated.
     forma_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     story: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Nearest-town locale from the file's own GPS ("Ditchling, UK").
+    # Ground truth for where the ride happened; beats remembered whereabouts.
+    location_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     debrief_generated_at: Mapped[str | None] = mapped_column(DateTime, nullable=True)
 
     # Relationships

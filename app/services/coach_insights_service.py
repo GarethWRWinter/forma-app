@@ -293,6 +293,9 @@ def _build_debrief_context(
         "ride": {
             "title": ride.title,
             "date": str(ride.ride_date),
+            # From the file's own GPS. Ground truth: if memory says the
+            # rider is elsewhere, the file wins.
+            "location_from_ride_gps": ride.location_name or None,
             "duration_minutes": (ride.moving_time_seconds or ride.duration_seconds or 0) // 60,
             "distance_km": round((ride.distance_meters or 0) / 1000, 1),
             "elevation_m": round(ride.elevation_gain_meters or 0),
@@ -368,6 +371,7 @@ def generate_ride_story(db: Session, user: User, ride: Ride) -> None:
     context = {
         "original_title": ride.title,
         "date": str(ride.ride_date)[:10],
+        "location_from_ride_gps": ride.location_name or None,
         "duration_min": round(ride.duration_seconds / 60) if ride.duration_seconds else None,
         "distance_km": round(ride.distance_meters / 1000, 1) if ride.distance_meters else None,
         "elevation_m": round(ride.elevation_gain_meters) if ride.elevation_gain_meters else None,

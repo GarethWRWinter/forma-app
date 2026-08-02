@@ -21,6 +21,7 @@ dependencies = [
     "email-validator>=2.0.0",
     "cryptography>=42.0.0",
     "fastembed>=0.4.0",
+    "reverse_geocoder>=1.5.1",
 ]
 
 [project.optional-dependencies]

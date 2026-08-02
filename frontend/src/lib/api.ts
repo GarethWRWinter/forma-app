@@ -260,6 +260,7 @@ export interface Ride {
   } | null;
   /** Forma's name for the ride (falls back to source title) */
   forma_title?: string | null;
+  location_name?: string | null;
   /** Forma's one-line story (falls back to the deterministic line) */
   story?: string | null;
 }
