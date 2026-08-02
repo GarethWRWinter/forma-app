@@ -13,15 +13,15 @@ import { FormaMark } from "@/components/ui/forma-mark";
  * where you are. On mobile the top bar and drawer invert to carbon.
  */
 
-// Brand v2 IA — the five words: TODAY · COACH · RIDES · FORM · PLAN,
-// then the deeper rooms (Brain, Palmarès, Settings). Goals live INSIDE
-// the plan (the goal is the plan's masthead, not a sibling page).
+// Brand v2 IA — the five words: TODAY · COACH · RIDES · FORM · GOAL,
+// then the deeper rooms (Brain, Palmarès, Settings). The room is named
+// for the why (the goal); the plan lives inside it as the goal's how.
 const navItems = [
   { href: "/dashboard", label: "Today" },
   { href: "/dashboard/coach", label: "Coach" },
   { href: "/dashboard/rides", label: "Rides" },
   { href: "/dashboard/performance", label: "Form" },
-  { href: "/dashboard/training", label: "Plan" },
+  { href: "/dashboard/training", label: "Goal" },
   { href: "/dashboard/brain", label: "Brain" },
   { href: "/dashboard/palmares", label: "Palmarès" },
   { href: "/dashboard/settings", label: "Settings" },

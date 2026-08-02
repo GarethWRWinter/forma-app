@@ -234,7 +234,7 @@ function GoalsPageInner() {
             href="/dashboard/training"
             className="f-kicker mb-3 inline-block text-vb-text-dim transition-colors hover:text-vb-red"
           >
-            ← The plan
+            ← The goal
           </Link>
           <Kicker className="mb-2">The calendar</Kicker>
           <h1 className="f-display text-5xl leading-[0.95] md:text-6xl">
