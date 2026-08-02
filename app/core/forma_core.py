@@ -78,9 +78,12 @@ class TaskConfig:
 # Sonnet where Forma reasons as a coach, Haiku for extraction and
 # short interpretive lines (mirrors the PRD cost model).
 TASKS: dict[str, TaskConfig] = {
-    "chat": TaskConfig(SONNET, 2048),          # streaming coach chat (tools)
-    "chat_voice": TaskConfig(SONNET, 1024),    # voice chat — shorter replies
-    "chat_sync": TaskConfig(SONNET, 2048),     # non-streaming chat turn
+    # Chat caps must leave room for a tool call AND the prose after it. A
+    # cap hit mid-tool-call streams zero text (the silent-coach incident,
+    # 2 Aug 2026) — headroom is cheap, ledger + monthly cap own the spend.
+    "chat": TaskConfig(SONNET, 8192),          # streaming coach chat (tools)
+    "chat_voice": TaskConfig(SONNET, 4096),    # voice chat — brevity via prompt
+    "chat_sync": TaskConfig(SONNET, 4096),     # non-streaming chat turn
     "debrief": TaskConfig(SONNET, 500),        # post-ride debrief
     "assessment": TaskConfig(SONNET, 1500),    # workout execution assessment
     "nudge": TaskConfig(HAIKU, 200),           # daily dashboard nudge

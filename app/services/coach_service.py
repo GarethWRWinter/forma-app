@@ -938,11 +938,18 @@ async def stream_response(
             full_response = error_msg
             yield f'data: {json.dumps({"type": "text", "content": error_msg})}\n\n'
 
-    # Save assistant response — never persist an empty reply (it renders as a
-    # blank bubble forever).
-    if full_response.strip():
-        context_snapshot = json.loads(rider_context) if rider_context else None
-        add_assistant_message(db, session, full_response, context_snapshot, tokens_used)
+    # The model can spend its whole token budget before any prose reaches
+    # the rider (a truncated tool call streams zero text and raises nothing).
+    # A rider's message must NEVER sit unanswered in the history.
+    if not full_response.strip():
+        full_response = (
+            "I got cut off before I could answer that properly. "
+            "Send it again and I'll get straight to the point."
+        )
+        yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
+
+    context_snapshot = json.loads(rider_context) if rider_context else None
+    add_assistant_message(db, session, full_response, context_snapshot, tokens_used)
 
     # Final plan_updated signal if tools were used (in case frontend missed it)
     if plan_was_updated:
@@ -1186,10 +1193,17 @@ async def stream_voice_response(
             full_response = error_msg
             yield f'data: {json.dumps({"type": "text", "content": error_msg})}\n\n'
 
-    # Save assistant response — never persist an empty reply.
-    if full_response.strip():
-        context_snapshot = json.loads(rider_context) if rider_context else None
-        add_assistant_message(db, session, full_response, context_snapshot, tokens_used)
+    # A rider's message must NEVER sit unanswered in the history (the
+    # truncated-tool-call case streams zero text and raises nothing).
+    if not full_response.strip():
+        full_response = (
+            "I got cut off before I could answer that properly. "
+            "Send it again and I'll get straight to the point."
+        )
+        yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
+
+    context_snapshot = json.loads(rider_context) if rider_context else None
+    add_assistant_message(db, session, full_response, context_snapshot, tokens_used)
 
     if plan_was_updated:
         yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
