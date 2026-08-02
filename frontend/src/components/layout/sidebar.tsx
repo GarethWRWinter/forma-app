@@ -14,7 +14,8 @@ import { FormaMark } from "@/components/ui/forma-mark";
  */
 
 // Brand v2 IA — the five words: TODAY · COACH · RIDES · FORM · PLAN,
-// then the deeper rooms (Brain, Goals, Settings).
+// then the deeper rooms (Brain, Palmarès, Settings). Goals live INSIDE
+// the plan (the goal is the plan's masthead, not a sibling page).
 const navItems = [
   { href: "/dashboard", label: "Today" },
   { href: "/dashboard/coach", label: "Coach" },
@@ -22,7 +23,6 @@ const navItems = [
   { href: "/dashboard/performance", label: "Form" },
   { href: "/dashboard/training", label: "Plan" },
   { href: "/dashboard/brain", label: "Brain" },
-  { href: "/dashboard/goals", label: "Goals" },
   { href: "/dashboard/palmares", label: "Palmarès" },
   { href: "/dashboard/settings", label: "Settings" },
 ];
@@ -72,7 +72,10 @@ export function Sidebar() {
           {navItems.map((item) => {
             const isActive =
               pathname === item.href ||
-              (item.href !== "/dashboard" && pathname.startsWith(item.href));
+              (item.href !== "/dashboard" && pathname.startsWith(item.href)) ||
+              // Goals live inside the plan since the nav consolidation.
+              (item.href === "/dashboard/training" &&
+                pathname.startsWith("/dashboard/goals"));
 
             return (
               <li key={item.href}>

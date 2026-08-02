@@ -230,6 +230,12 @@ function GoalsPageInner() {
       {/* ============ MASTHEAD ============ */}
       <header className="f-rise flex items-end justify-between gap-6 border-b-2 border-vb-border-strong pb-5">
         <div>
+          <Link
+            href="/dashboard/training"
+            className="f-kicker mb-3 inline-block text-vb-text-dim transition-colors hover:text-vb-red"
+          >
+            ← The plan
+          </Link>
           <Kicker className="mb-2">The calendar</Kicker>
           <h1 className="f-display text-5xl leading-[0.95] md:text-6xl">
             Goals.

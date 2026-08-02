@@ -184,6 +184,53 @@ export default function TrainingPage() {
 
   return (
     <div className="f-rise space-y-6">
+      {/* ============ THE GOAL HOLDS — the plan's masthead ============ */}
+      {nextUpcomingGoal ? (
+        <section className="flex items-center gap-4 bg-[#101012] px-5 py-5 text-white md:gap-6 md:px-8">
+          <div
+            className="flex h-14 w-16 shrink-0 items-start justify-center bg-vb-red pt-2.5 sm:h-16 sm:w-[74px]"
+            style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }}
+          >
+            <span className="f-data text-xl font-bold leading-none sm:text-2xl">
+              {nextUpcomingGoal.days_until}
+            </span>
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="f-kicker text-vb-red">The goal holds · {nextUpcomingGoal.days_until} days out</p>
+            <Link
+              href={`/dashboard/goals/${nextUpcomingGoal.id}`}
+              className="f-display mt-1 line-clamp-2 block text-lg leading-tight transition-colors hover:text-vb-red sm:text-xl md:text-2xl"
+            >
+              {nextUpcomingGoal.event_name}
+            </Link>
+            <p className="f-kicker mt-1 text-white/50">
+              {nextUpcomingGoal.priority?.replace("_", "-")} · {formatDate(nextUpcomingGoal.event_date)}
+            </p>
+          </div>
+          <div className="shrink-0 border-l border-white/15 pl-5 text-right">
+            <Link href="/dashboard/goals" className="f-kicker text-white/60 transition-colors hover:text-white">
+              All goals →
+            </Link>
+          </div>
+        </section>
+      ) : (
+        <section className="flex flex-wrap items-center justify-between gap-4 bg-[#101012] px-5 py-5 text-white md:px-8">
+          <div>
+            <p className="f-kicker text-vb-red">The plan bends. The goal holds.</p>
+            <p className="f-display mt-1 text-lg leading-tight sm:text-xl">
+              What are we chasing?
+            </p>
+            <p className="mt-1 max-w-md text-sm text-white/60">
+              An event, a number, or simply the engine rebuilt. Give the plan
+              its why and every week bends towards it.
+            </p>
+          </div>
+          <Link href="/dashboard/goals" className={buttonVariants({ variant: "flamme" })}>
+            Set the goal
+          </Link>
+        </section>
+      )}
+
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -195,10 +242,6 @@ export default function TrainingPage() {
                   : activePlan.name}
               </span>
               {planWeek ? ` · week ${planWeek} of ${activePlan.total_weeks}` : ""}
-              {nextUpcomingGoal?.days_until != null &&
-              nextUpcomingGoal.days_until > 0
-                ? ` · ${nextUpcomingGoal.days_until} days to ${nextUpcomingGoal.event_name}`
-                : ""}
             </Kicker>
           )}
           <h1 className="f-display text-3xl text-vb-text md:text-4xl">
