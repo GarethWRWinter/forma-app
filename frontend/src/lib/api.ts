@@ -250,6 +250,9 @@ export interface Ride {
   kudos_count: number | null;
   /** Cached time-in-zone: {"z": [s1..s7], "dom": "z3", "shape": [[h,z],...]} or {"none": true} */
   zone_summary?: {
+    src?: "hr" | "elevation";
+    profile?: number[];
+    est_tss?: boolean;
     z?: number[];
     dom?: string;
     none?: boolean;

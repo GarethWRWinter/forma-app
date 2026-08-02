@@ -285,10 +285,11 @@ def _warm_zone_summaries(db: Session, user: User, rides: list) -> None:
     from app.models.ride import RideData
 
     dirty = False
+    tss_added_from: object = None
     for ride in rides:
         zs = ride.zone_summary
-        if zs is not None and (zs.get("none") or zs.get("v") == 3):
-            continue  # cached in current format (v3 = stimulus-weighted tags)
+        if zs is not None and zs.get("v") == 4:
+            continue  # cached in current format (v4 = HR/elevation fallbacks)
         try:
             ftp = ride.ftp_at_time or user.ftp or 0
             powers = [
@@ -301,7 +302,17 @@ def _warm_zone_summaries(db: Session, user: User, rides: list) -> None:
                 if p is not None and p >= 0
             ]
             if not powers or ftp <= 0:
-                ride.zone_summary = {"none": True}
+                # No power. Effort still has a shape: heart rate wears the
+                # zone colours (it is effort), and failing that the terrain
+                # gets an ink silhouette (it is honest about not being effort).
+                summary = _powerless_summary(db, user, ride)
+                if summary.get("est_tss") and ride.tss is None and summary.get("_tss"):
+                    ride.tss = summary.pop("_tss")
+                    rd = ride.ride_date
+                    if rd is not None and (tss_added_from is None or rd < tss_added_from):
+                        tss_added_from = rd
+                summary.pop("_tss", None)
+                ride.zone_summary = summary
                 dirty = True
                 continue
 
@@ -344,13 +355,99 @@ def _warm_zone_summaries(db: Session, user: User, rides: list) -> None:
                 ride.story = None
                 ride.forma_title = None
             ride.zone_summary = {
-                "z": secs, "dom": new_dom, "shape": shape, "v": 3,
+                "z": secs, "dom": new_dom, "shape": shape, "v": 4,
             }
             dirty = True
         except Exception:
             _logger.exception("Zone summary failed for ride %s", ride.id)
     if dirty:
         db.commit()
+    # Estimated TSS landed on previously blank rides: rebuild the training
+    # load once from the earliest of them so the PMC stops reading powerless
+    # travel blocks as complete rest.
+    if tss_added_from is not None:
+        try:
+            recalculate_from_date(db, user.id, tss_added_from.date())
+        except Exception:
+            _logger.exception("PMC recalc after hrTSS estimates failed")
+
+
+# %HRR bands mapped onto the first five zone inks. HR cannot see z6/z7
+# (it lags too hard for sprints), so the ramp tops out at z5.
+_HRR_BANDS = (0.60, 0.70, 0.80, 0.90)
+
+
+def _powerless_summary(db: Session, user: User, ride) -> dict:
+    """Fingerprint for a ride with no power: HR zones when a strap was on,
+    an elevation silhouette when only GPS exists, quiet otherwise."""
+    from app.models.ride import RideData
+
+    rows = (
+        db.query(RideData.heart_rate, RideData.altitude)
+        .filter(RideData.ride_id == ride.id)
+        .order_by(RideData.elapsed_seconds)
+        .all()
+    )
+    hrs = [r.heart_rate for r in rows if r.heart_rate and r.heart_rate > 0]
+    max_hr = user.max_hr or 0
+
+    if hrs and max_hr > 0:
+        rest = user.resting_hr or 60
+        span = max(1, max_hr - rest)
+
+        def hrr(hr: float) -> float:
+            return max(0.0, min(1.0, (hr - rest) / span))
+
+        def zone_of(hr: float) -> int:
+            frac = hrr(hr)
+            for i, bound in enumerate(_HRR_BANDS):
+                if frac < bound:
+                    return i
+            return 4  # z5 is HR's ceiling
+
+        secs = [0] * 7
+        for hr in hrs:
+            secs[zone_of(hr)] += 1
+
+        n = min(_SHAPE_BUCKETS, len(hrs))
+        size = len(hrs) / n
+        shape = []
+        for i in range(n):
+            seg = hrs[int(i * size): max(int((i + 1) * size), int(i * size) + 1)]
+            avg = sum(seg) / len(seg)
+            shape.append([max(4, min(100, round(hrr(avg) * 100))), zone_of(avg) + 1])
+
+        summary: dict = {
+            "z": secs,
+            "dom": f"z{_dominant_zone(secs) + 1}",
+            "shape": shape,
+            "src": "hr",
+            "v": 4,
+        }
+        # hrTSS: hours x IF^2 x 100 with %HRR standing in for IF — the
+        # standard estimate, close enough to keep the PMC honest.
+        if ride.tss is None and ride.duration_seconds:
+            avg_hrr = sum(hrr(h) for h in hrs) / len(hrs)
+            est = (ride.duration_seconds / 3600) * (avg_hrr ** 2) * 100
+            if est > 0:
+                summary["est_tss"] = True
+                summary["_tss"] = round(est, 1)
+        return summary
+
+    alts = [r.altitude for r in rows if r.altitude is not None]
+    if len(alts) >= _SHAPE_BUCKETS and (max(alts) - min(alts)) >= 20:
+        lo, hi = min(alts), max(alts)
+        span = hi - lo
+        n = _SHAPE_BUCKETS
+        size = len(alts) / n
+        profile = []
+        for i in range(n):
+            seg = alts[int(i * size): max(int((i + 1) * size), int(i * size) + 1)]
+            avg = sum(seg) / len(seg)
+            profile.append(max(6, min(100, round(((avg - lo) / span) * 88 + 12))))
+        return {"profile": profile, "src": "elevation", "v": 4}
+
+    return {"none": True, "v": 4}
 
 
 @router.get("/{ride_id}", response_model=RideResponse)

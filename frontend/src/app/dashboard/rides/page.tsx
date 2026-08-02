@@ -31,8 +31,21 @@ const ZONE_LABELS: Record<string, string> = {
   z7: "Sprint",
 };
 
-/** Dominant-zone tag: a small colour block + the zone's name in mono. */
+/** Dominant-zone tag: a small colour block + the zone's name in mono.
+    HR-derived efforts say so; terrain-only rides get a climb tag instead. */
 function ZoneTag({ ride }: { ride: Ride }) {
+  if (ride.zone_summary?.src === "elevation") {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="f-kicker text-vb-text-dim">
+          ▲{" "}
+          {ride.elevation_gain_meters != null
+            ? `${Math.round(ride.elevation_gain_meters).toLocaleString()} m`
+            : "Terrain"}
+        </span>
+      </span>
+    );
+  }
   const dom = dominantZone(ride);
   if (!dom) return null;
   return (
@@ -41,7 +54,10 @@ function ZoneTag({ ride }: { ride: Ride }) {
         className="inline-block h-2.5 w-2.5"
         style={{ background: ZONES[dom as keyof typeof ZONES] }}
       />
-      <span className="f-kicker text-vb-text-dim">{ZONE_LABELS[dom]}</span>
+      <span className="f-kicker text-vb-text-dim">
+        {ZONE_LABELS[dom]}
+        {ride.zone_summary?.src === "hr" && " · HR"}
+      </span>
     </span>
   );
 }
@@ -216,7 +232,10 @@ export default function RidesPage() {
                       />
                     )}
                     {ride.tss != null && (
-                      <NumWithLabel n={Math.round(ride.tss)} label="TSS" />
+                      <NumWithLabel
+                        n={`${ride.zone_summary?.est_tss ? "~" : ""}${Math.round(ride.tss)}`}
+                        label="TSS"
+                      />
                     )}
                   </div>
 
@@ -242,7 +261,9 @@ export default function RidesPage() {
                       : "-"}
                   </span>
                   <span className="f-data hidden text-right text-sm font-semibold text-vb-text lg:inline">
-                    {ride.tss ? Math.round(ride.tss) : "-"}
+                    {ride.tss
+                      ? `${ride.zone_summary?.est_tss ? "~" : ""}${Math.round(ride.tss)}`
+                      : "-"}
                   </span>
                   <span className="f-data hidden text-right text-sm text-vb-text lg:inline">
                     {ride.intensity_factor

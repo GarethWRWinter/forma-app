@@ -18,6 +18,29 @@ export function RideShape({
   className?: string;
 }) {
   const shape = ride.zone_summary?.shape;
+  const profile = ride.zone_summary?.profile;
+
+  // No effort data, but the route has a shape: the terrain silhouette.
+  // Deliberately a single ink, never zone colours — terrain is not effort.
+  if ((!shape || !shape.length) && profile && profile.length) {
+    return (
+      <span
+        className={`flex items-end ${
+          compact ? "h-6 w-28" : "h-8 w-full max-w-[280px]"
+        } ${className}`}
+        aria-label="Route elevation profile"
+      >
+        {profile.map((h, i) => (
+          <span
+            key={i}
+            className="flex-1 bg-vb-text opacity-25"
+            style={{ height: `${h}%` }}
+          />
+        ))}
+      </span>
+    );
+  }
+
   if (!shape || !shape.length) return null;
   return (
     <span
