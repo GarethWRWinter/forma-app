@@ -51,6 +51,27 @@ def create_oauth_state_token(user_id: str, provider: str) -> str:
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
 
 
+def create_email_token(user_id: str, purpose: str, hours: int) -> str:
+    """Signed single-purpose token for email links (verification, reset).
+    Stateless by design; expiry and purpose live in the token itself."""
+    expire = datetime.now(timezone.utc) + timedelta(hours=hours)
+    to_encode = {"sub": user_id, "exp": expire, "type": f"email:{purpose}"}
+    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+
+
+def verify_email_token(token: str, purpose: str) -> str | None:
+    """Return the user id if the email token is valid for this purpose."""
+    try:
+        payload = jwt.decode(
+            token, settings.secret_key, algorithms=[settings.algorithm]
+        )
+    except JWTError:
+        return None
+    if payload.get("type") != f"email:{purpose}":
+        return None
+    return payload.get("sub")
+
+
 def verify_oauth_state_token(token: str, provider: str) -> str | None:
     """Return the user id if the state token is valid, else None."""
     try:

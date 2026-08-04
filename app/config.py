@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     dropbox_client_secret: str = ""
     dropbox_redirect_uri: str = "http://localhost:8000/api/v1/integrations/dropbox/callback"
 
+    # Transactional email (Postmark). Without the token, emails are logged
+    # instead of sent, so flows stay testable before the account exists.
+    postmark_server_token: str = ""
+    email_from: str = "Forma <coach@ridewithforma.com>"
+
     # Wahoo Cloud API (developers.wahooligan.com). Integration stays dormant
     # until these are set.
     wahoo_client_id: str = ""

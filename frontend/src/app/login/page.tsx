@@ -104,6 +104,16 @@ export default function LoginPage() {
             </div>
           </div>
 
+          <div className="flex items-center justify-between">
+            <span />
+            <Link
+              href="/forgot-password"
+              className="f-kicker text-vb-text-dim transition-colors hover:text-vb-red"
+            >
+              Forgotten password?
+            </Link>
+          </div>
+
           <label className="flex cursor-pointer select-none items-center gap-2.5">
             <button
               type="button"

@@ -188,6 +188,27 @@ export const auth = {
   },
 
   isAuthenticated: () => !!getToken(),
+
+  verifyEmail: (token: string) =>
+    request<{ status: string }>("/auth/verify-email", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
+
+  resendVerification: () =>
+    request<{ status: string }>("/auth/resend-verification", { method: "POST" }),
+
+  forgotPassword: (email: string) =>
+    request<{ status: string }>("/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+
+  resetPassword: (token: string, newPassword: string) =>
+    request<{ status: string }>("/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, new_password: newPassword }),
+    }),
 };
 
 // === Users ===
@@ -195,6 +216,7 @@ export const auth = {
 export interface UserProfile {
   id: string;
   email: string;
+  email_verified?: boolean;
   full_name: string | null;
   weight_kg: number | null;
   height_cm: number | null;

@@ -1,12 +1,41 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { RefreshCw, AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { Sidebar } from "@/components/layout/sidebar";
+import { auth } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useStravaAutoSync } from "@/hooks/useStravaAutoSync";
+
+function VerifyEmailBanner() {
+  const [sent, setSent] = useState(false);
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-vb-border-subtle bg-vb-surface px-4 py-2.5 sm:px-8">
+      <p className="text-xs text-vb-text-dim">
+        One thing left: confirm your email so password resets can always
+        reach you.
+      </p>
+      {sent ? (
+        <span className="f-kicker text-vb-text-dim">Sent, check your inbox</span>
+      ) : (
+        <button
+          onClick={async () => {
+            try {
+              await auth.resendVerification();
+            } finally {
+              setSent(true);
+            }
+          }}
+          className="f-kicker text-vb-red transition-colors hover:text-vb-red-dim"
+        >
+          Resend the link
+        </button>
+      )}
+    </div>
+  );
+}
 
 export default function DashboardLayout({
   children,
@@ -43,6 +72,7 @@ export default function DashboardLayout({
     <div className="flex h-screen overflow-hidden bg-vb-bg">
       <Sidebar />
       <main className="flex-1 overflow-y-auto bg-vb-bg pt-14 md:pt-0">
+        {user.email_verified === false && <VerifyEmailBanner />}
         <div className="mx-auto max-w-7xl px-4 py-6 sm:px-8 sm:py-10">
           {children}
         </div>

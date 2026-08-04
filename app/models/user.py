@@ -30,6 +30,11 @@ class User(TimestampMixin, Base):
         Boolean, default=True, nullable=False, server_default="true"
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Soft gate: login works unverified (email trouble must never lock a
+    # rider out), the app nudges until this flips.
+    email_verified: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
 
     # Physical
     weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)

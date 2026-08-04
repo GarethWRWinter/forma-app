@@ -1,13 +1,25 @@
-from fastapi import APIRouter, Depends, Response
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Response
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import ConflictException, UnauthorizedException
+from app.config import settings
+from app.core.exceptions import BadRequestException, ConflictException, UnauthorizedException
 from app.core.ratelimit import rate_limit
-from app.core.security import hash_password, verify_password
+from app.core.security import (
+    create_email_token,
+    hash_password,
+    verify_email_token,
+    verify_password,
+)
+from app.api.v1.deps import get_current_user
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user import TokenRefresh, TokenResponse, UserCreate, UserLogin, UserResponse
-from app.services import token_service
+from app.services import email_service, token_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -15,6 +27,17 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 _login_limit = rate_limit(10, 60)      # 10 login attempts / minute
 _register_limit = rate_limit(5, 300)   # 5 signups / 5 minutes
 _refresh_limit = rate_limit(30, 60)    # 30 refreshes / minute
+_email_limit = rate_limit(5, 600)      # 5 reset/verify emails / 10 minutes
+
+
+def _frontend() -> str:
+    return settings.frontend_url or "http://localhost:3000"
+
+
+async def _send_verification_email(user_id: str, email: str, full_name: str | None) -> None:
+    token = create_email_token(user_id, "verify", hours=24)
+    link = f"{_frontend()}/verify-email?token={token}"
+    await email_service.send_verification(email, full_name, link)
 
 # Verified against when the email is unknown, so a login attempt takes the same
 # time whether or not the account exists (defeats timing-based user enumeration).
@@ -23,7 +46,11 @@ _DUMMY_HASH = hash_password("forma-nonexistent-account-placeholder")
 
 @router.post("/register", response_model=UserResponse, status_code=201,
              dependencies=[Depends(_register_limit)])
-def register(user_in: UserCreate, db: Session = Depends(get_db)):
+async def register(
+    user_in: UserCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     existing = db.query(User).filter(User.email == user_in.email).first()
     if existing:
         raise ConflictException(detail="Email already registered")
@@ -36,7 +63,96 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    # Best-effort: a failed email must never block the signup itself.
+    background_tasks.add_task(
+        _send_verification_email, str(user.id), user.email, user.full_name
+    )
     return user
+
+
+class EmailTokenBody(BaseModel):
+    token: str
+
+
+class ForgotPasswordBody(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordBody(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+@router.post("/verify-email")
+def verify_email(body: EmailTokenBody, db: Session = Depends(get_db)):
+    """Flip the flag on a valid verification link. Idempotent."""
+    user_id = verify_email_token(body.token, "verify")
+    if not user_id:
+        raise BadRequestException(
+            detail="That link has expired or already been used. Request a fresh one from Settings."
+        )
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise BadRequestException(detail="Account not found")
+    if not user.email_verified:
+        user.email_verified = True
+        db.commit()
+    return {"status": "verified"}
+
+
+@router.post("/resend-verification", dependencies=[Depends(_email_limit)])
+async def resend_verification(
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.email_verified:
+        return {"status": "already_verified"}
+    background_tasks.add_task(
+        _send_verification_email,
+        str(current_user.id), current_user.email, current_user.full_name,
+    )
+    return {"status": "sent"}
+
+
+@router.post("/forgot-password", dependencies=[Depends(_email_limit)])
+async def forgot_password(
+    body: ForgotPasswordBody,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Always answers the same way, whether or not the account exists, so
+    the endpoint can't be used to probe for registered emails."""
+    user = db.query(User).filter(User.email == body.email).first()
+    if user and user.is_active and user.deleted_at is None:
+        token = create_email_token(str(user.id), "reset", hours=1)
+        link = f"{_frontend()}/reset-password?token={token}"
+        background_tasks.add_task(
+            email_service.send_password_reset, user.email, user.full_name, link
+        )
+    return {"status": "sent"}
+
+
+@router.post("/reset-password")
+def reset_password(body: ResetPasswordBody, db: Session = Depends(get_db)):
+    """Set a new password from a reset link, then revoke every live session:
+    whoever holds old tokens is signed out everywhere."""
+    user_id = verify_email_token(body.token, "reset")
+    if not user_id:
+        raise BadRequestException(
+            detail="That link has expired. Request a new one and try again within the hour."
+        )
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None or not user.is_active or user.deleted_at is not None:
+        raise BadRequestException(detail="Account not found")
+
+    user.hashed_password = hash_password(body.new_password)
+    # A password reset also proves the email is theirs.
+    user.email_verified = True
+    db.commit()
+    token_service.revoke_all_for_user(db, str(user.id))
+    logger.info("Password reset completed for user %s", user.id)
+    return {"status": "reset"}
 
 
 @router.post("/login", response_model=TokenResponse,
