@@ -37,6 +37,7 @@ class UserResponse(BaseModel):
     id: str
     email: str
     email_verified: bool = False
+    subscription_status: str = "none"
     full_name: str | None = None
     weight_kg: float | None = None
     height_cm: float | None = None

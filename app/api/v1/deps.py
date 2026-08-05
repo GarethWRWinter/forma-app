@@ -23,3 +23,21 @@ def get_current_user(
     if not user.is_active or user.deleted_at is not None:
         raise UnauthorizedException(detail="Account is inactive")
     return user
+
+
+def require_paid_access(user: User = Depends(get_current_user)) -> User:
+    """Gate for the surfaces that cost money to serve (the coach, imports).
+
+    A no-op until REQUIRE_SUBSCRIPTION flips true at launch; founder/admin
+    emails always pass. Returns 402 so the client can show the join screen
+    instead of a generic error."""
+    from fastapi import HTTPException
+
+    from app.services import billing_service
+
+    if not billing_service.has_access(user):
+        raise HTTPException(
+            status_code=402,
+            detail="Your Forma membership isn't active. Join from Settings and the coach is yours again.",
+        )
+    return user

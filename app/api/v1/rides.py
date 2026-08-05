@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, UploadFile
 from sqlalchemy.orm import Session
 
-from app.api.v1.deps import get_current_user
+from app.api.v1.deps import get_current_user, require_paid_access
 from app.core.exceptions import BadRequestException, NotFoundException
 from app.database import get_db
 from app.models.user import User
@@ -64,7 +64,7 @@ def _is_supported_ride_file(filename: str | None) -> bool:
 def upload_fit_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_paid_access),
     db: Session = Depends(get_db),
 ):
     """Upload a ride file (FIT, GPX or TCX), parse it, create ride with
@@ -96,7 +96,7 @@ def upload_fit_file(
 @router.post("/import-file")
 def import_ride_file(
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_paid_access),
     db: Session = Depends(get_db),
 ):
     """One file from a bulk archive import (Strava/Garmin account export).
@@ -186,7 +186,7 @@ def finalize_import(
 def record_ride(
     background_tasks: BackgroundTasks,
     body: RideRecordRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_paid_access),
     db: Session = Depends(get_db),
 ):
     """Save an in-app workout recording (from workout player)."""

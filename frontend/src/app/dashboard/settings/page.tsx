@@ -26,6 +26,7 @@ import { Kicker } from "@/components/ui/kicker";
 import { Badge } from "@/components/ui/badge";
 import { SectionHeader } from "@/components/ui/section-header";
 import { ArchiveImport } from "@/components/settings/archive-import";
+import { MembershipCard } from "@/components/settings/membership-card";
 import { WahooCard } from "@/components/settings/wahoo-card";
 
 const EVENT_TYPES = [
@@ -786,6 +787,9 @@ export default function SettingsPage() {
           ))}
         </div>
       </section>
+
+      {/* ============ MEMBERSHIP ============ */}
+      <MembershipCard />
 
       {/* ============ DATA IN ============ */}
       <SectionHeader kicker="Data in" title="Where your rides come from" />

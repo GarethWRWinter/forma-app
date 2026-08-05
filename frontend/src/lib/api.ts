@@ -1137,6 +1137,22 @@ export const strava = {
   disconnect: () => request("/integrations/strava", { method: "DELETE" }),
 };
 
+// === Billing ===
+
+export interface BillingStatus {
+  configured: boolean;
+  required: boolean;
+  status: string; // "none" | "active" | "trialing" | "past_due" | "canceled"
+  period_end: string | null;
+  has_access: boolean;
+}
+
+export const billing = {
+  getStatus: () => request<BillingStatus>("/billing/status"),
+  checkout: () => request<{ url: string }>("/billing/checkout", { method: "POST" }),
+  portal: () => request<{ url: string }>("/billing/portal", { method: "POST" }),
+};
+
 // === Wahoo ===
 
 export interface WahooStatus {

@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     postmark_server_token: str = ""
     email_from: str = "Forma <coach@ridewithforma.com>"
 
+    # Stripe subscriptions. Dormant until the keys exist; the paywall itself
+    # only bites when require_subscription flips true (launch day switch).
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_id: str = ""  # the active subscription price (founding offer)
+    require_subscription: bool = False
+
     # Wahoo Cloud API (developers.wahooligan.com). Integration stays dormant
     # until these are set.
     wahoo_client_id: str = ""

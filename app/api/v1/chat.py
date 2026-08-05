@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.api.v1.deps import get_current_user
+from app.api.v1.deps import get_current_user, require_paid_access
 from app.core.exceptions import NotFoundException
 from app.database import get_db
 from app.models.user import User
@@ -165,7 +165,7 @@ def get_chat_session(
 async def send_message(
     session_id: str,
     body: ChatMessageRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_paid_access),
     db: Session = Depends(get_db),
 ):
     """
@@ -224,7 +224,7 @@ async def text_to_speech_endpoint(
 async def send_voice_message(
     session_id: str,
     body: ChatMessageRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_paid_access),
     db: Session = Depends(get_db),
 ):
     """

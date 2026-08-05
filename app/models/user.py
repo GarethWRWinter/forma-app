@@ -36,6 +36,18 @@ class User(TimestampMixin, Base):
         Boolean, default=False, nullable=False, server_default="false"
     )
 
+    # Billing (Stripe). subscription_status mirrors Stripe via webhooks:
+    # "none" | "active" | "trialing" | "past_due" | "canceled".
+    stripe_customer_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    subscription_status: Mapped[str] = mapped_column(
+        String(20), default="none", nullable=False, server_default="none"
+    )
+    subscription_period_end: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+
     # Physical
     weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
     height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
