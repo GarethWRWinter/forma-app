@@ -107,8 +107,14 @@ async def register(
 
     invited_with = _redeem_invite(db, user_in.invite_code)
 
-    # An invite-code arrival is a founding rider: number them on the way in.
-    founding_number = _next_founding_number(db) if invited_with else None
+    # A validated invite is a founding rider: number them on the way in.
+    # Open-door signups (require_invite off) track their code but are not
+    # founding; the hundred only count when the door is actually gated.
+    founding_number = (
+        _next_founding_number(db)
+        if invited_with and settings.require_invite
+        else None
+    )
 
     user = User(
         email=user_in.email,
