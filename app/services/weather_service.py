@@ -19,7 +19,10 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-BASE = "https://api.openweathermap.org/data/3.0/onecall"
+# One Call 4.0 (Gareth's subscription tier, verified live 11 Aug 2026):
+# /current for now, /timeline/1h for any hour 47 years back to 48h ahead,
+# /timeline/1day for the day's shape. Row field names match 3.0.
+BASE = "https://api.openweathermap.org/data/4.0/onecall"
 
 
 def is_configured() -> bool:
@@ -50,11 +53,11 @@ def ride_conditions(lat: float, lon: float, when: datetime) -> dict | None:
     try:
         with httpx.Client(timeout=10.0) as client:
             resp = client.get(
-                f"{BASE}/timemachine",
+                f"{BASE}/timeline/1h",
                 params={
                     "lat": lat,
                     "lon": lon,
-                    "dt": int(when.timestamp()),
+                    "start": int(when.timestamp()),
                     "units": "metric",
                     "appid": settings.openweather_api_key,
                 },
@@ -87,19 +90,19 @@ async def forecast_today(lat: float, lon: float) -> dict | None:
     if not is_configured():
         return None
     try:
+        params = {"lat": lat, "lon": lon, "units": "metric", "appid": settings.openweather_api_key}
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                BASE,
-                params={
-                    "lat": lat,
-                    "lon": lon,
-                    "exclude": "minutely,alerts",
-                    "units": "metric",
-                    "appid": settings.openweather_api_key,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            now_resp = await client.get(f"{BASE}/current", params=params)
+            now_resp.raise_for_status()
+            hours_resp = await client.get(f"{BASE}/timeline/1h", params=params)
+            hours_resp.raise_for_status()
+            day_resp = await client.get(f"{BASE}/timeline/1day", params=params)
+            day_resp.raise_for_status()
+        data = {
+            "current": (now_resp.json().get("data") or [{}])[0],
+            "hourly": hours_resp.json().get("data") or [],
+            "daily": day_resp.json().get("data") or [],
+        }
     except httpx.HTTPError:
         logger.warning("Forecast lookup failed for (%s, %s)", lat, lon)
         return None
@@ -118,15 +121,16 @@ async def forecast_today(lat: float, lon: float) -> dict | None:
 
     current = data.get("current") or {}
     daily = (data.get("daily") or [{}])[0]
+    day_temp = daily.get("temp") or {}
     return {
         "now": compact(current) if current else None,
         "hours": [compact(h) for h in (data.get("hourly") or [])[:12]],
         "day": {
-            "min_c": round(((daily.get("temp") or {}).get("min")), 1) if (daily.get("temp") or {}).get("min") is not None else None,
-            "max_c": round(((daily.get("temp") or {}).get("max")), 1) if (daily.get("temp") or {}).get("max") is not None else None,
+            "min_c": round(day_temp["min"], 1) if isinstance(day_temp, dict) and day_temp.get("min") is not None else None,
+            "max_c": round(day_temp["max"], 1) if isinstance(day_temp, dict) and day_temp.get("max") is not None else None,
             "rain_chance": round((daily.get("pop") or 0) * 100),
             "summary": daily.get("summary"),
-            "sunrise": datetime.fromtimestamp(daily["sunrise"], tz=timezone.utc).strftime("%H:%M") if daily.get("sunrise") else None,
-            "sunset": datetime.fromtimestamp(daily["sunset"], tz=timezone.utc).strftime("%H:%M") if daily.get("sunset") else None,
+            "sunrise": datetime.fromtimestamp(current["sunrise"], tz=timezone.utc).strftime("%H:%M") if current.get("sunrise") else None,
+            "sunset": datetime.fromtimestamp(current["sunset"], tz=timezone.utc).strftime("%H:%M") if current.get("sunset") else None,
         },
     }
