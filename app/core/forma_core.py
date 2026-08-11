@@ -49,9 +49,10 @@ BUDGET_SOFT_RATIO = 0.80
 
 # Shown to the rider when the hard cap blocks a conversational turn.
 QUOTA_MESSAGE = (
-    "You've reached your Forma conversation quota for this month. Your training "
-    "plan, rides, and data are all still here — we'll pick the conversation back "
-    "up when your quota resets at the start of next month."
+    "We've talked a lot this month, which I count as a good sign. My "
+    "conversation quota resets on the first. Until then your plan, your rides "
+    "and your briefings all keep working, and everything you tell me still "
+    "goes into the memory. Save the big questions for the reset; they'll keep."
 )
 
 

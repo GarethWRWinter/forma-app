@@ -63,9 +63,15 @@ export function MembershipCard() {
       ) : (
         <div className="mt-4 border border-dashed border-vb-border p-5">
           <p className="text-sm leading-relaxed text-vb-text-dim">
-            Full membership: the coach, the memory, the plan that bends
-            around your life. Founding riders keep their price for as long
-            as they stay.
+            Everything, without limits: the coach and its memory, the plan
+            that bends around your life, the pre-ride briefings, the words
+            in your ear on the turbo. A human coach runs £150 a month
+            before the bike fit. This is £19.99, and founding riders keep
+            their price for as long as they stay.
+          </p>
+          <p className="mt-3 text-sm text-vb-text-dim">
+            I read every founding rider&apos;s first month personally.{" "}
+            <span className="f-signature text-lg text-vb-red">G</span>
           </p>
           <Button variant="flamme" className="mt-4" onClick={() => goto(billing.checkout)}>
             Join Forma

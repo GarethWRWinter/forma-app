@@ -85,8 +85,9 @@ function RegisterInner() {
             coach.
           </h2>
           <p className="mt-4 max-w-sm text-sm leading-relaxed text-vb-text-dim">
-            A coach who remembers every ride and builds your future from it.
-            £19.99 a month, your rides from any head unit.
+            A coach who remembers everything and builds your season around
+            the life you actually live. Two minutes from now, Forma starts
+            learning how you ride.
           </p>
         </div>
 
