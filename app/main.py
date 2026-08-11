@@ -98,6 +98,8 @@ app = FastAPI(
 origins = list(settings.cors_origins)
 if settings.frontend_url:
     origins.append(settings.frontend_url)
+# The landing page posts the waitlist form from the marketing domain.
+origins += ["https://www.ridewithforma.com", "https://ridewithforma.com"]
 
 app.add_middleware(
     CORSMiddleware,

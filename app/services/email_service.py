@@ -79,6 +79,35 @@ Forma
     )
 
 
+async def send_waitlist_welcome(to: str) -> bool:
+    """Letter 0 of the Founding Hundred letters. Fires on waitlist join."""
+    return await send(
+        to,
+        "your place is held",
+        """Your place is held.
+
+Here's the deal I owe you now that you're on the list: one letter a week until
+the doors open. Each one contains something you can use on this week's rides.
+Real numbers from my own testing, the marginal gains that cost nothing, the
+fuelling maths most riders get wrong. If you're not a little faster by launch
+day, I'll have failed at the easy half of this.
+
+The first letter lands this week. It's about the test that showed me my own
+body was lying to me by 11%.
+
+Until then, one question, and I read every reply: what's the ride you're
+training for? A race, a sportive, a climb, or just the club run where you want
+to be the one setting the pace. Hit reply and tell me. It genuinely shapes
+what I build.
+
+G
+
+PS. You joined a list of one hundred, not one hundred thousand. When I write
+that I read every reply, it's because the maths allows it.
+""",
+    )
+
+
 async def send_password_reset(to: str, full_name: str | None, link: str) -> bool:
     name = _first_name(full_name, to)
     return await send(

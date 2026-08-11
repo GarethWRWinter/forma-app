@@ -103,7 +103,9 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
 
 1. [ ] Deploy rebuilt landing page (this session)
 2. [ ] Wire Letter 0 to fire on waitlist join (Postmark; manual for now is fine)
-3. [ ] Gareth: founding price decision (rec: £14.99 for life; £19.99 list)
+3. [x] Founding price DECIDED (11 Aug 2026): £14.99/mo locked for as long as
+       they stay; £19.99 list. Stripe: create the £14.99 recurring price and
+       point STRIPE_PRICE_ID at it for the founding cohort.
 4. [ ] Gareth: Stripe account; then checkout goes live (integration already built)
 5. [ ] Legal pages + ICO + monitoring (launch step 4, build next)
 6. [ ] Announcement post (the spine story) on IG + LinkedIn + blog

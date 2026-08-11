@@ -66,8 +66,8 @@ export function MembershipCard() {
             Everything, without limits: the coach and its memory, the plan
             that bends around your life, the pre-ride briefings, the words
             in your ear on the turbo. A human coach runs £150 a month
-            before the bike fit. This is £19.99, and founding riders keep
-            their price for as long as they stay.
+            before the bike fit. Forma is £19.99. The founding hundred
+            ride at £14.99, locked for as long as you stay.
           </p>
           <p className="mt-3 text-sm text-vb-text-dim">
             I read every founding rider&apos;s first month personally.{" "}
