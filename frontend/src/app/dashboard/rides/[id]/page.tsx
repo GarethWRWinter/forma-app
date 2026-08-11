@@ -245,6 +245,9 @@ export default function RideDetailPage() {
           {ride.weather.humidity != null && (
             <span className="f-data text-sm text-vb-text-dim">{ride.weather.humidity}% hum</span>
           )}
+          {ride.weather.pressure_hpa != null && (
+            <span className="f-data text-sm text-vb-text-dim">{ride.weather.pressure_hpa} hPa</span>
+          )}
           {ride.weather.description && (
             <span className="f-kicker text-vb-text-dim">{ride.weather.description}</span>
           )}

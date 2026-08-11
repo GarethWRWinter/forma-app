@@ -1,8 +1,16 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import dynamic from "next/dynamic";
+import Link from "next/link";
 import { coachInsights } from "@/lib/api";
 import { Kicker } from "@/components/ui/kicker";
+import { buttonVariants } from "@/components/ui/button";
+
+const RouteWindMap = dynamic(
+  () => import("@/components/charts/route-wind-map").then((m) => m.RouteWindMap),
+  { ssr: false }
+);
 
 /** The team car before the stage: today's pre-ride briefing.
     Daily = the word through the car window; goal day = the full talk. */
@@ -28,7 +36,13 @@ export function BriefingCard() {
   if (!briefing) return null;
 
   const isGoalDay = briefing.kind === "goal";
-  const c = briefing.conditions;
+  const c = briefing.conditions?.now;
+  const route = briefing.conditions?.route;
+  const ask = encodeURIComponent(
+    isGoalDay
+      ? "Let's talk through today's event: the conditions, the route, and how I should ride it."
+      : "Let's talk through today's ride: the conditions and how to get the best from it."
+  );
 
   return (
     <section
@@ -51,6 +65,11 @@ export function BriefingCard() {
           </span>
         )}
       </div>
+      {route && route.track.length > 1 && (
+        <div className="mt-4">
+          <RouteWindMap route={route} />
+        </div>
+      )}
       <div
         className={
           "mt-3 whitespace-pre-line leading-relaxed text-vb-text " +
@@ -59,7 +78,15 @@ export function BriefingCard() {
       >
         {briefing.content}
       </div>
-      <p className="f-signature mt-4 text-xl">Forma</p>
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <p className="f-signature text-xl">Forma</p>
+        <Link
+          href={`/dashboard/coach?ask=${ask}`}
+          className={buttonVariants({ variant: "ghost", size: "sm" })}
+        >
+          Talk it through with Forma →
+        </Link>
+      </div>
     </section>
   );
 }

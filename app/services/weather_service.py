@@ -75,6 +75,7 @@ def ride_conditions(lat: float, lon: float, when: datetime) -> dict | None:
             "gust_kph": _wind_kph(data.get("wind_gust")),
             "wind_deg": data.get("wind_deg"),
             "wind_dir": _compass(data.get("wind_deg")),
+            "pressure_hpa": data.get("pressure"),
             "precip_mm": (data.get("rain") or {}).get("1h") or (data.get("snow") or {}).get("1h"),
             "condition": weather.get("main"),
             "description": weather.get("description"),
@@ -115,7 +116,9 @@ async def forecast_today(lat: float, lon: float) -> dict | None:
             "wind_kph": _wind_kph(h.get("wind_speed")),
             "gust_kph": _wind_kph(h.get("wind_gust")),
             "wind_dir": _compass(h.get("wind_deg")),
+            "wind_deg": h.get("wind_deg"),
             "rain_chance": round((h.get("pop") or 0) * 100),
+            "pressure_hpa": h.get("pressure"),
             "condition": weather.get("description"),
         }
 

@@ -285,9 +285,30 @@ def parse_gpx_route_data(filepath: str) -> dict:
     # Target ~300-500 points max to keep JSON manageable
     elevation_profile = _build_elevation_profile(raw_profile, total_distance_m)
 
+    # Downsampled coordinate track (persists in the DB, unlike the uploaded
+    # file on ephemeral disk). Feeds the goal-day wind map and per-segment
+    # briefing analysis: [[lat, lon, cumulative_km], ...], <=240 points.
+    track: list[list[float]] = []
+    if trackpoints:
+        step = max(1, len(trackpoints) // 240)
+        cumulative = 0.0
+        for i in range(len(trackpoints)):
+            if i > 0:
+                cumulative += _haversine(
+                    trackpoints[i - 1][0], trackpoints[i - 1][1],
+                    trackpoints[i][0], trackpoints[i][1],
+                )
+            if i % step == 0 or i == len(trackpoints) - 1:
+                track.append([
+                    round(trackpoints[i][0], 5),
+                    round(trackpoints[i][1], 5),
+                    round(cumulative / 1000, 2),
+                ])
+
     return {
         "source": "gpx",
         "name": name,
+        "track": track,
         "total_distance_km": round(total_distance_m / 1000, 2),
         "elevation_gain_m": round(elevation_gain_m, 1),
         "min_elevation_m": round(min_elevation, 1) if min_elevation is not None else None,

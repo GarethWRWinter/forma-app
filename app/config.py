@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     # ElevenLabs (Voice)
     elevenlabs_api_key: str = ""
-    elevenlabs_voice_id: str = "onwK4e9ZLuTAKqWW03F9"  # "Daniel" — warm, authoritative
+    elevenlabs_voice_id: str = "Fahco4VZzobUeiPqni1S"  # Gareth's pick for the male coach (11 Aug 2026)
     elevenlabs_model_id: str = "eleven_turbo_v2_5"  # Low latency (~300ms)
     # Riders don't have amazing patience: a touch quicker than natural.
     # ElevenLabs caps speed at 1.2 (floor 0.7).

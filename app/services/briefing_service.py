@@ -39,10 +39,16 @@ Cover, in flowing prose (a short list for kit is fine):
 - What to wear and carry for these exact numbers (layers, shell, bottles).
 - Chain prep when relevant. Doctrine: wax over oil, always.
 
+You do not know today's route, so keep wind advice general and honest:
+"wind from the {direction}, so expect it in your face heading that way
+and a push coming home" framed around their region's geography. Never
+invent a route.
+
 Ground every claim in the forecast and plan provided. If no forecast is
 available, brief without weather and say so plainly. Never invent the
-rider's location, sleep or feelings. End with one line that makes them
-want to ride."""
+rider's location, sleep or feelings. Close with ONE short clarifying
+question about today (route, timing, or how they're feeling), and let
+them know they can tap through to talk it through properly with you."""
 
 GOAL_INSTRUCTIONS = """\
 Today is the rider's GOAL EVENT. Write the full team-car briefing they
@@ -61,10 +67,72 @@ Structure it as flowing prose with short paragraphs:
 6. Close like a directeur sportif who believes in them. No hype words,
    no exclamation pile-ups. One flamme line, then out.
 
+If `route_wind_segments` is provided, this is where you earn your seat in
+the car: walk the course in order and turn wind into ENERGY STRATEGY.
+Name the stretches by their kilometre marks: where the headwind is a tax
+to be paid patiently (sit in, hold steady watts, never chase), where the
+tailwind is free speed to bank (this is where the pace goes up for less
+cost), and where crosswinds demand attention to positioning. Two or three
+decisive stretches, not a segment-by-segment recitation.
+
 Ground everything in the data provided. The forecast is data; their
 numbers are data; anything else you want, you do not have, so do not
-invent it."""
+invent it. Close with ONE sharp clarifying question (their plan for
+fuelling, their start-line feeling, or the stretch that worries them),
+and let them know the team car channel is open all day: tap through and
+talk it out."""
 
+
+def _bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Initial bearing from point 1 to point 2, degrees clockwise from north."""
+    import math
+
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lon2 - lon1)
+    x = math.sin(dl) * math.cos(p2)
+    y = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return (math.degrees(math.atan2(x, y)) + 360) % 360
+
+def _wind_class(bearing: float, wind_from_deg: float) -> str:
+    """head | tail | cross for a rider travelling on `bearing` with wind
+    blowing FROM `wind_from_deg` (meteorological convention)."""
+    wind_to = (wind_from_deg + 180) % 360
+    diff = abs(((wind_to - bearing + 540) % 360) - 180)
+    if diff <= 60:
+        return "tail"
+    if diff >= 120:
+        return "head"
+    return "cross"
+
+def analyze_route_wind(track: list[list[float]], wind_from_deg: float) -> list[dict]:
+    """Walk the route, classify each stretch against the wind, and merge
+    consecutive same-class stretches into segments the coach can narrate:
+    [{"from_km", "to_km", "wind": "head|tail|cross"}]."""
+    if not track or len(track) < 2:
+        return []
+    segments: list[dict] = []
+    for i in range(1, len(track)):
+        klass = _wind_class(
+            _bearing(track[i - 1][0], track[i - 1][1], track[i][0], track[i][1]),
+            wind_from_deg,
+        )
+        if segments and segments[-1]["wind"] == klass:
+            segments[-1]["to_km"] = track[i][2]
+        else:
+            segments.append(
+                {"from_km": track[i - 1][2], "to_km": track[i][2], "wind": klass}
+            )
+    # Absorb blips under 1km into their neighbour: the coach talks in
+    # stretches, not GPS noise.
+    merged: list[dict] = []
+    for seg in segments:
+        if merged and (seg["to_km"] - seg["from_km"]) < 1.0:
+            merged[-1]["to_km"] = seg["to_km"]
+        elif merged and merged[-1]["wind"] == seg["wind"]:
+            merged[-1]["to_km"] = seg["to_km"]
+        else:
+            merged.append(dict(seg))
+    return merged
 
 def _last_known_fix(db: Session, user_id: str) -> tuple[float, float, str | None] | None:
     """The start point of the rider's most recent GPS ride: our best honest
@@ -119,14 +187,43 @@ async def get_or_create_briefing(db: Session, user: User) -> Briefing:
         .all()
     )
 
+    # Where to read the sky: the goal route's start line when today is the
+    # day and a route exists; the rider's last-known riding area otherwise.
     forecast = None
     locale = None
-    fix = _last_known_fix(db, user.id)
-    if fix is not None:
-        from app.services import weather_service
+    route_data = (goal_today.route_data or {}) if goal_today else {}
+    route_track = route_data.get("track") or []
+    route_start = route_data.get("start") or {}
 
-        locale = fix[2]
-        forecast = await weather_service.forecast_today(fix[0], fix[1])
+    from app.services import weather_service
+
+    if goal_today and route_start.get("lat") is not None:
+        locale = goal_today.event_name
+        forecast = await weather_service.forecast_today(
+            route_start["lat"], route_start["lon"]
+        )
+    else:
+        fix = _last_known_fix(db, user.id)
+        if fix is not None:
+            locale = fix[2]
+            forecast = await weather_service.forecast_today(fix[0], fix[1])
+
+    # Per-segment wind reading for the route, when we know both the route
+    # and the wind. This is what turns "windy today" into strategy.
+    wind_segments: list[dict] = []
+    wind_now = (forecast or {}).get("now") or {}
+    if route_track and forecast:
+        # Use the forecast's raw wind bearing: pull from the first hour row
+        # (compact rows carry compass only), fall back to current.
+        wind_deg = None
+        for h in (forecast.get("hours") or []):
+            if h.get("wind_deg") is not None:
+                wind_deg = h["wind_deg"]
+                break
+        if wind_deg is None and wind_now.get("wind_deg") is not None:
+            wind_deg = wind_now["wind_deg"]
+        if wind_deg is not None:
+            wind_segments = analyze_route_wind(route_track, wind_deg)
 
     from app.services.metrics_service import get_current_fitness
 
@@ -157,7 +254,11 @@ async def get_or_create_briefing(db: Session, user: User) -> Briefing:
             "priority": str(goal_today.priority),
             "notes": goal_today.notes,
             "target_duration_minutes": goal_today.target_duration_minutes,
+            "route_distance_km": route_data.get("total_distance_km"),
+            "route_elevation_gain_m": route_data.get("elevation_gain_m"),
         }
+        if wind_segments:
+            context["route_wind_segments"] = wind_segments
 
     try:
         from app.services.dossier_service import dossier_context
@@ -181,12 +282,29 @@ async def get_or_create_briefing(db: Session, user: User) -> Briefing:
     )
     content = humanize(response_text(response).strip())
 
+    conditions: dict | None = None
+    if forecast:
+        conditions = {"now": forecast.get("now"), "day": forecast.get("day")}
+        if route_track and wind_segments:
+            # Persisted so the goal-day map survives cache hits: the route,
+            # its wind segments, and the wind that produced them.
+            conditions["route"] = {
+                "track": [[p[0], p[1]] for p in route_track],
+                "segments": wind_segments,
+                "wind_deg": next(
+                    (h.get("wind_deg") for h in (forecast.get("hours") or []) if h.get("wind_deg") is not None),
+                    wind_now.get("wind_deg"),
+                ),
+                "wind_kph": wind_now.get("wind_kph"),
+                "km": [p[2] for p in route_track],
+            }
+
     briefing = Briefing(
         user_id=user.id,
         date=today,
         kind=kind,
         content=content,
-        conditions=(forecast or {}).get("now") if forecast else None,
+        conditions=conditions,
     )
     db.add(briefing)
     db.commit()

@@ -300,6 +300,7 @@ export interface Ride {
     gust_kph?: number | null;
     wind_deg?: number | null;
     wind_dir?: string | null;
+    pressure_hpa?: number | null;
     precip_mm?: number | null;
     condition?: string | null;
     description?: string | null;
@@ -1304,7 +1305,23 @@ export interface CoachBriefing {
   kind: "daily" | "goal";
   date: string;
   content: string;
-  conditions: BriefingConditions | null;
+  conditions: {
+    now?: BriefingConditions | null;
+    day?: {
+      min_c?: number | null;
+      max_c?: number | null;
+      rain_chance?: number;
+      sunrise?: string | null;
+      sunset?: string | null;
+    } | null;
+    route?: {
+      track: [number, number][];
+      km: number[];
+      segments: { from_km: number; to_km: number; wind: "head" | "tail" | "cross" }[];
+      wind_deg?: number | null;
+      wind_kph?: number | null;
+    } | null;
+  } | null;
 }
 
 export const coachInsights = {

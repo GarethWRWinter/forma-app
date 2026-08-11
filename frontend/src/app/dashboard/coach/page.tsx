@@ -40,6 +40,14 @@ function CoachPageInner() {
 
   const isDebrief = searchParams.get("debrief") === "true";
 
+  // Handoffs from briefings and other surfaces arrive as ?ask=... and
+  // prefill the input; the rider presses send, nothing is sent for them.
+  const askParam = searchParams.get("ask");
+  useEffect(() => {
+    if (askParam) setInput(askParam);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askParam]);
+
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<
     { role: "user" | "assistant"; content: string; id?: string; created_at?: string }[]
