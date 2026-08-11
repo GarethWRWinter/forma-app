@@ -141,3 +141,59 @@ def list_invites(
             for r in rows
         ]
     }
+
+
+# ---------------------------------------------------------------------------
+# Founding hundred (rider numbers)
+# ---------------------------------------------------------------------------
+
+@router.post("/founding/assign")
+def assign_founding_number(
+    email: str = Query(...),
+    number: int | None = Query(None, ge=1, le=100),
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Give a rider their founding number. Explicit number, or next free.
+    Idempotent: a rider who already has one keeps it."""
+    from app.api.v1.auth import _next_founding_number
+    from app.core.exceptions import BadRequestException, NotFoundException
+
+    user = db.query(User).filter(User.email == email.lower().strip()).first()
+    if user is None:
+        raise NotFoundException(detail="No rider with that email")
+    if user.founding_number is not None:
+        return {"email": user.email, "founding_number": user.founding_number}
+
+    if number is not None:
+        taken = db.query(User).filter(User.founding_number == number).first()
+        if taken is not None:
+            raise BadRequestException(detail=f"Number {number} is already worn")
+        user.founding_number = number
+    else:
+        nxt = _next_founding_number(db)
+        if nxt is None:
+            raise BadRequestException(detail="The hundred are all in")
+        user.founding_number = nxt
+    db.commit()
+    return {"email": user.email, "founding_number": user.founding_number}
+
+
+@router.get("/founding")
+def list_founding(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(User)
+        .filter(User.founding_number.isnot(None))
+        .order_by(User.founding_number.asc())
+        .all()
+    )
+    return {
+        "count": len(rows),
+        "riders": [
+            {"number": r.founding_number, "email": r.email, "name": r.full_name}
+            for r in rows
+        ],
+    }

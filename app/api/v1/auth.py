@@ -2,6 +2,7 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Response
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -81,6 +82,18 @@ def _redeem_invite(db: Session, code: str | None) -> str | None:
     return normalised
 
 
+FOUNDING_CAP = 100
+
+
+def _next_founding_number(db: Session) -> int | None:
+    """Next free rider number, or None once the hundred are in. The unique
+    constraint on users.founding_number is the final arbiter under races."""
+    from sqlalchemy import func
+
+    taken = db.query(func.max(User.founding_number)).scalar() or 0
+    return taken + 1 if taken < FOUNDING_CAP else None
+
+
 @router.post("/register", response_model=UserResponse, status_code=201,
              dependencies=[Depends(_register_limit)])
 async def register(
@@ -94,14 +107,25 @@ async def register(
 
     invited_with = _redeem_invite(db, user_in.invite_code)
 
+    # An invite-code arrival is a founding rider: number them on the way in.
+    founding_number = _next_founding_number(db) if invited_with else None
+
     user = User(
         email=user_in.email,
         hashed_password=hash_password(user_in.password),
         full_name=user_in.full_name,
         invited_with=invited_with,
+        founding_number=founding_number,
     )
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Two founding signups landed on the same number: take the next one.
+        db.rollback()
+        user.founding_number = _next_founding_number(db)
+        db.add(user)
+        db.commit()
     db.refresh(user)
 
     # Best-effort: a failed email must never block the signup itself.

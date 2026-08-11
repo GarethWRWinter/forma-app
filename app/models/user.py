@@ -51,6 +51,12 @@ class User(TimestampMixin, Base):
     # Which invite code opened the door (beta cohort tracking).
     invited_with: Mapped[str | None] = mapped_column(String(24), nullable=True)
 
+    # Founding hundred: rider number 1-100, assigned once, never reissued.
+    # Unique constraint is the race arbiter for simultaneous signups.
+    founding_number: Mapped[int | None] = mapped_column(
+        Integer, unique=True, nullable=True
+    )
+
     # Physical
     weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
     height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)

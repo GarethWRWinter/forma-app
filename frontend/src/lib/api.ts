@@ -225,6 +225,7 @@ export interface UserProfile {
   id: string;
   email: string;
   email_verified?: boolean;
+  founding_number?: number | null;
   full_name: string | null;
   weight_kg: number | null;
   height_cm: number | null;

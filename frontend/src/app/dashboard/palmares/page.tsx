@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { buttonVariants } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth-context";
 import { INKSCAPES } from "@/lib/dailyInkscape";
+import { FoundingBadge } from "@/components/palmares/founding-badge";
 
 /**
  * Palmarès — the trophy cabinet. The kite is the trophy: a pennant wall
@@ -177,6 +178,9 @@ export default function PalmaresPage() {
           ))}
         </section>
       )}
+
+      {/* Founding rider badge studio */}
+      <FoundingBadge />
 
       {/* THE CABINET — raced goals as pennants */}
       <section className="f-rise">
