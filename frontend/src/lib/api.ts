@@ -251,6 +251,15 @@ export const users = {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
+  getBadgePhoto: () =>
+    request<{ data_url: string | null }>("/users/me/badge-photo"),
+  setBadgePhoto: (dataUrl: string) =>
+    request<{ saved: boolean }>("/users/me/badge-photo", {
+      method: "PUT",
+      body: JSON.stringify({ data_url: dataUrl }),
+    }),
+  clearBadgePhoto: () =>
+    request<void>("/users/me/badge-photo", { method: "DELETE" }),
 };
 
 // === Rides ===

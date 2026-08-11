@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, Float, Integer, String
+from sqlalchemy import Boolean, Date, DateTime, Enum, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -56,6 +56,10 @@ class User(TimestampMixin, Base):
     founding_number: Mapped[int | None] = mapped_column(
         Integer, unique=True, nullable=True
     )
+
+    # Badge ground: the rider's chosen photo as a downscaled JPEG data URL.
+    # Private to the rider; only ever drawn onto their own badge canvas.
+    badge_photo: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Physical
     weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)

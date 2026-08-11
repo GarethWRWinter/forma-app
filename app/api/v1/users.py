@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, Response
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_current_user
+from app.core.exceptions import BadRequestException
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user import UserResponse, UserUpdate
@@ -27,6 +29,41 @@ def update_profile(
     db.commit()
     db.refresh(current_user)
     return current_user
+
+
+class BadgePhotoBody(BaseModel):
+    # A downscaled JPEG data URL from the badge studio. ~2MB ceiling keeps
+    # the row honest; the client sends ~200-400KB after its own resize.
+    data_url: str = Field(min_length=32, max_length=2_000_000)
+
+
+@router.get("/me/badge-photo")
+def get_badge_photo(current_user: User = Depends(get_current_user)):
+    """Kept off /me so the profile payload stays light everywhere else."""
+    return {"data_url": current_user.badge_photo}
+
+
+@router.put("/me/badge-photo")
+def set_badge_photo(
+    body: BadgePhotoBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not body.data_url.startswith(("data:image/jpeg;base64,", "data:image/png;base64,")):
+        raise BadRequestException(detail="Send the photo as a JPEG or PNG data URL")
+    current_user.badge_photo = body.data_url
+    db.commit()
+    return {"saved": True}
+
+
+@router.delete("/me/badge-photo", status_code=204)
+def clear_badge_photo(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    current_user.badge_photo = None
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/me/export")

@@ -2,18 +2,21 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
+import { users } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "@/components/ui/section-header";
 import { INKSCAPES } from "@/lib/dailyInkscape";
 
 /**
  * The founding badge — rider number as a badge of honour, designed by the
- * rider, shared on their feed. The photo never leaves the browser: it is
- * drawn straight onto a local canvas and downloaded from there.
+ * rider, shared on their feed. The chosen photo is downscaled in the
+ * browser and saved privately to the rider's account, so the badge is
+ * exactly as they left it every time they come back.
  */
 
 const W = 1080;
 const H = 1350;
+const MAX_EDGE = 1600; // stored-photo long edge; keeps rows a few hundred KB
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((res, rej) => {
@@ -22,6 +25,16 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     img.onerror = rej;
     img.src = src;
   });
+}
+
+/** Downscale to a JPEG data URL that is cheap to store and fetch. */
+function toStoredJpeg(img: HTMLImageElement): string {
+  const scale = Math.min(1, MAX_EDGE / Math.max(img.width, img.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(img.width * scale);
+  c.height = Math.round(img.height * scale);
+  c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.82);
 }
 
 async function drawBadge(
@@ -100,8 +113,24 @@ export function FoundingBadge() {
   const { user } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [photo, setPhoto] = useState<HTMLImageElement | null>(null);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
   const number = user?.founding_number ?? null;
   const name = user?.full_name || "Founding rider";
+
+  // Restore the saved ground once on arrival.
+  useEffect(() => {
+    if (!number) return;
+    let cancelled = false;
+    users
+      .getBadgePhoto()
+      .then(async ({ data_url }) => {
+        if (data_url && !cancelled) setPhoto(await loadImage(data_url));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [number]);
 
   const render = useCallback(async () => {
     if (!canvasRef.current || !number) return;
@@ -118,10 +147,26 @@ export function FoundingBadge() {
     if (!file) return;
     const url = URL.createObjectURL(file);
     try {
-      setPhoto(await loadImage(url));
+      const img = await loadImage(url);
+      setPhoto(img);
+      setSaveState("saving");
+      try {
+        await users.setBadgePhoto(toStoredJpeg(img));
+        setSaveState("saved");
+      } catch {
+        setSaveState("failed");
+      }
     } catch {
       URL.revokeObjectURL(url);
     }
+  };
+
+  const onClearPhoto = async () => {
+    setPhoto(null);
+    setSaveState("idle");
+    try {
+      await users.clearBadgePhoto();
+    } catch {}
   };
 
   const onDownload = () => {
@@ -165,7 +210,7 @@ export function FoundingBadge() {
               <button
                 type="button"
                 className="text-sm text-vb-text-muted underline-offset-4 hover:underline"
-                onClick={() => setPhoto(null)}
+                onClick={() => void onClearPhoto()}
               >
                 Back to the ink
               </button>
@@ -175,7 +220,13 @@ export function FoundingBadge() {
             </Button>
           </div>
           <p className="f-data text-xs text-vb-text-muted">
-            1080 × 1350, made for the feed. Your photo stays on your device.
+            {saveState === "saving" && "Saving your photo to your account..."}
+            {saveState === "saved" &&
+              "Saved. Your badge will look exactly like this next time."}
+            {saveState === "failed" &&
+              "The photo is on the badge but didn't save. Try choosing it again."}
+            {saveState === "idle" &&
+              "1080 × 1350, made for the feed. Your photo saves privately to your account."}
           </p>
         </div>
       </div>
