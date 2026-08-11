@@ -262,13 +262,10 @@ export default function RideDetailPage() {
       )}
 
       {/* ============ RIDE CHART ============ */}
+      {/* RideChart draws its own card (border, heading, legend); wrapping it
+          in a second, shorter card was the overflow in the 11 Aug review. */}
       {rideData && rideData.data_points.length > 0 && (
-        <div className="border border-vb-border-subtle bg-vb-surface p-5">
-          <Kicker className="mb-4">The ride, second by second</Kicker>
-          <div className="h-80">
-            <RideChart data={rideData.data_points} />
-          </div>
-        </div>
+        <RideChart data={rideData.data_points} />
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
