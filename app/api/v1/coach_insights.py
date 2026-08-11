@@ -51,6 +51,24 @@ class UsageResponse(BaseModel):
 
 # --- Endpoints ---
 
+@router.get("/briefing")
+async def get_briefing(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Today's pre-ride briefing: the team car before the stage. Generated
+    once per day per rider (goal days get the full talk) and cached."""
+    from app.services.briefing_service import get_or_create_briefing
+
+    briefing = await get_or_create_briefing(db, current_user)
+    return {
+        "kind": briefing.kind,
+        "date": briefing.date.isoformat(),
+        "content": briefing.content,
+        "conditions": briefing.conditions,
+    }
+
+
 @router.get("/usage", response_model=UsageResponse)
 def get_usage(current_user: User = Depends(get_current_user)):
     """The rider's month-to-date Forma spend vs their cap. Drives the soft-cap

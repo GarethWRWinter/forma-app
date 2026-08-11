@@ -296,6 +296,11 @@ def _build_debrief_context(
             # From the file's own GPS. Ground truth: if memory says the
             # rider is elsewhere, the file wins.
             "location_from_ride_gps": ride.location_name or None,
+            # Conditions at the start line: a 250W headwind slog is not a
+            # bad day. Read the performance against these.
+            "weather_at_start": (
+                ride.weather if ride.weather and not ride.weather.get("none") else None
+            ),
             "duration_minutes": (ride.moving_time_seconds or ride.duration_seconds or 0) // 60,
             "distance_km": round((ride.distance_meters or 0) / 1000, 1),
             "elevation_m": round(ride.elevation_gain_meters or 0),

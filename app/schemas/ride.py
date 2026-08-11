@@ -48,6 +48,7 @@ class RideResponse(BaseModel):
     forma_title: str | None = None
     story: str | None = None
     location_name: str | None = None
+    weather: dict | None = None
     created_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)

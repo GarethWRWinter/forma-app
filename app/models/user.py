@@ -48,6 +48,9 @@ class User(TimestampMixin, Base):
         DateTime, nullable=True
     )
 
+    # Which invite code opened the door (beta cohort tracking).
+    invited_with: Mapped[str | None] = mapped_column(String(24), nullable=True)
+
     # Physical
     weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
     height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)

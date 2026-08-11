@@ -85,6 +85,10 @@ class Ride(TimestampMixin, Base):
     # Nearest-town locale from the file's own GPS ("Ditchling, UK").
     # Ground truth for where the ride happened; beats remembered whereabouts.
     location_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+    # Conditions at start time and place (temp, wind, rain...). {"none": true}
+    # means checked-and-unavailable, so lazy backfill never re-queries.
+    weather: Mapped[dict | None] = mapped_column(SA_JSON, nullable=True)
     debrief_generated_at: Mapped[str | None] = mapped_column(DateTime, nullable=True)
 
     # Relationships

@@ -8,6 +8,7 @@ import { metrics, rides, training, goals as goalsApi, coachInsights, inspiration
 import { useAuth } from "@/lib/auth-context";
 import { formatDuration, formatDate, cn } from "@/lib/utils";
 import { RiderProfileRadar } from "@/components/charts/rider-profile-radar";
+import { BriefingCard } from "@/components/dashboard/briefing-card";
 import { Kicker } from "@/components/ui/kicker";
 import { SectionHeader } from "@/components/ui/section-header";
 import { DataTile } from "@/components/ui/data-tile";
@@ -315,6 +316,9 @@ export default function DashboardPage() {
           </div>
         </section>
       )}
+
+      {/* ============ PRE-RIDE BRIEFING ============ */}
+      <BriefingCard />
 
       {/* ============ TODAY'S SESSION ============ */}
       {todaySession && sessionZone ? (

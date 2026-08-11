@@ -44,6 +44,43 @@ async def _send_verification_email(user_id: str, email: str, full_name: str | No
 _DUMMY_HASH = hash_password("forma-nonexistent-account-placeholder")
 
 
+@router.get("/config")
+def auth_config():
+    """Public flags the entry pages need before anyone is logged in."""
+    return {"invite_required": settings.require_invite}
+
+
+def _redeem_invite(db: Session, code: str | None) -> str | None:
+    """Validate and consume one use of an invite code. Returns the
+    normalised code, or raises. No-op (returns None) when the door is open."""
+    from datetime import datetime
+
+    from app.models.invite import InviteCode
+
+    if not settings.require_invite:
+        return code.strip().upper() if code else None
+    if not code or not code.strip():
+        raise BadRequestException(
+            detail="Forma is invite-only right now. Join the list at ridewithforma.com and we'll call you up."
+        )
+    normalised = code.strip().upper()
+    # Row-lock so two simultaneous signups can't share a single-use code.
+    invite = (
+        db.query(InviteCode)
+        .filter(InviteCode.code == normalised)
+        .with_for_update()
+        .first()
+    )
+    if invite is None or invite.uses >= invite.max_uses or (
+        invite.expires_at is not None and invite.expires_at < datetime.utcnow()
+    ):
+        raise BadRequestException(
+            detail="That invite code isn't valid any more. Reply to your invite email and we'll sort you out."
+        )
+    invite.uses += 1
+    return normalised
+
+
 @router.post("/register", response_model=UserResponse, status_code=201,
              dependencies=[Depends(_register_limit)])
 async def register(
@@ -55,10 +92,13 @@ async def register(
     if existing:
         raise ConflictException(detail="Email already registered")
 
+    invited_with = _redeem_invite(db, user_in.invite_code)
+
     user = User(
         email=user_in.email,
         hashed_password=hash_password(user_in.password),
         full_name=user_in.full_name,
+        invited_with=invited_with,
     )
     db.add(user)
     db.commit()

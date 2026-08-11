@@ -13,6 +13,13 @@ import { formatDuration, formatDate, formatPower } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 import { RideChart } from "@/components/charts/ride-chart";
+import dynamic from "next/dynamic";
+
+// Leaflet touches `window` at import time; load the map client-side only.
+const RideMap = dynamic(
+  () => import("@/components/charts/ride-map").then((m) => m.RideMap),
+  { ssr: false }
+);
 import { PowerCurveChart } from "@/components/charts/power-curve-chart";
 import { RideZonesChart } from "@/components/charts/ride-zones-chart";
 import { DataTile } from "@/components/ui/data-tile";
@@ -212,6 +219,46 @@ export default function RideDetailPage() {
             </ReactMarkdown>
           </div>
         </CoachNote>
+      )}
+
+      {/* ============ CONDITIONS ============ */}
+      {ride.weather && !ride.weather.none && (
+        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 border border-vb-border-subtle bg-vb-surface px-5 py-3">
+          <span className="f-kicker text-vb-text-muted">Conditions</span>
+          {ride.weather.temp_c != null && (
+            <span className="f-data text-sm text-vb-text">
+              {Math.round(ride.weather.temp_c)}°C
+              {ride.weather.feels_c != null &&
+                Math.round(ride.weather.feels_c) !== Math.round(ride.weather.temp_c) && (
+                  <span className="text-vb-text-dim"> feels {Math.round(ride.weather.feels_c)}°</span>
+                )}
+            </span>
+          )}
+          {ride.weather.wind_kph != null && (
+            <span className="f-data text-sm text-vb-text">
+              {ride.weather.wind_dir ?? ""} {Math.round(ride.weather.wind_kph)} km/h
+              {ride.weather.gust_kph != null && (
+                <span className="text-vb-text-dim"> g{Math.round(ride.weather.gust_kph)}</span>
+              )}
+            </span>
+          )}
+          {ride.weather.humidity != null && (
+            <span className="f-data text-sm text-vb-text-dim">{ride.weather.humidity}% hum</span>
+          )}
+          {ride.weather.description && (
+            <span className="f-kicker text-vb-text-dim">{ride.weather.description}</span>
+          )}
+        </div>
+      )}
+
+      {/* ============ THE ROUTE ============ */}
+      {rideData && rideData.data_points.some((p) => p.latitude != null) && (
+        <div className="border border-vb-border-subtle bg-vb-surface p-5">
+          <Kicker className="mb-4">
+            The route{ride.location_name ? ` · ${ride.location_name}` : ""}
+          </Kicker>
+          <RideMap data={rideData.data_points} />
+        </div>
       )}
 
       {/* ============ RIDE CHART ============ */}

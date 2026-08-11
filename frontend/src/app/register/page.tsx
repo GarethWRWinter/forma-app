@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { authConfig } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { FormaMark } from "@/components/ui/forma-mark";
 import { Kicker } from "@/components/ui/kicker";
@@ -11,14 +13,36 @@ import { Input } from "@/components/ui/input";
 import { Button, Arrow } from "@/components/ui/button";
 
 export default function RegisterPage() {
+  return (
+    <Suspense fallback={null}>
+      <RegisterInner />
+    </Suspense>
+  );
+}
+
+function RegisterInner() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const { register } = useAuth();
   const router = useRouter();
+  const params = useSearchParams();
+
+  // Invite links from the waitlist carry ?invite=FORMA-XXXXXX.
+  useEffect(() => {
+    const fromLink = params.get("invite");
+    if (fromLink) setInviteCode(fromLink.toUpperCase());
+  }, [params]);
+
+  const { data: config } = useQuery({
+    queryKey: ["auth-config"],
+    queryFn: () => authConfig(),
+  });
+  const inviteRequired = config?.invite_required ?? false;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,7 +50,7 @@ export default function RegisterPage() {
     setLoading(true);
 
     try {
-      await register(email, password, name || undefined);
+      await register(email, password, name || undefined, inviteCode || undefined);
       router.push("/onboarding");
     } catch (err: unknown) {
       const msg =
@@ -62,7 +86,7 @@ export default function RegisterPage() {
           </h2>
           <p className="mt-4 max-w-sm text-sm leading-relaxed text-vb-text-dim">
             A coach who remembers every ride and builds your future from it.
-            £19.99 a month, a free Strava account is all you need.
+            £19.99 a month, your rides from any head unit.
           </p>
         </div>
 
@@ -70,6 +94,24 @@ export default function RegisterPage() {
           {error && (
             <div className="border-l-[3px] border-vb-red bg-vb-surface px-4 py-3 text-sm text-vb-text">
               {error}
+            </div>
+          )}
+
+          {(inviteRequired || inviteCode) && (
+            <div>
+              <label className="f-kicker mb-2 block text-vb-text">Invite code</label>
+              <Input
+                type="text"
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+                required={inviteRequired}
+                placeholder="FORMA-XXXXXX"
+                className="font-mono uppercase tracking-[0.08em]"
+              />
+              <p className="mt-1.5 text-xs text-vb-text-dim">
+                Forma is invite-only while the Founding Hundred fills. No code
+                yet? Join the list at ridewithforma.com.
+              </p>
             </div>
           )}
 

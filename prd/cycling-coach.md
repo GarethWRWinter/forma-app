@@ -214,6 +214,23 @@ Email + password + OAuth (Google, Apple), per-user data isolation via Postgres R
 - **Gross margin ≥ 60%** after Anthropic + ElevenLabs + hosting + Strava per active user. (See cost model below.)
 - **CAC payback ≤ 9 months.**
 
+### Ride maps, weather, and pre-ride briefings (added 5 Aug 2026)
+
+- **Ride maps.** Every ride with GPS renders its route on the ride detail page: monochrome print-style tiles (brand: chalk/ink), flamme route line. The same GPS feeds memory grounding (locale already extracted per ride; "riding in Tallinn" becomes a memory the coach can use).
+- **Weather on every ride.** At import, rides with GPS get stamped with conditions at start time and location: temperature, feels-like, wind speed/direction/gusts, humidity, precipitation. Displayed as a conditions strip on ride detail and fed to debrief context so the coach reads performance against conditions (a 250W headwind slog is not a bad day). Provider: OpenWeatherMap One Call 3.0 (historical + forecast in one API, free tier 1,000 calls/day permits commercial use; Open-Meteo rejected: free tier is non-commercial). Dormant until OPENWEATHER_API_KEY set; historical backfill limited to recent rides to respect the daily call budget.
+- **Pre-ride briefings, two tiers.** (1) **Daily briefing** (light touch): on TODAY, for the planned session or an unstructured ride: forecast at the rider's last-known location, where the conditions help and hurt, what to wear, what to take, chain prep (doctrine: wax over oil, always). (2) **Goal-day briefing** (the full team-car talk): on the morning of a goal event: pep talk + mindset, conditions and how to use them, pacing/split recommendations grounded in the rider's numbers. Cached one per user/day/kind; briefings obey the provenance law (forecast is data; anything unknown is asked, not invented).
+
+### Kill criteria (agreed 5 Aug 2026, from the pre-mortem)
+
+Written before launch so the decision is made by past-us, not by denial. The two deaths that matter are silence (nobody hears about it) and churn (they try it and leave); both are fixed by founder time allocation, not by features. Founder commitment check: ≥8 protected hours/week for 6 months, split at least 50/50 distribution/product from first invite.
+
+**Tripwires — reviewed at each cohort gate (10 → 25 → 100 riders):**
+1. **Retention:** month-2 retention of each cohort ≥ 60%. Below it once: treat churned riders as research subjects and fix coaching quality before the next cohort. Below it twice: stop growing, diagnose or pivot.
+2. **Demand:** with founder actively doing content, waitlist adds ≥ 20/week by cohort three. Persistently below: the channel is broken; fix distribution before writing another feature.
+3. **Scale:** ≥ 50 paying riders by month 6 of first invites. Miss it AND miss a tripwire above: run the pivot conversation (running vertical, white-label coach engine for human coaches, B2B clubs) instead of the denial one.
+
+**Standing risk watch:** incumbent ships memory+adaptation (12–18 month clock — answer is speed to a loyal 100, not features); Garmin onboarding friction (watch drop-off by device brand); one viral screenshot of invented facts (provenance law + eval pass before each cohort); founder burnout (frozen launch list discipline). Professional indemnity insurance before strangers join.
+
 ### Cost model
 
 **Definitions:**

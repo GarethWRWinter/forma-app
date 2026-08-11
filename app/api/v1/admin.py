@@ -92,3 +92,52 @@ def get_costs(
             for t, m, c, cents, lat in per_task
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Invite codes (closed beta door keys)
+# ---------------------------------------------------------------------------
+
+@router.post("/invites")
+def create_invites(
+    count: int = Query(1, ge=1, le=100),
+    max_uses: int = Query(1, ge=1, le=1000),
+    note: str = Query("", max_length=255),
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Mint invite codes. Readable, unambiguous alphabet (no O/0/I/1)."""
+    import secrets
+
+    from app.models.invite import InviteCode
+
+    alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+    codes = []
+    for _i in range(count):
+        code = "FORMA-" + "".join(secrets.choice(alphabet) for _ in range(6))
+        db.add(InviteCode(code=code, max_uses=max_uses, note=note or None))
+        codes.append(code)
+    db.commit()
+    return {"codes": codes}
+
+
+@router.get("/invites")
+def list_invites(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    from app.models.invite import InviteCode
+
+    rows = db.query(InviteCode).order_by(InviteCode.created_at.desc()).all()
+    return {
+        "invites": [
+            {
+                "code": r.code,
+                "note": r.note,
+                "uses": r.uses,
+                "max_uses": r.max_uses,
+                "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+            }
+            for r in rows
+        ]
+    }

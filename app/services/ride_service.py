@@ -366,6 +366,19 @@ def create_ride_from_fit(
 
             ride.location_name = locale_for(first_fix["latitude"], first_fix["longitude"])
 
+            # Conditions at the start line. Recent rides only: archive
+            # imports of deep history must not burn the daily call budget.
+            from datetime import timedelta
+
+            from app.services import weather_service
+
+            rd = ride.ride_date
+            rd_naive = rd.astimezone(timezone.utc).replace(tzinfo=None) if rd.tzinfo else rd
+            if rd_naive >= datetime.utcnow() - timedelta(days=14):
+                ride.weather = weather_service.ride_conditions(
+                    first_fix["latitude"], first_fix["longitude"], rd
+                )
+
     db.commit()
     db.refresh(ride)
     return ride
@@ -547,6 +560,8 @@ def get_ride_data(
             func.avg(RideData.speed).label("speed"),
             func.max(RideData.distance).label("distance"),
             func.avg(RideData.altitude).label("altitude"),
+            func.avg(RideData.latitude).label("latitude"),
+            func.avg(RideData.longitude).label("longitude"),
         )
         .filter(RideData.ride_id == ride_id)
         .group_by("bucket")
@@ -562,6 +577,8 @@ def get_ride_data(
             "speed": round(r.speed, 2) if r.speed else None,
             "distance": round(r.distance, 1) if r.distance else None,
             "altitude": round(r.altitude, 1) if r.altitude else None,
+            "latitude": round(r.latitude, 6) if r.latitude else None,
+            "longitude": round(r.longitude, 6) if r.longitude else None,
         }
         for r in rows
     ]

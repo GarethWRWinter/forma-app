@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     stripe_price_id: str = ""  # the active subscription price (founding offer)
     require_subscription: bool = False
 
+    # Closed beta: when true, registration needs a valid invite code.
+    require_invite: bool = False
+
+    # OpenWeatherMap One Call 3.0 (ride conditions + briefing forecasts).
+    openweather_api_key: str = ""
+
     # Wahoo Cloud API (developers.wahooligan.com). Integration stays dormant
     # until these are set.
     wahoo_client_id: str = ""

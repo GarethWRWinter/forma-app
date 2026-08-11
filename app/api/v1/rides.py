@@ -307,6 +307,34 @@ def _warm_zone_summaries(db: Session, user: User, rides: list) -> None:
             except Exception:
                 _logger.exception("Locale backfill failed for ride %s", ride.id)
 
+        # Weather backfill for recent rides that predate the weather column.
+        # {"none": true} marks checked-and-unavailable so we never re-query.
+        if ride.weather is None and ride.location_name:
+            from datetime import timedelta
+
+            rd = ride.ride_date
+            rd_naive = rd.replace(tzinfo=None) if rd.tzinfo else rd
+            if rd_naive >= datetime.utcnow() - timedelta(days=90):
+                try:
+                    from app.services import weather_service
+
+                    if weather_service.is_configured():
+                        fix = (
+                            db.query(RideData.latitude, RideData.longitude)
+                            .filter(RideData.ride_id == ride.id, RideData.latitude.isnot(None))
+                            .order_by(RideData.elapsed_seconds)
+                            .first()
+                        )
+                        if fix is not None:
+                            ride.weather = weather_service.ride_conditions(
+                                fix[0], fix[1], rd
+                            ) or {"none": True}
+                        else:
+                            ride.weather = {"none": True}
+                        dirty = True
+                except Exception:
+                    _logger.exception("Weather backfill failed for ride %s", ride.id)
+
         zs = ride.zone_summary
         if zs is not None and zs.get("v") == 4:
             continue  # cached in current format (v4 = HR/elevation fallbacks)

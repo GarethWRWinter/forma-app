@@ -163,11 +163,19 @@ async function uploadFile<T>(path: string, file: File): Promise<T> {
 
 // === Auth ===
 
+export const authConfig = () =>
+  request<{ invite_required: boolean }>("/auth/config");
+
 export const auth = {
-  register: (email: string, password: string, fullName?: string) =>
+  register: (email: string, password: string, fullName?: string, inviteCode?: string) =>
     request<{ id: string; email: string }>("/auth/register", {
       method: "POST",
-      body: JSON.stringify({ email, password, full_name: fullName }),
+      body: JSON.stringify({
+        email,
+        password,
+        full_name: fullName,
+        invite_code: inviteCode,
+      }),
     }),
 
   login: async (email: string, password: string, rememberMe: boolean = true) => {
@@ -283,6 +291,19 @@ export interface Ride {
   /** Forma's name for the ride (falls back to source title) */
   forma_title?: string | null;
   location_name?: string | null;
+  weather?: {
+    none?: boolean;
+    temp_c?: number | null;
+    feels_c?: number | null;
+    humidity?: number | null;
+    wind_kph?: number | null;
+    gust_kph?: number | null;
+    wind_deg?: number | null;
+    wind_dir?: string | null;
+    precip_mm?: number | null;
+    condition?: string | null;
+    description?: string | null;
+  } | null;
   /** Forma's one-line story (falls back to the deterministic line) */
   story?: string | null;
 }
@@ -1269,8 +1290,26 @@ export interface MetricExplanation {
   explanation: string;
 }
 
+export interface BriefingConditions {
+  at?: string;
+  temp_c?: number | null;
+  wind_kph?: number | null;
+  gust_kph?: number | null;
+  wind_dir?: string | null;
+  rain_chance?: number;
+  condition?: string | null;
+}
+
+export interface CoachBriefing {
+  kind: "daily" | "goal";
+  date: string;
+  content: string;
+  conditions: BriefingConditions | null;
+}
+
 export const coachInsights = {
   getNudge: () => request<CoachNudge>("/coach/nudge"),
+  getBriefing: () => request<CoachBriefing>("/coach/briefing"),
 
   getRideDebrief: (rideId: string, force = false) =>
     request<RideDebrief>(`/coach/ride-debrief/${rideId}${force ? "?force=true" : ""}`),
