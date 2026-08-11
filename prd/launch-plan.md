@@ -21,6 +21,28 @@ page hero, the founder story, and the letters all already carry it. Do not inven
 second message this year. Repetition is the strategy (11-7-4: people need roughly
 eleven interactions, seven hours, four locations before they buy).
 
+## Ideal customer profile (grounded in channel data, 11 Aug 2026)
+
+Instagram audience insights (the primary traffic source): 80.6% men / 19.4% women.
+Age: 35-44 is 31.7%, 45-54 is 25.9%, 55-64 is 16.5%, 25-34 is 17.5%, 18-24 is 2.5%.
+Geography: UK 30.4%, US 11.6%, Türkiye 4.9%, Australia 4.4%, Spain 3.1%.
+
+**The ICP: the constrained rider.** 30 to 55, career and often family, 6 to 10
+fought-for hours a week, owns a power meter, rides sportives/fondos/club events,
+plateaued for a season or more. The boundary is constraint, not age: a 26-year-old
+junior doctor qualifies; an early retiree with 18 free hours does not. 74% of the
+actual audience is 35 to 64; the unconstrained under-25 is 2.5% of the funnel and
+is deliberately not addressed by the copy. Marketing stays sharp on the constrained
+rider; the product excludes nobody (nothing breaks at 20 h/week).
+
+Implications:
+- UK-first launch is correct: GBP pricing, British English, ICO/GDPR posture.
+- US is the clear second market (11.6%); revisit USD pricing after the hundred.
+- One in five of the audience is a woman; copy stays "the rider", never male-coded,
+  and the founding cohort should surface at least one woman's story early.
+- Broadening to the unconstrained rider is a Q1 2027 list-price decision, only
+  after the founding hundred prove month-2 retention. Not before.
+
 ## Phase 0 · Before any doors open (now)
 
 **Goal: 200+ signals before invite one.** (Principle 2: first make your market.)
