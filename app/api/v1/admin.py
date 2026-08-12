@@ -155,9 +155,13 @@ def assign_founding_number(
     db: Session = Depends(get_db),
 ):
     """Give a rider their founding number. Explicit number, or next free.
-    Idempotent: a rider who already has one keeps it."""
-    from app.api.v1.auth import _next_founding_number
+    Idempotent: a rider who already has one keeps it. The ledger is the
+    arbiter: a number stays worn even after its rider's account is purged."""
+    from datetime import datetime
+
+    from app.api.v1.auth import issue_founding_number
     from app.core.exceptions import BadRequestException, NotFoundException
+    from app.models.founding import FoundingLedger
 
     user = db.query(User).filter(User.email == email.lower().strip()).first()
     if user is None:
@@ -166,16 +170,18 @@ def assign_founding_number(
         return {"email": user.email, "founding_number": user.founding_number}
 
     if number is not None:
-        taken = db.query(User).filter(User.founding_number == number).first()
-        if taken is not None:
+        if db.get(FoundingLedger, number) is not None:
             raise BadRequestException(detail=f"Number {number} is already worn")
+        db.add(
+            FoundingLedger(
+                number=number, user_id=str(user.id), issued_at=datetime.utcnow()
+            )
+        )
         user.founding_number = number
+        db.commit()
     else:
-        nxt = _next_founding_number(db)
-        if nxt is None:
+        if issue_founding_number(db, user) is None:
             raise BadRequestException(detail="The hundred are all in")
-        user.founding_number = nxt
-    db.commit()
     return {"email": user.email, "founding_number": user.founding_number}
 
 
@@ -184,16 +190,60 @@ def list_founding(
     _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    from app.models.founding import FoundingLedger
+
     rows = (
         db.query(User)
         .filter(User.founding_number.isnot(None))
         .order_by(User.founding_number.asc())
         .all()
     )
+    issued = db.query(FoundingLedger).count()
     return {
+        # issued counts every number ever worn (ledger); riders lists the
+        # living accounts. A gap between the two = departed founding riders.
+        "issued": issued,
         "count": len(rows),
         "riders": [
             {"number": r.founding_number, "email": r.email, "name": r.full_name}
             for r in rows
         ],
+    }
+
+
+@router.get("/signals")
+def kill_criteria_signals(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """The kill-criteria stopwatch (PRD: waitlist +20/week; retention watched
+    from cohort activity). One glance answers: is demand real this week?"""
+    from app.models.waitlist import WaitlistEntry
+
+    now = datetime.utcnow()
+    total = db.query(WaitlistEntry).count()
+    weeks = []
+    for w in range(4):
+        start = now - timedelta(days=7 * (w + 1))
+        end = now - timedelta(days=7 * w)
+        adds = (
+            db.query(WaitlistEntry)
+            .filter(WaitlistEntry.created_at >= start, WaitlistEntry.created_at < end)
+            .count()
+        )
+        weeks.append({"week_ending": end.date().isoformat(), "adds": adds})
+
+    riders = db.query(User).filter(User.is_active.is_(True)).count()
+    active_14d = (
+        db.query(FormaCall.user_id)
+        .filter(FormaCall.ts >= now - timedelta(days=14))
+        .distinct()
+        .count()
+    )
+    return {
+        "waitlist_total": total,
+        "waitlist_adds_by_week": weeks,
+        "target_adds_per_week": 20,
+        "riders_active_accounts": riders,
+        "riders_used_coach_last_14d": active_14d,
     }

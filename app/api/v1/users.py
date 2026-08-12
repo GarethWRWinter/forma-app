@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_current_user
 from app.core.exceptions import BadRequestException
+from app.core.ratelimit import rate_limit
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user import UserResponse, UserUpdate
@@ -43,7 +44,7 @@ def get_badge_photo(current_user: User = Depends(get_current_user)):
     return {"data_url": current_user.badge_photo}
 
 
-@router.put("/me/badge-photo")
+@router.put("/me/badge-photo", dependencies=[Depends(rate_limit(20, 3600))])
 def set_badge_photo(
     body: BadgePhotoBody,
     current_user: User = Depends(get_current_user),

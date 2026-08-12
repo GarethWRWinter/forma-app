@@ -114,6 +114,22 @@ app.add_middleware(
 )
 
 
+_MAX_BODY_BYTES = 30 * 1024 * 1024  # generous for ride-file uploads
+
+
+@app.middleware("http")
+async def body_size_guard(request, call_next):
+    """Refuse oversized bodies before they're read into memory. 30MB clears
+    any honest FIT/GPX upload; it exists to stop hostile multi-hundred-MB
+    posts to endpoints like the badge photo."""
+    length = request.headers.get("content-length")
+    if length is not None and length.isdigit() and int(length) > _MAX_BODY_BYTES:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=413, content={"detail": "Body too large"})
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def security_headers(request, call_next):
     """Baseline security headers on every response. HSTS is honoured only over

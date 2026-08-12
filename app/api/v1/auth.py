@@ -86,12 +86,36 @@ FOUNDING_CAP = 100
 
 
 def _next_founding_number(db: Session) -> int | None:
-    """Next free rider number, or None once the hundred are in. The unique
-    constraint on users.founding_number is the final arbiter under races."""
+    """Next free rider number from the permanent ledger, or None once the
+    hundred are in. The ledger keeps every number ever issued (even after an
+    account purge), so a number can never be reissued."""
     from sqlalchemy import func
 
-    taken = db.query(func.max(User.founding_number)).scalar() or 0
+    from app.models.founding import FoundingLedger
+
+    taken = db.query(func.max(FoundingLedger.number)).scalar() or 0
     return taken + 1 if taken < FOUNDING_CAP else None
+
+
+def issue_founding_number(db: Session, user: User) -> int | None:
+    """Reserve the next number on the ledger for this rider. The ledger's
+    primary key arbitrates races; a couple of retries absorb collisions.
+    Returns the number, or None if the hundred are in (or contention wins)."""
+    from app.models.founding import FoundingLedger
+
+    for _ in range(3):
+        nxt = _next_founding_number(db)
+        if nxt is None:
+            return None
+        db.add(FoundingLedger(number=nxt, user_id=str(user.id)))
+        user.founding_number = nxt
+        try:
+            db.commit()
+            return nxt
+        except IntegrityError:
+            db.rollback()
+    logger.warning("founding number contention unresolved for %s", user.email)
+    return None
 
 
 @router.post("/register", response_model=UserResponse, status_code=201,
@@ -107,32 +131,27 @@ async def register(
 
     invited_with = _redeem_invite(db, user_in.invite_code)
 
-    # A validated invite is a founding rider: number them on the way in.
-    # Open-door signups (require_invite off) track their code but are not
-    # founding; the hundred only count when the door is actually gated.
-    founding_number = (
-        _next_founding_number(db)
-        if invited_with and settings.require_invite
-        else None
-    )
-
     user = User(
         email=user_in.email,
         hashed_password=hash_password(user_in.password),
         full_name=user_in.full_name,
         invited_with=invited_with,
-        founding_number=founding_number,
     )
     db.add(user)
     try:
         db.commit()
     except IntegrityError:
-        # Two founding signups landed on the same number: take the next one.
+        # The only unique constraint in play here is the email (two
+        # simultaneous signups): answer it honestly, not with a 500.
         db.rollback()
-        user.founding_number = _next_founding_number(db)
-        db.add(user)
-        db.commit()
+        raise ConflictException(detail="Email already registered")
     db.refresh(user)
+
+    # A validated invite is a founding rider: number them on the way in.
+    # Open-door signups (require_invite off) track their code but are not
+    # founding; the hundred only count when the door is actually gated.
+    if invited_with and settings.require_invite:
+        issue_founding_number(db, user)
 
     # Best-effort: a failed email must never block the signup itself.
     background_tasks.add_task(

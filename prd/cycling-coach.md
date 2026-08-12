@@ -265,9 +265,30 @@ Written before launch so the decision is made by past-us, not by denial. The two
 - Hard per-user monthly token budget. Soft-cap at 80%, hard-cap at 100% with graceful "you've used your conversation quota this month" — heavy users escalate to Pro tier.
 - Voice: cap voice synthesis at N seconds per session.
 
+## Founding hundred mechanics (shipped 12 Aug 2026)
+
+- **Rider numbers.** Riders registering through a validated invite (door gated,
+  `REQUIRE_INVITE=true`) are numbered 1 to 100 in arrival order. Numbers live on
+  a permanent ledger (`founding_ledger`) and are never reissued, even after a
+  GDPR purge deletes the rider's account: the ledger row holds no personal data
+  and outlives the user. Admin endpoints: `POST /admin/founding/assign`,
+  `GET /admin/founding` (issued vs living counts). Gareth is rider 1.
+- **Badge studio.** Palmarès surfaces a designable badge for founding riders:
+  their number and the flamme kite over their own photo or their number's
+  inkscape, downloaded as a 1080×1350 PNG for social. The photo is downscaled
+  client-side and saved privately to the account (`users.badge_photo`);
+  included in GDPR export, wiped by account purge.
+- **Kill-criteria stopwatch.** `GET /admin/signals` reports waitlist total,
+  adds per week over four weeks against the +20/week target, and riders who
+  used the coach in the last fortnight, so the launch plan's referee has live
+  numbers instead of anecdotes.
+- **App domain.** The app lives at https://app.ridewithforma.com (Vercel
+  `frontend` project; landing stays at ridewithforma.com). Backend CORS and
+  the `FRONTEND_URL` email-link base both point at it.
+
 ## Open Questions
 
-- **OQ1:** Final pricing — £19.99/mo? £14.99/mo with annual at £150? Founding-member rate for closed beta?
+- **OQ1: RESOLVED (11 Aug 2026).** £19.99/mo list; the founding hundred pay £14.99/mo locked for as long as they stay. No annual tier at launch. Stripe carries a single £14.99 recurring price for the founding cohort (see launch-plan.md).
 - **OQ2:** Voice gallery — Forma's voice is picked from a small gallery during onboarding (voice carries gender/accent, decoupled from tone and name). Need to lock: (1) the **default house voice** heard before any pick, and (2) a starter gallery of ~3-4 options spanning registers. The warm female voice `NbkKnEAZ7Bqw4EAkVEaz` is already auditioned and is a strong candidate for the default or a gallery slot; audition a masculine-register option and one accent option that pair tonally. Pick the default before conversational onboarding ships.
 - **OQ3:** Native iOS trigger — confirmed at "≥5 closed-beta users request it unprompted." Re-evaluate at Milestone 2 review.
 - **OQ4:** What does "rider profile" classify on? (Today: All-Rounder. Taxonomy matters because Forma coaches differently per type.)
