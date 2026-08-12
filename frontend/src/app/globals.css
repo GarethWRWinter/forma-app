@@ -356,3 +356,10 @@ p, li, blockquote, dd, figcaption {
     50%      { transform: translateY(-6%) scale(1.012); }
   }
 }
+
+/* Hide the scrollbar on chip rails without killing scrollability. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar { display: none; }
+}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import React, { useState, useRef, useEffect, useCallback, Suspense } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -57,7 +57,13 @@ function CoachPageInner() {
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const resumedRef = useRef(false);
   const [input, setInput] = useState("");
-  const starters = useCoachStarters(5);
+  // The last few turns steer which starter chips lead: the conversation's
+  // own topics outrank the general pool.
+  const recentText = useMemo(
+    () => messages.slice(-6).map((m) => m.content).join(" "),
+    [messages]
+  );
+  const starters = useCoachStarters(recentText);
   const [streaming, setStreaming] = useState(false);
   const [goalMessagePrefilled, setGoalMessagePrefilled] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
@@ -688,7 +694,7 @@ function CoachPageInner() {
                   , and better memory makes a better coach.
                 </p>
                 <StarterChips
-                  starters={starters}
+                  starters={starters.slice(0, 6)}
                   onPick={(ask) => {
                     setInput(ask);
                     inputRef.current?.focus();
@@ -818,15 +824,16 @@ function CoachPageInner() {
             />
           )}
 
-          {/* Doors into the coach's range, context-aware and quiet */}
+          {/* Doors into the coach's range, ranked by what's being discussed */}
           {!input && (
             <StarterChips
               starters={starters}
+              scrollable
               onPick={(ask) => {
                 setInput(ask);
                 inputRef.current?.focus();
               }}
-              className="scrollbar-none mb-3 flex gap-2 overflow-x-auto"
+              className="mb-3"
             />
           )}
 
