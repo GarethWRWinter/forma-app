@@ -1,8 +1,11 @@
 """Goal event CRUD API endpoints."""
 
+import logging
 import os
 import uuid
 from datetime import date
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
 from sqlalchemy.orm import Session
@@ -66,6 +69,8 @@ def _goal_to_response(goal) -> GoalEventResponse:
         notes=goal.notes,
         why=goal.why,
         becoming=goal.becoming,
+        coach_read=goal.coach_read,
+        coach_read_at=goal.coach_read_at,
         days_until=days_until,
         route_url=goal.route_url,
         gpx_file_path=goal.gpx_file_path,
@@ -231,6 +236,31 @@ def update_goal_event(
         from app.services.route_service import fetch_route_data_bg
         background_tasks.add_task(fetch_route_data_bg, goal.id, update_data["route_url"])
 
+    return _goal_to_response(goal)
+
+
+@router.post("/{goal_id}/coach-read", response_model=GoalEventResponse)
+def generate_coach_read(
+    goal_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Ask Forma for its honest read on this goal: the size verdict, the
+    soul check, one enhancement, one question back. Regenerates on demand."""
+    from app.services.goal_read_service import generate_goal_read
+
+    goal = get_goal(db, goal_id, current_user.id)
+    if not goal:
+        raise NotFoundException(detail="Goal not found")
+    if goal.status and str(goal.status) not in ("upcoming", "GoalStatus.upcoming"):
+        raise BadRequestException(detail="The read is for upcoming goals")
+    try:
+        goal = generate_goal_read(db, current_user, goal)
+    except Exception:
+        logger.exception("goal read generation failed")
+        raise BadRequestException(
+            detail="Forma couldn't write the read just now. Try again shortly."
+        )
     return _goal_to_response(goal)
 
 

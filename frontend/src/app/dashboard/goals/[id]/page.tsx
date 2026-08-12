@@ -216,6 +216,13 @@ export default function GoalDetailPage() {
     },
   });
 
+  const coachRead = useMutation({
+    mutationFn: () => goalsApi.coachRead(goalId),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["goal", goalId], data);
+    },
+  });
+
   const generatePlan = useMutation({
     mutationFn: () =>
       training.generatePlan({ goal_event_id: goalId }),
@@ -427,6 +434,53 @@ export default function GoalDetailPage() {
             </Link>
           </p>
         </div>
+      )}
+
+      {/* The coach's read: Forma challenges the goal against the data */}
+      {goal.status === "upcoming" && !goal.needs_assessment && (
+        <>
+          {goal.coach_read ? (
+            <CoachNote
+              kicker="The coach's read"
+              action={
+                <div className="flex items-center gap-4">
+                  <button
+                    onClick={() => coachRead.mutate()}
+                    disabled={coachRead.isPending}
+                    className="f-data text-xs text-vb-text-muted underline-offset-4 hover:text-vb-text hover:underline disabled:opacity-50"
+                  >
+                    {coachRead.isPending ? "Rereading..." : "Fresh eyes"}
+                  </button>
+                  <Link
+                    href={`/dashboard/coach?ask=${encodeURIComponent(
+                      `You gave me your read on "${goal.event_name}". Let's talk it through: I want to push back, sharpen it, or act on it.`
+                    )}`}
+                    className="f-data text-xs text-vb-red underline-offset-4 hover:underline"
+                  >
+                    Talk it through <span className="f-arrow-head">→</span>
+                  </Link>
+                </div>
+              }
+            >
+              {goal.coach_read}
+            </CoachNote>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-3 border border-vb-border-subtle bg-vb-surface px-5 py-4">
+              <p className="text-sm text-vb-text-dim">
+                Want Forma&apos;s honest read on this goal? The right size, the
+                missing soul, the one change that would make it sing.
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => coachRead.mutate()}
+                disabled={coachRead.isPending}
+              >
+                {coachRead.isPending ? "Reading your numbers..." : "Get the read"}
+              </Button>
+            </div>
+          )}
+        </>
       )}
 
       {/* Assessment banner, needs assessment */}

@@ -717,6 +717,8 @@ export interface GoalEvent {
   notes: string | null;
   why: string | null;
   becoming: string | null;
+  coach_read: string | null;
+  coach_read_at: string | null;
   days_until: number | null;
   route_url: string | null;
   gpx_file_path: string | null;
@@ -871,6 +873,9 @@ export const goals = {
 
   reparseGpx: (id: string) =>
     request<GoalEvent>(`/goals/${id}/reparse-gpx`, { method: "POST" }),
+
+  coachRead: (id: string) =>
+    request<GoalEvent>(`/goals/${id}/coach-read`, { method: "POST" }),
 
   refetchRoute: (id: string) =>
     request<GoalEvent>(`/goals/${id}/refetch-route`, { method: "POST" }),

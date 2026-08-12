@@ -120,6 +120,8 @@ class GoalEventResponse(BaseModel):
     notes: str | None = None
     why: str | None = None
     becoming: str | None = None
+    coach_read: str | None = None
+    coach_read_at: datetime | None = None
     days_until: int | None = None
     route_url: str | None = None
     gpx_file_path: str | None = None

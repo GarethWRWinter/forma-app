@@ -90,6 +90,7 @@ TASKS: dict[str, TaskConfig] = {
     "nudge": TaskConfig(HAIKU, 200),           # daily dashboard nudge
     "briefing_daily": TaskConfig(HAIKU, 600),  # pre-ride briefing, light touch
     "briefing_goal": TaskConfig(SONNET, 1200), # goal-day team-car briefing
+    "goal_read": TaskConfig(SONNET, 900),      # the coach's read on a goal
     "explain": TaskConfig(HAIKU, 200),         # metric explanation
     "memory_extraction": TaskConfig(HAIKU, 1500),
     "memory_reading": TaskConfig(HAIKU, 220),  # Brain page narration

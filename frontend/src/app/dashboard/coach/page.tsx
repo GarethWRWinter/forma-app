@@ -26,6 +26,7 @@ import remarkGfm from "remark-gfm";
 import { chat, goals as goalsApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { CoachDot, CoachGlyph } from "@/components/ui/coach-glyph";
+import { StarterChips, useCoachStarters } from "@/components/coach/coach-starters";
 import { useVoiceChat } from "@/hooks/useVoiceChat";
 import { useAuth } from "@/lib/auth-context";
 import { VoiceButton } from "@/components/voice/VoiceButton";
@@ -56,6 +57,7 @@ function CoachPageInner() {
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const resumedRef = useRef(false);
   const [input, setInput] = useState("");
+  const starters = useCoachStarters(5);
   const [streaming, setStreaming] = useState(false);
   const [goalMessagePrefilled, setGoalMessagePrefilled] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
@@ -685,25 +687,14 @@ function CoachPageInner() {
                   </Link>
                   , and better memory makes a better coach.
                 </p>
-                <div className="mt-6 flex flex-wrap justify-center gap-2">
-                  {[
-                    "How is my fitness trending?",
-                    "What should I do today?",
-                    "Am I training too hard?",
-                    "Help me prepare for my next race",
-                  ].map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => {
-                        setInput(q);
-                        inputRef.current?.focus();
-                      }}
-                      className="rounded-full border border-vb-border px-3 py-1.5 text-xs text-vb-text-dim hover:border-vb-forest hover:text-vb-forest"
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
+                <StarterChips
+                  starters={starters}
+                  onPick={(ask) => {
+                    setInput(ask);
+                    inputRef.current?.focus();
+                  }}
+                  className="mt-6 flex flex-wrap justify-center gap-2"
+                />
                 {voiceSupported && (
                   <p className="mt-4 text-xs text-vb-text-muted">
                     <Mic className="mr-1 inline h-3 w-3" />
@@ -824,6 +815,18 @@ function CoachPageInner() {
             <VoiceIndicator
               mode={voiceIndicatorMode}
               interimTranscript={interimTranscript}
+            />
+          )}
+
+          {/* Doors into the coach's range, context-aware and quiet */}
+          {!input && (
+            <StarterChips
+              starters={starters}
+              onPick={(ask) => {
+                setInput(ask);
+                inputRef.current?.focus();
+              }}
+              className="scrollbar-none mb-3 flex gap-2 overflow-x-auto"
             />
           )}
 

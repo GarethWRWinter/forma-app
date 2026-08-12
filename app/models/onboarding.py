@@ -1,4 +1,5 @@
 import enum
+from datetime import datetime
 
 from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy import JSON as SA_JSON
@@ -84,6 +85,11 @@ class GoalEvent(Base):
     # becoming: who this pursuit is turning them into (the identity line).
     why: Mapped[str | None] = mapped_column(Text, nullable=True)
     becoming: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # The coach's read: Forma's honest verdict on the goal (size, soul,
+    # bridge), regenerated on demand as the data changes.
+    coach_read: Mapped[str | None] = mapped_column(Text, nullable=True)
+    coach_read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Route / challenge data
     route_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
