@@ -286,6 +286,40 @@ Written before launch so the decision is made by past-us, not by denial. The two
   `frontend` project; landing stays at ridewithforma.com). Backend CORS and
   the `FRONTEND_URL` email-link base both point at it.
 
+## Goalcraft & coach education v2 (shipped 12 Aug 2026)
+
+**Goal setting is coaching, not admin.** The `goalcraft` skill teaches the
+coach goal-setting as a discipline: end goals over means goals, the 50/50
+audacity rule, three kinds of goal per season (bold / achievable /
+self-fulfilling), outcome-performance-process layers on every event,
+"stubborn about the vision, flexible about the strategy" (the house creed),
+ownership and hidden-cost probes, 4-6 week checkpoints with if-thens, four
+honest end-of-block verdicts (done / not done / partly / no longer relevant),
+and coaching the finish line like the start (post-event hollow normalised,
+DNF still counts, never rush the next target).
+
+**Goals carry a soul.** `goal_events.why` (the emotional why, rider's own
+words) and `goal_events.becoming` (the identity line), written in
+conversation via `create_goal` / `update_goal` coach tools: Forma files the
+paperwork, the rider never fills a form. The why renders on the goal band,
+returns in the race-morning briefing, and feeds coach context. Entry points:
+onboarding ends in the crafting conversation; the Goals page leads with
+"Craft it with Forma" (form demoted to quick-add); completed assessments
+hand off to a mindset debrief.
+
+**Coach education v2.** A nine-source mining pass (principles re-expressed,
+source-anonymous, pseudoscience and restriction-culture filtered out)
+produced a new `habitcraft` skill (adherence engineering: anchors not clock
+times, replace-not-break, the internal sales script, choice language, the
+return beats the streak, identity as endgame, teach-back) and extensions to
+mindset (toward-framing, two-direction rehearsal, stale ceilings, arousal
+relabelling, state triad, pre-framed speed bumps), heartset (enough-ness,
+wins file, breakthrough wobble, revisable self-stories), recovery (the
+trainable down-shift, wired-and-tired audit, adaptation-dip pre-empt),
+fueling (addition framing, the meal completes the workout, restriction talk
+as red flag) and lifecraft (big rocks first, the week audit, the calendar
+mirror, curated rooms). Education is ~8.6k tokens, prompt-cached per rider.
+
 ## Open Questions
 
 - **OQ1: RESOLVED (11 Aug 2026).** £19.99/mo list; the founding hundred pay £14.99/mo locked for as long as they stay. No annual tier at launch. Stripe carries a single £14.99 recurring price for the founding cohort (see launch-plan.md).
