@@ -66,19 +66,16 @@ async function downloadShareCard(goal: PalmaresGoal, riderName: string) {
 
   await (document as Document & { fonts: FontFaceSet }).fonts.ready;
 
-  // FORMA lockup top-left (chalk word + flamme kite — IB2)
-  ctx.fillStyle = "#FFFFFF";
-  ctx.font = "800 52px Archivo, sans-serif";
+  // FORMA lockup top-left — the master asset, drawn as an image.
+  const lockup = new Image();
+  lockup.src = "/brand/lockup-chalk.svg";
+  await new Promise((res, rej) => {
+    lockup.onload = res;
+    lockup.onerror = rej;
+  });
+  const lw = 280;
+  ctx.drawImage(lockup, 72, 72, lw, lw * (107.04 / 762.02));
   ctx.textBaseline = "top";
-  ctx.fillText("FORMA", 72, 72);
-  const fw = ctx.measureText("FORMA").width;
-  ctx.fillStyle = "#FF3D00";
-  ctx.beginPath();
-  ctx.moveTo(72 + fw + 12, 100);
-  ctx.lineTo(72 + fw + 34, 100);
-  ctx.lineTo(72 + fw + 23, 122);
-  ctx.closePath();
-  ctx.fill();
 
   // Big flamme kite (the trophy)
   ctx.fillStyle = "#FF3D00";

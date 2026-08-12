@@ -1,17 +1,26 @@
 /**
- * FORMA wordmark — brand v2. The letters plus THE KITE: a flamme
- * pennant hung after the final A, tip touching the baseline. It is
- * the wordmark's full stop, never an arrow, never rotated.
- * Sized in `em` so it scales with whatever font-size the parent sets;
- * drop it inside a styled <h1>/<span> that owns the type (Announcer
- * voice: `.f-display`, Archivo Expanded).
+ * FORMA lockup — the master asset, not a typeset imitation.
+ * Letterform paths and kite geometry come verbatim from
+ * "FORMA logo master_01 · PRIMARY LOCKUP FORMA + KITE" (viewBox tightened
+ * to the artwork). Letters take currentColor so the surrounding text
+ * classes pick the colourway (ink on light, chalk on carbon); the kite is
+ * always flamme. Height rides at 0.72em to sit like the old cap height.
  */
 export function FormaMark({ className = "" }: { className?: string }) {
   return (
-    <span className={className}>
-      FORMA
-      <span aria-hidden="true" className="f-kite ml-[0.14em]" />
-    </span>
+    <svg
+      viewBox="118.99 121.48 762.02 107.04"
+      className={`inline-block h-[0.72em] w-auto ${className}`}
+      role="img"
+      aria-label="FORMA"
+    >
+      <path fill="currentColor" d="M149.51,226.72h-30.52v-103.44h101.63v22.7h-71.11v20.9h63.3v22.7h-63.3v37.14Z" />
+      <path fill="currentColor" d="M298.65,228.52h0c-13.83,0-25.83-2.13-36-6.39-10.17-4.26-18.02-10.37-23.53-18.34-5.51-7.97-8.27-17.56-8.27-28.79h0c0-11.23,2.76-20.82,8.27-28.79,5.51-7.97,13.36-14.08,23.53-18.34,10.17-4.26,22.17-6.39,36-6.39h0c14.03,0,26.11,2.13,36.24,6.39,10.12,4.26,17.94,10.37,23.45,18.34,5.51,7.97,8.27,17.56,8.27,28.79h0c0,11.23-2.76,20.82-8.27,28.79-5.51,7.97-13.33,14.08-23.45,18.34-10.13,4.26-22.21,6.39-36.24,6.39ZM298.65,205.82h0c5.41,0,10.35-.65,14.81-1.95,4.46-1.31,8.29-3.21,11.5-5.72,3.21-2.5,5.69-5.58,7.45-9.24,1.75-3.66,2.63-7.75,2.63-12.26h0v-3.6c0-4.41-.88-8.42-2.63-12.03-1.76-3.61-4.24-6.66-7.45-9.17s-7.04-4.41-11.5-5.72c-4.46-1.3-9.4-1.95-14.81-1.95h0c-5.41,0-10.32.65-14.73,1.95-4.41,1.31-8.25,3.21-11.5,5.72-3.26,2.51-5.74,5.56-7.44,9.17-1.71,3.61-2.56,7.62-2.56,12.03h0v3.6c0,4.51.85,8.6,2.56,12.26,1.7,3.66,4.18,6.74,7.44,9.24,3.25,2.51,7.09,4.41,11.5,5.72,4.41,1.3,9.32,1.95,14.73,1.95Z" />
+      <path fill="currentColor" d="M413.42,226.72h-30.52v-103.44h86c7.51,0,13.73,1.55,18.64,4.66,4.91,3.11,8.62,7.19,11.13,12.26,2.5,5.06,3.75,10.6,3.75,16.61h0c0,6.51-1.55,12.45-4.66,17.82-3.11,5.36-7.77,9.59-13.98,12.7h0l21.05,39.39h-34.58l-17.14-34.43h-39.69v34.43ZM413.42,145.98v23.76h45.4c3.71,0,6.67-1.1,8.87-3.31,2.21-2.21,3.31-5.16,3.31-8.87h0c0-2.41-.5-4.49-1.5-6.24-1-1.75-2.4-3.08-4.21-3.98-1.81-.91-3.96-1.36-6.47-1.36h-45.4Z" />
+      <path fill="currentColor" d="M550.88,226.72h-28.86v-103.44h47.81l17.74,44.96c.8,1.8,1.68,4.1,2.63,6.91.95,2.81,1.9,5.69,2.85,8.65.95,2.95,1.83,5.58,2.63,7.89h1.06c.6-2.11,1.38-4.56,2.33-7.37.95-2.81,1.95-5.64,3-8.49,1.05-2.86,1.98-5.39,2.79-7.59h0l17.74-44.96h46.45v103.44h-30.52v-53.37c0-2.11.03-4.46.08-7.07.05-2.61.12-5.16.22-7.67.1-2.51.15-4.66.15-6.46h-1.2c-.6,1.9-1.35,4.15-2.25,6.76-.91,2.61-1.78,5.19-2.63,7.75-.85,2.55-1.68,4.78-2.49,6.69h0l-21.65,53.37h-27.96l-21.8-53.37c-1-2.61-1.98-5.26-2.93-7.97-.95-2.71-1.81-5.24-2.56-7.59-.75-2.36-1.37-4.24-1.88-5.64h-1.2c.1,1.4.18,3.25.23,5.56.05,2.31.1,4.81.15,7.52.05,2.71.07,5.41.07,8.12h0v53.37Z" />
+      <path fill="currentColor" d="M712.15,226.72h-31.57l50.81-103.44h34.13l50.82,103.44h-33.23l-7.81-16.54h-55.33l-7.82,16.54ZM739.51,166.73l-9.32,21.05h34.88l-9.32-21.05c-.4-.9-.95-2.23-1.65-3.98-.71-1.75-1.46-3.61-2.26-5.57-.8-1.95-1.5-3.76-2.1-5.41-.6-1.65-1.1-2.88-1.51-3.68h-1.05c-.7,1.81-1.55,3.91-2.55,6.31-1.01,2.41-1.94,4.71-2.79,6.92-.85,2.21-1.62,4.01-2.33,5.41h0Z" />
+      <polygon fill="#FF3D00" points="835.91 189.52 881.01 189.52 858.41 228.52" />
+    </svg>
   );
 }
 
@@ -21,7 +30,7 @@ export function Kite({
   size,
 }: {
   className?: string;
-  /** CSS length for the kite width (height derives at 1.22×). */
+  /** CSS length for the kite width (height derives at 0.865×, per master). */
   size?: string;
 }) {
   return (

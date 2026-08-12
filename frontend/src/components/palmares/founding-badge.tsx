@@ -65,19 +65,11 @@ async function drawBadge(
 
   await (document as Document & { fonts: FontFaceSet }).fonts.ready;
 
-  // FORMA lockup top-left.
-  ctx.fillStyle = "#FFFFFF";
-  ctx.font = "800 52px Archivo, sans-serif";
+  // FORMA lockup top-left — the master asset, drawn as an image.
+  const lockup = await loadImage("/brand/lockup-chalk.svg");
+  const lw = 280;
+  ctx.drawImage(lockup, 72, 72, lw, lw * (107.04 / 762.02));
   ctx.textBaseline = "top";
-  ctx.fillText("FORMA", 72, 72);
-  const fw = ctx.measureText("FORMA").width;
-  ctx.fillStyle = "#FF3D00";
-  ctx.beginPath();
-  ctx.moveTo(72 + fw + 12, 100);
-  ctx.lineTo(72 + fw + 34, 100);
-  ctx.lineTo(72 + fw + 23, 122);
-  ctx.closePath();
-  ctx.fill();
 
   // The cohort line.
   ctx.fillStyle = "rgba(255,255,255,0.85)";
