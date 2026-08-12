@@ -64,6 +64,8 @@ def _goal_to_response(goal) -> GoalEventResponse:
         priority=goal.priority,
         target_duration_minutes=goal.target_duration_minutes,
         notes=goal.notes,
+        why=goal.why,
+        becoming=goal.becoming,
         days_until=days_until,
         route_url=goal.route_url,
         gpx_file_path=goal.gpx_file_path,
@@ -113,6 +115,8 @@ def create_goal_event(
             target_duration_minutes=body.target_duration_minutes,
             notes=body.notes,
             route_url=body.route_url,
+            why=body.why,
+            becoming=body.becoming,
         )
     except ValueError as e:
         raise BadRequestException(detail=str(e))

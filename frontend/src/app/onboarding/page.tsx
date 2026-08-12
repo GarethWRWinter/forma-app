@@ -211,7 +211,17 @@ export default function OnboardingPage() {
       }
 
       await refreshUser();
-      router.push("/dashboard");
+      // A rider who named a goal meets their coach by crafting it: the
+      // first conversation is the why, not the watts.
+      if (createdGoalId && eventName) {
+        router.push(
+          `/dashboard/coach?ask=${encodeURIComponent(
+            `I've just set my goal: ${eventName}. Before we talk training, help me craft it properly. Ask me one question at a time: why this one matters to me, and who it's turning me into. Then save that to the goal.`
+          )}`
+        );
+      } else {
+        router.push("/dashboard");
+      }
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Something went wrong";

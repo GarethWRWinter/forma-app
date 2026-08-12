@@ -65,6 +65,8 @@ class GoalEventCreate(BaseModel):
     )
     target_duration_minutes: int | None = Field(None, ge=1)
     notes: str | None = None
+    why: str | None = Field(None, description="The emotional why, in the rider's own words")
+    becoming: str | None = Field(None, max_length=255, description="Who this pursuit is turning the rider into")
     route_url: str | None = Field(None, max_length=2048, description="URL to Strava route/segment, race website, etc.")
 
 
@@ -76,6 +78,8 @@ class GoalEventUpdate(BaseModel):
     priority: str | None = None
     target_duration_minutes: int | None = None
     notes: str | None = None
+    why: str | None = None
+    becoming: str | None = Field(None, max_length=255)
     route_url: str | None = Field(None, max_length=2048)
 
 
@@ -114,6 +118,8 @@ class GoalEventResponse(BaseModel):
     priority: str
     target_duration_minutes: int | None = None
     notes: str | None = None
+    why: str | None = None
+    becoming: str | None = None
     days_until: int | None = None
     route_url: str | None = None
     gpx_file_path: str | None = None

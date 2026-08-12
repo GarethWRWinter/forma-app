@@ -396,6 +396,39 @@ export default function GoalDetailPage() {
         </div>
       </header>
 
+      {/* The soul of the goal, written at goalcraft */}
+      {(goal.why || goal.becoming) && (
+        <div className="border-l-[3px] border-l-vb-red bg-vb-surface px-5 py-4">
+          <Kicker className="mb-2">Why this one</Kicker>
+          {goal.why && (
+            <p className="max-w-2xl text-sm leading-relaxed text-vb-text">
+              {goal.why}
+            </p>
+          )}
+          {goal.becoming && (
+            <p className="f-data mt-2 text-xs uppercase tracking-wider text-vb-text-muted">
+              Becoming · {goal.becoming}
+            </p>
+          )}
+        </div>
+      )}
+      {!goal.why && !goal.becoming && goal.status === "upcoming" && (
+        <div className="border border-dashed border-vb-border px-5 py-4">
+          <p className="text-sm text-vb-text-dim">
+            This goal has a date and a route, but no why yet. The why is the
+            fuel that survives February.{" "}
+            <Link
+              href={`/dashboard/coach?ask=${encodeURIComponent(
+                `Let's talk about my goal "${goal.event_name}". Ask me one question at a time and help me find why this one matters to me and who it's turning me into. Then save it to the goal.`
+              )}`}
+              className="text-vb-red underline-offset-4 hover:underline"
+            >
+              Craft it with Forma <span className="f-arrow-head">→</span>
+            </Link>
+          </p>
+        </div>
+      )}
+
       {/* Assessment banner, needs assessment */}
       {goal.needs_assessment && (
         <CoachNote
@@ -491,6 +524,20 @@ export default function GoalDetailPage() {
               </div>
             );
           })()}
+
+          {/* The finish line gets coached like the start line */}
+          <p className="mt-4 border-t border-vb-border-subtle pt-4 text-sm text-vb-text-dim">
+            The result is filed. The bigger question is what the pursuit made
+            of you.{" "}
+            <Link
+              href={`/dashboard/coach?ask=${encodeURIComponent(
+                `Let's talk about how ${goal.event_name} went, beyond the numbers. Help me see how far I've come since I set it, what the pursuit made of me, and whether I'm ready to think about what comes next. Be honest with me.`
+              )}`}
+              className="text-vb-red underline-offset-4 hover:underline"
+            >
+              Talk it through with Forma <span className="f-arrow-head">→</span>
+            </Link>
+          </p>
         </div>
       )}
 

@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { goals as goalsApi, training as trainingApi } from "@/lib/api";
-import { formatDate } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 import type { GoalEvent } from "@/lib/api";
 import { Button, Arrow, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -241,20 +241,30 @@ function GoalsPageInner() {
             Goals.
           </h1>
           <p className="mt-3 max-w-md text-sm text-vb-text-dim">
-            The races your season is built backwards from. Give Forma the
-            route and it studies every climb before you do.
+            The target attracts the arrow. Craft the goal you actually want
+            with Forma, then the season builds itself backwards from it.
           </p>
         </div>
-        <Button
-          onClick={() => {
-            setEditingGoalId(null);
-            setGoalForm(emptyGoalForm);
-            setShowForm(true);
-          }}
-          className="shrink-0"
-        >
-          <Plus className="h-3.5 w-3.5" /> Add goal
-        </Button>
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <Link
+            href={`/dashboard/coach?ask=${encodeURIComponent(
+              "I want to craft a new goal with you. Ask me one question at a time and help me find the goal I would actually love: what it is, why it matters to me, and who it makes me. When we have it, file it for me."
+            )}`}
+            className={cn(buttonVariants({ variant: "flamme" }))}
+          >
+            Craft it with Forma <span className="f-arrow-head">→</span>
+          </Link>
+          <button
+            onClick={() => {
+              setEditingGoalId(null);
+              setGoalForm(emptyGoalForm);
+              setShowForm(true);
+            }}
+            className="f-data text-xs text-vb-text-muted underline-offset-4 hover:text-vb-text hover:underline"
+          >
+            Know the details already? Quick add
+          </button>
+        </div>
       </header>
 
       {/* Goal Form */}

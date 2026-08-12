@@ -482,11 +482,18 @@ def _build_rider_context(db: Session, user: User) -> str:
             context["goal_events"] = []
             for g in user_goals:
                 goal_info: dict = {
+                    "goal_id": g.id,
                     "event_name": g.event_name,
                     "event_date": str(g.event_date),
                     "event_type": g.event_type,
                     "priority": g.priority,
                 }
+                # The soul of the goal, written at goalcraft: quote it back
+                # at the moments that matter (race morning, hard weeks).
+                if g.why:
+                    goal_info["why"] = g.why
+                if g.becoming:
+                    goal_info["becoming"] = g.becoming
                 if g.event_date >= today:
                     goal_info["days_until"] = (g.event_date - today).days
                 # Assessment data for completed goals
@@ -622,6 +629,47 @@ COACH_TOOLS = [
             "required": ["workout_id"],
         },
     },
+    {
+        "name": "create_goal",
+        "description": "File a goal the rider and coach have just crafted together in conversation. Use ONLY at the end of a goalcraft conversation once the event, date, why, and becoming are agreed — the paperwork is the coach's job, so the rider never fills a form. Tell the rider what you filed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event_name": {"type": "string", "description": "The goal's name, in language that stirs the rider (their words where possible)"},
+                "event_date": {"type": "string", "description": "Event date, YYYY-MM-DD"},
+                "event_type": {
+                    "type": "string",
+                    "enum": ["road_race", "crit", "time_trial", "gran_fondo", "sportive", "gravel", "mtb", "hill_climb", "stage_race", "charity_ride"],
+                },
+                "priority": {
+                    "type": "string",
+                    "enum": ["a_race", "b_race", "c_race"],
+                    "description": "a_race for the season's bold goal, b_race for stepping stones, c_race for training days",
+                },
+                "why": {"type": "string", "description": "The emotional why, in the rider's own words from this conversation"},
+                "becoming": {"type": "string", "description": "One line: who this pursuit is turning the rider into"},
+                "notes": {"type": "string", "description": "Anything practical worth keeping (target time, who they're riding with, constraints)"},
+            },
+            "required": ["event_name", "event_date", "event_type", "priority"],
+        },
+    },
+    {
+        "name": "update_goal",
+        "description": "Update an existing goal's soul or logistics: the why, the becoming, the name, date, priority or notes. Use when a goalcraft or debrief conversation deepens or redefines a goal (goal_id comes from goal_events context).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal_id": {"type": "string", "description": "The goal ID from goal_events context"},
+                "event_name": {"type": "string"},
+                "event_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "priority": {"type": "string", "enum": ["a_race", "b_race", "c_race"]},
+                "why": {"type": "string", "description": "The emotional why, in the rider's own words"},
+                "becoming": {"type": "string", "description": "Who this pursuit is turning the rider into"},
+                "notes": {"type": "string"},
+            },
+            "required": ["goal_id"],
+        },
+    },
 ]
 
 
@@ -704,6 +752,62 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
         workout.status = WorkoutStatus.skipped
         db.commit()
         return f"Skipped workout '{workout.title}' on {workout.scheduled_date}."
+
+    elif tool_name == "create_goal":
+        from datetime import date as _date
+
+        from app.services.onboarding_service import create_goal
+
+        try:
+            event_date = _date.fromisoformat(tool_input["event_date"])
+        except (ValueError, KeyError):
+            return "Error: event_date must be YYYY-MM-DD."
+        try:
+            goal = create_goal(
+                db,
+                user.id,
+                event_name=tool_input["event_name"],
+                event_date=event_date,
+                event_type=tool_input["event_type"],
+                priority=tool_input["priority"],
+                notes=tool_input.get("notes"),
+                why=tool_input.get("why"),
+                becoming=tool_input.get("becoming"),
+            )
+        except ValueError as e:
+            return f"Error: {e}"
+        return (
+            f"Filed the goal '{goal.event_name}' on {goal.event_date} "
+            f"(ID: {goal.id}). The rider can add a GPX route on the Goal page "
+            f"for wind-aware race-day briefings; mention this if a route exists."
+        )
+
+    elif tool_name == "update_goal":
+        from datetime import date as _date
+
+        from app.services.onboarding_service import get_goal, update_goal
+
+        goal = get_goal(db, tool_input["goal_id"], user.id)
+        if not goal:
+            return "Error: Goal not found."
+        updates = {
+            k: v
+            for k, v in tool_input.items()
+            if k in {"event_name", "priority", "why", "becoming", "notes"}
+            and v is not None
+        }
+        if tool_input.get("event_date"):
+            try:
+                updates["event_date"] = _date.fromisoformat(tool_input["event_date"])
+            except ValueError:
+                return "Error: event_date must be YYYY-MM-DD."
+        if not updates:
+            return "Error: Nothing to update."
+        try:
+            goal = update_goal(db, goal, updates)
+        except ValueError as e:
+            return f"Error: {e}"
+        return f"Updated the goal '{goal.event_name}' ({', '.join(updates)})."
 
     return f"Error: Unknown tool '{tool_name}'."
 

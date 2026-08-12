@@ -79,6 +79,12 @@ class GoalEvent(Base):
     target_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # The soul of the goal, written during crafting with the coach.
+    # why: the emotional why in the rider's own words (the fuel).
+    # becoming: who this pursuit is turning them into (the identity line).
+    why: Mapped[str | None] = mapped_column(Text, nullable=True)
+    becoming: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # Route / challenge data
     route_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     gpx_file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)

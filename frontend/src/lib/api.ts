@@ -715,6 +715,8 @@ export interface GoalEvent {
   priority: string;
   target_duration_minutes: number | null;
   notes: string | null;
+  why: string | null;
+  becoming: string | null;
   days_until: number | null;
   route_url: string | null;
   gpx_file_path: string | null;

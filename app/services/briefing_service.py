@@ -58,7 +58,10 @@ the stage: calm, confident, personal.
 Structure it as flowing prose with short paragraphs:
 1. Open with what today is and what they've done to earn it (use their
    actual training history numbers if provided).
-2. Mindset: one steadying idea to return to when it gets hard.
+2. Mindset: one steadying idea to return to when it gets hard. If the
+   goal_event carries a `why` or `becoming` (the rider's own words from
+   when this goal was crafted), weave them in here: hand their reason
+   back to them on the morning it matters. Quote lightly, never recite.
 3. Conditions: what the forecast means for THIS event, where it helps,
    where to be careful, kit for the numbers given.
 4. Pacing: concrete guidance from their FTP and the event's shape. Give
@@ -253,6 +256,10 @@ async def get_or_create_briefing(db: Session, user: User) -> Briefing:
             "type": str(goal_today.event_type),
             "priority": str(goal_today.priority),
             "notes": goal_today.notes,
+            # The rider's own why and becoming from goalcraft: race morning
+            # is exactly the moment to hand their words back to them.
+            "why": goal_today.why,
+            "becoming": goal_today.becoming,
             "target_duration_minutes": goal_today.target_duration_minutes,
             "route_distance_km": route_data.get("total_distance_km"),
             "route_elevation_gain_m": route_data.get("elevation_gain_m"),

@@ -132,6 +132,8 @@ def create_goal(
     target_duration_minutes: int | None = None,
     notes: str | None = None,
     route_url: str | None = None,
+    why: str | None = None,
+    becoming: str | None = None,
 ) -> GoalEvent:
     """Create a new goal event."""
     # Validate enums
@@ -147,6 +149,8 @@ def create_goal(
         target_duration_minutes=target_duration_minutes,
         notes=notes,
         route_url=route_url,
+        why=why,
+        becoming=becoming,
     )
     db.add(goal)
     db.commit()
