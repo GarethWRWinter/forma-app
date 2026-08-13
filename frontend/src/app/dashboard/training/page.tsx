@@ -16,7 +16,7 @@ import { formatDuration, formatDate, cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
 import { ZONE_BLOCKS, ZONES, SERIES } from "@/lib/palette";
 import { restLine } from "@/lib/voice";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button, Arrow, buttonVariants } from "@/components/ui/button";
 import { Kicker } from "@/components/ui/kicker";
 import { DataTile } from "@/components/ui/data-tile";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -34,6 +34,63 @@ const PHASE_COLORS: Record<string, { bg: string; dark: boolean }> = {
   recovery:   { bg: ZONES.z2, dark: true },
   transition: { bg: SERIES.hairline, dark: false },
 };
+
+/** Countdown wording for the masthead kicker. */
+function daysOutLabel(days: number | null): string {
+  if (days == null) return "date to come";
+  if (days === 0) return "race day";
+  if (days === 1) return "1 day out";
+  return `${days} days out`;
+}
+
+/** Target time, written the way a rider says it. */
+function formatTargetTime(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return `${m}m`;
+}
+
+function priorityLabel(priority: string): string {
+  if (priority === "a_race") return "A race";
+  if (priority === "b_race") return "B race";
+  if (priority === "c_race") return "C race";
+  return priority.replace(/_/g, " ");
+}
+
+/** The check-in the rider hands the coach, prefilled and specific to the goal. */
+function checkInAsk(goal: GoalEvent): string {
+  const days = goal.days_until;
+  const when =
+    days === 0
+      ? "It's today."
+      : days === 1
+        ? "It's tomorrow."
+        : days != null
+          ? `It's ${days} days out.`
+          : "";
+  return `Let's check in on ${goal.event_name}. ${when} Where am I really against it right now? Look at my recent training, tell me straight what's on track and what isn't, then ask me the one question I need to answer this week.`
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Ask that sends the rider into goalcraft with the coach. */
+const GOALCRAFT_ASK =
+  "I want to craft a goal with you. Ask me one question at a time and help me find the goal I would actually love: what it is, why it matters to me, and who it makes me. When we have it, file it for me.";
+
+function coachHref(ask: string): string {
+  return `/dashboard/coach?ask=${encodeURIComponent(ask)}`;
+}
+
+/** One fact in the masthead detail strip. */
+function MastheadStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="f-kicker text-white/40">{label}</dt>
+      <dd className="f-data mt-1 truncate text-sm text-white">{value}</dd>
+    </div>
+  );
+}
 
 function getWeekDates(offset: number): { start: Date; dates: Date[] } {
   const today = new Date();
@@ -114,6 +171,28 @@ export default function TrainingPage() {
   const activePlan = plans?.plans.find((p) => p.status === "active");
   const hasActivePlan = !!activePlan;
 
+  // Forma's honest read on the goal, requested from the masthead.
+  const coachReadMutation = useMutation({
+    mutationFn: (goalId: string) => goals.coachRead(goalId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["goals"] });
+    },
+  });
+
+  // Masthead detail, resolved once so the JSX stays readable.
+  const goalRoute =
+    nextUpcomingGoal?.route_data && !nextUpcomingGoal.route_data.error
+      ? nextUpcomingGoal.route_data
+      : null;
+  const goalCheckInHref = nextUpcomingGoal
+    ? coachHref(checkInAsk(nextUpcomingGoal))
+    : "";
+  const goalWhyHref = nextUpcomingGoal
+    ? coachHref(
+        `Let's talk about my goal "${nextUpcomingGoal.event_name}". Ask me one question at a time and help me find why this one matters to me and who it's turning me into. Then save it to the goal.`
+      )
+    : "";
+
   const statusMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) =>
       training.updateWorkout(id, { status }),
@@ -186,48 +265,192 @@ export default function TrainingPage() {
     <div className="f-rise space-y-6">
       {/* ============ THE GOAL HOLDS — the plan's masthead ============ */}
       {nextUpcomingGoal ? (
-        <section className="flex items-center gap-4 bg-[#101012] px-5 py-5 text-white md:gap-6 md:px-8">
-          <div
-            className="flex h-14 w-16 shrink-0 items-start justify-center bg-vb-red pt-2.5 sm:h-16 sm:w-[74px]"
-            style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }}
-          >
-            <span className="f-data text-xl font-bold leading-none sm:text-2xl">
-              {nextUpcomingGoal.days_until}
-            </span>
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="f-kicker text-vb-red">The goal holds · {nextUpcomingGoal.days_until} days out</p>
-            <Link
-              href={`/dashboard/goals/${nextUpcomingGoal.id}`}
-              className="f-display mt-1 line-clamp-2 block text-lg leading-tight transition-colors hover:text-vb-red sm:text-xl md:text-2xl"
+        <section className="space-y-4 bg-[#101012] px-5 py-5 text-white md:px-8 md:py-6">
+          {/* The name and the countdown */}
+          <div className="flex items-start gap-4 md:gap-6">
+            <div
+              className="flex h-14 w-16 shrink-0 items-start justify-center bg-vb-red pt-2.5 sm:h-16 sm:w-[74px]"
+              style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }}
             >
-              {nextUpcomingGoal.event_name}
-            </Link>
-            <p className="f-kicker mt-1 text-white/50">
-              {nextUpcomingGoal.priority?.replace("_", "-")} · {formatDate(nextUpcomingGoal.event_date)}
-            </p>
+              <span className="f-data text-xl font-bold leading-none sm:text-2xl">
+                {nextUpcomingGoal.days_until}
+              </span>
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="f-kicker text-vb-red">
+                The goal holds · {daysOutLabel(nextUpcomingGoal.days_until)}
+              </p>
+              <Link
+                href={`/dashboard/goals/${nextUpcomingGoal.id}`}
+                className="f-display mt-1 line-clamp-2 block text-lg leading-tight transition-colors hover:text-vb-red sm:text-xl md:text-2xl"
+              >
+                {nextUpcomingGoal.event_name}
+              </Link>
+              <p className="f-kicker mt-1 text-white/50">
+                {priorityLabel(nextUpcomingGoal.priority)}
+              </p>
+            </div>
           </div>
-          <div className="shrink-0 border-l border-white/15 pl-5 text-right">
-            <Link href="/dashboard/goals" className="f-kicker text-white/60 transition-colors hover:text-white">
-              All goals →
+
+          {/* The detail, on the page rather than three taps away */}
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 border-t border-white/10 pt-4 sm:flex sm:flex-wrap sm:gap-x-10">
+            <MastheadStat
+              label="Date"
+              value={formatDate(nextUpcomingGoal.event_date)}
+            />
+            <MastheadStat
+              label="Discipline"
+              value={nextUpcomingGoal.event_type.replace(/_/g, " ")}
+            />
+            {goalRoute?.total_distance_km != null && (
+              <MastheadStat
+                label="Distance"
+                value={`${Math.round(goalRoute.total_distance_km)} km`}
+              />
+            )}
+            {goalRoute?.elevation_gain_m != null && (
+              <MastheadStat
+                label="Climbing"
+                value={`${Math.round(goalRoute.elevation_gain_m)} m`}
+              />
+            )}
+            {nextUpcomingGoal.target_duration_minutes != null && (
+              <MastheadStat
+                label="Target time"
+                value={formatTargetTime(
+                  nextUpcomingGoal.target_duration_minutes
+                )}
+              />
+            )}
+          </dl>
+
+          {/* The soul of it, written at goalcraft */}
+          {nextUpcomingGoal.why || nextUpcomingGoal.becoming ? (
+            <figure className="border-l-2 border-vb-red pl-4">
+              <p className="f-kicker text-white/40">Why this one</p>
+              {nextUpcomingGoal.why && (
+                <blockquote className="mt-1.5 max-w-2xl text-sm leading-relaxed text-white/85">
+                  &ldquo;{nextUpcomingGoal.why}&rdquo;
+                </blockquote>
+              )}
+              {nextUpcomingGoal.becoming && (
+                <figcaption className="f-kicker mt-2 text-white/50">
+                  Becoming · {nextUpcomingGoal.becoming}
+                </figcaption>
+              )}
+            </figure>
+          ) : (
+            <div className="border-l-2 border-white/15 pl-4">
+              <p className="f-kicker text-white/40">No why yet</p>
+              <p className="mt-1.5 max-w-xl text-sm text-white/60">
+                This one has a date but nothing behind it. The why is what gets
+                you out of the door in February.
+              </p>
+              <Link
+                href={goalWhyHref}
+                className="f-kicker mt-2 inline-block text-vb-red transition-colors hover:text-white"
+              >
+                Find it with {coachName} →
+              </Link>
+            </div>
+          )}
+
+          {/* The coach's read, compact, with the door to the full verdict */}
+          {nextUpcomingGoal.coach_read ? (
+            <div className="border-t border-white/10 pt-4">
+              <p className="f-kicker text-white/40">{coachName}&apos;s read</p>
+              <p className="mt-1.5 line-clamp-3 max-w-3xl text-sm leading-relaxed text-white/75">
+                {nextUpcomingGoal.coach_read}
+              </p>
+              <Link
+                href={`/dashboard/goals/${nextUpcomingGoal.id}`}
+                className="f-kicker mt-2 inline-block text-white/60 transition-colors hover:text-white"
+              >
+                Read it in full →
+              </Link>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-3 border-t border-white/10 pt-4">
+              <p className="max-w-md text-sm text-white/60">
+                {coachName} has not read this goal yet. The right size, the
+                missing piece, the one change that would make it sing.
+              </p>
+              <Button
+                variant="carbon"
+                size="sm"
+                onClick={() => coachReadMutation.mutate(nextUpcomingGoal.id)}
+                disabled={coachReadMutation.isPending}
+              >
+                {coachReadMutation.isPending
+                  ? "Reading your numbers…"
+                  : "Get the read"}
+              </Button>
+              {coachReadMutation.isError && (
+                <p className="f-kicker w-full text-white/50">
+                  That one did not land. Try again in a moment.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* The conversation, the whole point of having a coach */}
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3 border-t border-white/10 pt-4">
+            <Link
+              href={goalCheckInHref}
+              className={buttonVariants({
+                variant: "flamme",
+                size: "lg",
+                className: "w-full sm:w-auto",
+              })}
+            >
+              Check in on this goal
+              <Arrow />
             </Link>
+            <div className="flex items-center gap-5 sm:ml-auto">
+              <Link
+                href={`/dashboard/goals/${nextUpcomingGoal.id}`}
+                className="f-kicker text-white/60 transition-colors hover:text-white"
+              >
+                Goal detail →
+              </Link>
+              <Link
+                href="/dashboard/goals"
+                className="f-kicker text-white/60 transition-colors hover:text-white"
+              >
+                All goals →
+              </Link>
+            </div>
           </div>
         </section>
       ) : (
-        <section className="flex flex-wrap items-center justify-between gap-4 bg-[#101012] px-5 py-5 text-white md:px-8">
-          <div>
-            <p className="f-kicker text-vb-red">The plan bends. The goal holds.</p>
-            <p className="f-display mt-1 text-lg leading-tight sm:text-xl">
-              What are we chasing?
-            </p>
-            <p className="mt-1 max-w-md text-sm text-white/60">
-              An event, a number, or simply the engine rebuilt. Give the plan
-              its why and every week bends towards it.
-            </p>
+        <section className="bg-[#101012] px-5 py-5 text-white md:px-8 md:py-6">
+          <p className="f-kicker text-vb-red">The plan bends. The goal holds.</p>
+          <p className="f-display mt-1 text-lg leading-tight sm:text-xl md:text-2xl">
+            What are we chasing?
+          </p>
+          <p className="mt-2 max-w-md text-sm text-white/60">
+            An event, a number, or simply the engine rebuilt. Give the plan its
+            why and every week bends towards it.
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
+            <Link
+              href={coachHref(GOALCRAFT_ASK)}
+              className={buttonVariants({
+                variant: "flamme",
+                size: "lg",
+                className: "w-full sm:w-auto",
+              })}
+            >
+              Find it with {coachName}
+              <Arrow />
+            </Link>
+            <Link
+              href="/dashboard/goals"
+              className="f-kicker text-white/60 transition-colors hover:text-white"
+            >
+              Set the goal myself →
+            </Link>
           </div>
-          <Link href="/dashboard/goals" className={buttonVariants({ variant: "flamme" })}>
-            Set the goal
-          </Link>
         </section>
       )}
 

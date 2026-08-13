@@ -9,6 +9,7 @@ import { useAuth } from "@/lib/auth-context";
 import { formatDuration, formatDate, cn } from "@/lib/utils";
 import { RiderProfileRadar } from "@/components/charts/rider-profile-radar";
 import { BriefingCard } from "@/components/dashboard/briefing-card";
+import { CoachInvite } from "@/components/dashboard/coach-invite";
 import { Kicker } from "@/components/ui/kicker";
 import { SectionHeader } from "@/components/ui/section-header";
 import { DataTile } from "@/components/ui/data-tile";
@@ -20,7 +21,6 @@ import { ZONES } from "@/lib/palette";
 import { dailyInkscape, WORKOUT_ZONE } from "@/lib/dailyInkscape";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Card, CardBody } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 
 /**
@@ -135,7 +135,7 @@ export default function DashboardPage() {
     staleTime: 60 * 60 * 1000, // it only changes at midnight
   });
 
-  const { data: nudge } = useQuery({
+  const { data: nudge, isPending: nudgePending } = useQuery({
     queryKey: ["coach-nudge"],
     queryFn: () => coachInsights.getNudge(),
     staleTime: 30 * 60 * 1000,
@@ -236,7 +236,7 @@ export default function DashboardPage() {
       <section className="f-rise relative -mx-4 -mt-4 overflow-hidden md:-mx-8 md:-mt-8">
         <img
           src={ink.src}
-          alt={`Ink road art — ${ink.label}`}
+          alt={`Ink road art, ${ink.label}`}
           className="h-[380px] w-full object-cover sm:h-[420px] md:h-[460px]"
         />
         {/* scrim for legibility, heavier at the base where the words sit */}
@@ -272,18 +272,12 @@ export default function DashboardPage() {
         <h1 className="f-display mt-3 text-4xl leading-[1.04] md:text-6xl">
           {greeting}, {firstName}.
         </h1>
-        {nudge && (
-          <p className="mt-3 max-w-2xl text-base leading-relaxed text-vb-text-dim md:text-lg">
-            {nudge.nudge}{" "}
-            <Link
-              href="/dashboard/coach"
-              className="f-kicker whitespace-nowrap text-vb-text-muted transition-colors hover:text-vb-red"
-            >
-              Reply <span className="f-arrow-head">→</span>
-            </Link>
-          </p>
-        )}
       </header>
+
+      {/* ============ THE COACH, LEANING IN ============
+          Conversation is the product. The day opens with the coach
+          saying something real and a place to answer it. */}
+      <CoachInvite coach={coach} nudge={nudge?.nudge} loading={nudgePending} />
 
       {/* ============ GOAL BAND (carbon) ============ */}
       {nextGoal && (

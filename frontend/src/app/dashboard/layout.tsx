@@ -1,33 +1,15 @@
 "use client";
 
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { RefreshCw, AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { Sidebar } from "@/components/layout/sidebar";
+import { CoachDock, useCoachDockVisible } from "@/components/coach/coach-dock";
 import { auth } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useStravaAutoSync } from "@/hooks/useStravaAutoSync";
-
-function TalkToForma() {
-  const pathname = usePathname();
-  // The coach page IS the conversation; the session player has Race Radio.
-  if (pathname.startsWith("/dashboard/coach") || pathname.includes("/session")) {
-    return null;
-  }
-  return (
-    <Link
-      href="/dashboard/coach"
-      aria-label="Talk to Forma"
-      className="fixed bottom-5 right-5 z-40 flex items-center gap-2.5 border border-vb-border-strong bg-vb-surface-raised py-2.5 pl-3 pr-4 transition-transform hover:-translate-y-0.5"
-    >
-      <span className="f-pulse-dot inline-block h-2.5 w-2.5 rounded-full bg-vb-red" />
-      <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-vb-text">
-        Talk to Forma
-      </span>
-    </Link>
-  );
-}
+import { cn } from "@/lib/utils";
 
 function VerifyEmailBanner() {
   const [sent, setSent] = useState(false);
@@ -64,6 +46,8 @@ export default function DashboardLayout({
 }) {
   const { user, loading } = useAuth();
   const router = useRouter();
+  // When the dock holds the bottom corner, the sync toast stacks above it.
+  const dockVisible = useCoachDockVisible();
 
   useEffect(() => {
     if (!loading && !user) {
@@ -100,11 +84,16 @@ export default function DashboardLayout({
 
       {/* Forma is always one tap away. Hidden where the coach already owns
           the surface (the coach page, the carbon session player). */}
-      <TalkToForma />
+      <CoachDock />
 
       {/* Auto-sync toast, editorial chip with red accent on errors. */}
       {(syncing || (lastSyncedCount != null && lastSyncedCount > 0) || lastError) && (
-        <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-md border border-vb-border bg-vb-surface px-4 py-2.5 text-[11px] font-medium uppercase tracking-[0.08em] text-vb-text">
+        <div
+          className={cn(
+            "fixed right-4 z-50 flex items-center gap-2 rounded-md border border-vb-border bg-vb-surface px-4 py-2.5 text-[11px] font-medium uppercase tracking-[0.08em] text-vb-text",
+            dockVisible ? "bottom-[4.75rem]" : "bottom-4"
+          )}
+        >
           {syncing ? (
             <>
               <RefreshCw className="h-3.5 w-3.5 animate-spin" />
