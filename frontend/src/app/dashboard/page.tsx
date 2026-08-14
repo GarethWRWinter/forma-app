@@ -22,6 +22,10 @@ import { dailyInkscape, WORKOUT_ZONE } from "@/lib/dailyInkscape";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Card, CardBody } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
+import {
+  PlanProposalCard,
+  usePlanProposals,
+} from "@/components/training/plan-proposal-card";
 
 /**
  * FORMA dashboard, the daily face of the product.
@@ -160,6 +164,11 @@ export default function DashboardPage() {
     retry: false,
   });
 
+  // The coach's own reading of the plan it wrote. Usually there is nothing,
+  // and nothing is what gets rendered.
+  const { data: proposals } = usePlanProposals();
+  const pendingProposal = proposals?.[0];
+
   const { data: weeklyLoad } = useQuery({
     queryKey: ["weekly-load-12"],
     queryFn: () => metrics.getWeeklyLoad(12),
@@ -278,6 +287,14 @@ export default function DashboardPage() {
           Conversation is the product. The day opens with the coach
           saying something real and a place to answer it. */}
       <CoachInvite coach={coach} nudge={nudge?.nudge} loading={nudgePending} />
+
+      {/* ============ THE COACH CHALLENGES THE PLAN ============
+          Raised unprompted when the evidence says the prescription is
+          wrong. Silence is the correct state most days, so no proposal
+          means no card, no placeholder, no empty state. */}
+      {pendingProposal && (
+        <PlanProposalCard proposal={pendingProposal} coachName={coach} />
+      )}
 
       {/* ============ GOAL BAND (carbon) ============ */}
       {nextGoal && (

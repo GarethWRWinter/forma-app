@@ -629,6 +629,47 @@ export interface WorkoutStep {
   notes: string | null;
 }
 
+/**
+ * One concrete edit inside a proposal. `action` says what happens to the
+ * session; the remaining fields describe what it becomes. Everything past
+ * the action is optional because a dropped session carries no new
+ * prescription, only a reason.
+ */
+export interface PlanProposalChange {
+  action: string;
+  workout_id?: string | null;
+  scheduled_date?: string | null;
+  title?: string | null;
+  workout_type?: string | null;
+  planned_duration_seconds?: number | null;
+  planned_tss?: number | null;
+  description?: string | null;
+  why?: string | null;
+}
+
+/** The coach knocking on the door: what it noticed, why it matters, what it
+    would change. Nothing here has happened yet. */
+export interface PlanProposal {
+  id: string;
+  trigger: string;
+  observation: string;
+  rationale: string;
+  changes: PlanProposalChange[];
+  created_at: string;
+  status?: string;
+}
+
+export interface PlanProposalResult {
+  status?: string;
+  message?: string | null;
+  changes_applied?: number | null;
+}
+
+export interface PlanReviewResult {
+  proposal?: PlanProposal | null;
+  message?: string | null;
+}
+
 export const training = {
   getPlans: () =>
     request<{ plans: TrainingPlan[]; total: number }>("/plans"),
@@ -670,6 +711,35 @@ export const training = {
     request<WorkoutAssessment>(
       `/workouts/${id}/assessment${force ? "?force=true" : ""}`
     ),
+
+  // === Proposals: the coach interrogating its own prescription ===
+
+  /**
+   * Pending proposals, newest first. The envelope is unwrapped here because
+   * an unexpected shape would blank the card rather than throw, and a blank
+   * card is indistinguishable from the coach having nothing to say.
+   */
+  getProposals: async (): Promise<PlanProposal[]> => {
+    const res = await request<
+      PlanProposal[] | { proposals?: PlanProposal[] } | null
+    >("/training/proposals");
+    if (Array.isArray(res)) return res;
+    return res?.proposals ?? [];
+  },
+
+  acceptProposal: (id: string) =>
+    request<PlanProposalResult | null>(`/training/proposals/${id}/accept`, {
+      method: "POST",
+    }),
+
+  declineProposal: (id: string) =>
+    request<PlanProposalResult | null>(`/training/proposals/${id}/decline`, {
+      method: "POST",
+    }),
+
+  /** Ask for the review now instead of waiting for the coach to raise one. */
+  requestReview: () =>
+    request<PlanReviewResult | null>("/training/review", { method: "POST" }),
 };
 
 // === Onboarding ===

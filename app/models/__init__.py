@@ -8,6 +8,7 @@ from app.models.memory import MemoryEdge, MemoryEntity
 from app.models.metrics import DailyMetrics
 from app.models.onboarding import GoalEvent, OnboardingResponse
 from app.models.founding import FoundingLedger
+from app.models.plan_proposal import PlanProposal
 from app.models.refresh_token import RefreshToken
 from app.models.ride import Ride, RideData
 from app.models.segment import SegmentEffort, StravaSegment
@@ -32,6 +33,7 @@ __all__ = [
     "ChatMessage",
     "ChatAttachment",
     "CoachNudge",
+    "PlanProposal",
     "FormaCall",
     "FoundingLedger",
     "RefreshToken",

@@ -91,6 +91,9 @@ TASKS: dict[str, TaskConfig] = {
     "briefing_daily": TaskConfig(HAIKU, 600),  # pre-ride briefing, light touch
     "briefing_goal": TaskConfig(SONNET, 1200), # goal-day team-car briefing
     "goal_read": TaskConfig(SONNET, 900),      # the coach's read on a goal
+    # Interrogating the coach's own prescription against the evidence. Sonnet:
+    # this is the judgement call that decides whether to interrupt the rider.
+    "plan_review": TaskConfig(SONNET, 1200),
     "explain": TaskConfig(HAIKU, 200),         # metric explanation
     "memory_extraction": TaskConfig(HAIKU, 1500),
     "memory_reading": TaskConfig(HAIKU, 220),  # Brain page narration

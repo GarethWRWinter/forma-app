@@ -63,6 +63,12 @@ You have tools to modify the rider's training plan directly. Use them when the c
 - **swap_workout_date**: Swap the dates of two workouts to rearrange the week.
 - **add_workout**: Add a new session to the plan.
 - **skip_workout**: Mark a workout as skipped.
+- **propose_plan_change**: Put a reasoned proposal in front of the rider. This one changes NOTHING by itself. It is how you raise a change the rider has not asked for.
+
+**When the plan itself looks wrong** (not one session, the shape of the block):
+- Do not edit it quietly, and do not settle for a passing remark you hope they act on. Call `propose_plan_change` with what you have noticed, why it matters against their goal and their numbers, and the concrete sessions you would change.
+- The rider then approves, declines, or argues with it. If they say yes in words, do NOT carry it out with the plan tools above. Point them at the proposal card, here or on their plan page, and let them press it. That is what keeps a change applied exactly once, and visible as the thing they agreed to.
+- This is THE PLAN REVIEW LAW in practice. The commonest case: hours going into a strength while the limiter that decides the goal goes untrained.
 
 **When to use tools:**
 - The rider asks to change their plan ("Can we swap Tuesday and Thursday?", "I want to skip tomorrow's session", "Add a recovery ride on Friday")
@@ -473,6 +479,43 @@ def _build_rider_context(
     except Exception:
         pass
 
+    # ── 10b. Plan proposals already waiting on the rider ──
+    # Without this the coach re-argues a case the rider has not answered yet,
+    # which reads as nagging and devalues the next proposal.
+    try:
+        from app.models.plan_proposal import PlanProposal
+
+        pending = (
+            db.query(PlanProposal)
+            .filter(
+                PlanProposal.user_id == user.id,
+                PlanProposal.status == "pending",
+            )
+            .order_by(PlanProposal.created_at.desc())
+            .limit(3)
+            .all()
+        )
+        if pending:
+            context["pending_plan_proposals"] = {
+                "note": (
+                    "You have already put these to the rider and they have not "
+                    "decided yet. Do not file the same case again. Ask what they "
+                    "make of it, or answer whatever is holding them up."
+                ),
+                "proposals": [
+                    {
+                        "id": p.id,
+                        "raised": str(p.created_at.date()) if p.created_at else None,
+                        "trigger": p.trigger,
+                        "observation": p.observation,
+                        "changes": len(p.changes or []),
+                    }
+                    for p in pending
+                ],
+            }
+    except Exception:
+        pass
+
     # ── 11. This Week's Workouts ──
     try:
         week_start = today - timedelta(days=today.weekday())  # Monday
@@ -791,6 +834,74 @@ COACH_TOOLS = [
             "required": ["attachment_id", "confirmed"],
         },
     },
+    {
+        "name": "propose_plan_change",
+        "description": (
+            "Put a reasoned proposal to change the rider's training plan in front of them. "
+            "THIS TOOL NEVER CHANGES THE PLAN. It changes nothing at all: it files a proposal "
+            "the rider can approve, decline, or argue with, and the plan only moves if they say yes. "
+            "That is the point of it, so use it freely whenever the evidence says the plan is wrong. "
+            "Use it when you have interrogated your own prescription and believe it no longer serves "
+            "the goal: the rider is spending limited hours on a strength while the limiter that "
+            "decides their event goes untrained, the block no longer fits the time they actually "
+            "have, an A-race moved, fatigue or illness has changed what is realistic, or their "
+            "profile scores now say something different from what they said when you wrote the plan. "
+            "Raise it unprompted. Nobody is going to ask you to review the plan. "
+            "Ground every part of it in their own numbers: the profile scores, the demands of the "
+            "event, what they have actually ridden. A proposal you cannot justify from their data "
+            "teaches the rider to ignore the ones you can, so when the evidence is thin, ask a "
+            "question instead of filing this. "
+            "After calling it, describe the proposal to the rider in plain language, in your own "
+            "voice, in a few sentences: what you noticed, why it matters for their goal, what you "
+            "would change. Do not paste the JSON at them and do not present it as done."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "observation": {
+                    "type": "string",
+                    "description": "One or two sentences on what you have noticed in their data or behaviour, stated concretely and without judgement (e.g. 'Three VO2max sessions in the last ten days, on top of the base plan').",
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "Why this matters for THEIR goal, quoting their own numbers: profile scores, the demands of the event, the gap to close. This is the part that earns the rider's trust, so it must be justifiable from their data alone.",
+                },
+                "changes": {
+                    "type": "array",
+                    "description": "The concrete edits you propose. At most three, and fewer is better: this is one correction expressed in the fewest sessions that deliver it, never a rewrite of the block. Every edit must fall inside the next fortnight.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["update_workout", "add_workout", "skip_workout"],
+                                "description": "update_workout rewrites an existing session (including moving its date), add_workout creates a new one, skip_workout drops one.",
+                            },
+                            "workout_id": {
+                                "type": "string",
+                                "description": "The session being changed, copied exactly from the this_week context. Required for update_workout and skip_workout. Never invent one, and never edit a session that is not in the context. Omit for add_workout.",
+                            },
+                            "scheduled_date": {"type": "string", "description": "YYYY-MM-DD, inside the next fortnight. Required for add_workout, and used on update_workout when you are moving the session."},
+                            "title": {"type": "string", "description": "The session name the rider will see."},
+                            "description": {"type": "string", "description": "What the session actually is, in enough detail to ride it."},
+                            "workout_type": {
+                                "type": "string",
+                                "enum": ["endurance", "tempo", "sweet_spot", "threshold", "vo2max", "sprint", "recovery", "rest"],
+                            },
+                            "planned_duration_seconds": {"type": "integer"},
+                            "planned_tss": {"type": "number"},
+                            "why": {
+                                "type": "string",
+                                "description": "One line on why THIS edit. The rider approves each edit on its own, so each one owes them a reason.",
+                            },
+                        },
+                        "required": ["action", "why"],
+                    },
+                },
+            },
+            "required": ["observation", "rationale", "changes"],
+        },
+    },
 ]
 
 
@@ -805,11 +916,17 @@ _TOOL_STATUS = {
     "skip_workout": "Marking it skipped",
     "find_ride": "Searching your rides",
     "save_attachment_as_ride": "Saving it to your rides",
+    "propose_plan_change": "Rethinking your plan",
 }
 
 # Tools that only read. They must not fire plan_updated, or every ride search
 # makes the app refetch the whole training picture mid-conversation.
 _READ_ONLY_TOOLS = {"analyse_ride", "find_ride"}
+
+# Tools that leave the plan itself untouched. Proposing a change is a question
+# put to the rider, not an edit: the plan does not move until they approve, so
+# telling the app the plan changed here would be a lie the calendar exposes.
+_NO_PLAN_CHANGE_TOOLS = _READ_ONLY_TOOLS | {"propose_plan_change"}
 
 
 def _tool_status(db: Session, user: User, name: str, tool_input: dict) -> str | None:
@@ -1217,6 +1334,98 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
             f"quoting anything from inside it."
         )
 
+    elif tool_name == "propose_plan_change":
+        # This tool files an argument, it does not touch the plan. The rider's
+        # calendar only moves when they accept, and it moves through
+        # apply_proposal so a change is applied exactly once.
+        from app.models.plan_proposal import PlanProposal
+        from app.models.training import PlanStatus, TrainingPlan
+        from app.services.plan_review_service import HORIZON_DAYS, _validate_changes
+
+        observation = (tool_input.get("observation") or "").strip()
+        rationale = (tool_input.get("rationale") or "").strip()
+        changes = tool_input.get("changes")
+
+        if not observation or not rationale:
+            return (
+                "Nothing was filed. A proposal needs both an observation and a "
+                "rationale the rider can check against their own data. Say what "
+                "you noticed and why it matters for their goal, then call it again."
+            )
+        # A proposal raised in conversation is held to exactly the standard of
+        # one the review engine raises: same three actions, same fortnight
+        # horizon, same cap on how many sessions one argument may touch. Reusing
+        # the review validator rather than restating its rules is what stops the
+        # two paths drifting into different ideas of a legal change.
+        today = date.today()
+        upcoming_ids = {
+            w.id
+            for w in db.query(Workout)
+            .filter(
+                Workout.user_id == user.id,
+                Workout.scheduled_date >= today,
+                Workout.scheduled_date <= today + timedelta(days=HORIZON_DAYS),
+            )
+            .all()
+        }
+        changes = _validate_changes(
+            changes if isinstance(changes, list) else [], upcoming_ids, today
+        )
+        if not changes:
+            return (
+                "Nothing was filed, because none of those changes were usable. "
+                "Each one needs an action of update_workout, add_workout or "
+                "skip_workout; update_workout and skip_workout need a workout_id "
+                "copied exactly from the this_week context; add_workout needs a "
+                "date inside the next fortnight and a workout_type. Fix them and "
+                "call again, or ask the rider a question instead of filing this."
+            )
+
+        plan = (
+            db.query(TrainingPlan)
+            .filter(
+                TrainingPlan.user_id == user.id,
+                TrainingPlan.status == PlanStatus.active,
+            )
+            .order_by(TrainingPlan.created_at.desc())
+            .first()
+        )
+
+        try:
+            proposal = PlanProposal(
+                user_id=user.id,
+                plan_id=plan.id if plan else None,
+                goal_id=plan.goal_event_id if plan else None,
+                trigger="conversation",
+                observation=observation,
+                rationale=rationale,
+                changes=changes,
+                status="pending",
+            )
+            db.add(proposal)
+            db.commit()
+            db.refresh(proposal)
+        except Exception:
+            logger.exception("propose_plan_change: filing the proposal failed")
+            db.rollback()
+            return (
+                "The proposal did not file. Make the case to the rider anyway, in "
+                "plain language, and tell them the proposal card failed to save so "
+                "there is nothing for them to approve yet."
+            )
+
+        return (
+            f"Proposal filed with {len(changes)} change(s) (ID: {proposal.id}). "
+            "NOTHING in the rider's plan has changed, and nothing will until they "
+            "approve it. Now make the case to them in your own voice, in a few "
+            "plain sentences: what you noticed, why it matters for their goal with "
+            "their own numbers, and what you would change. Then tell them they can "
+            "approve or decline it on the proposal card, here or on their plan "
+            "page. If they say yes in words, point them at the card rather than "
+            "editing the sessions yourself, so the change is applied once and they "
+            "can see exactly what they agreed to. Never speak as though it is done."
+        )
+
     return f"Error: Unknown tool '{tool_name}'."
 
 
@@ -1430,7 +1639,11 @@ async def stream_response(
                     "tool_use_id": tool_block.id,
                     "content": result_text,
                 })
-                if tool_block.name not in _READ_ONLY_TOOLS:
+                if tool_block.name == "propose_plan_change":
+                    # The plan has not moved, but something is now waiting on
+                    # the rider, so the app can raise the card straight away.
+                    yield f'data: {json.dumps({"type": "proposal_created"})}\n\n'
+                if tool_block.name not in _NO_PLAN_CHANGE_TOOLS:
                     plan_was_updated = True
 
             messages.append({"role": "user", "content": tool_results})
@@ -1685,7 +1898,11 @@ async def stream_voice_response(
                     "tool_use_id": tool_block.id,
                     "content": result_text,
                 })
-                if tool_block.name not in _READ_ONLY_TOOLS:
+                if tool_block.name == "propose_plan_change":
+                    # The plan has not moved, but something is now waiting on
+                    # the rider, so the app can raise the card straight away.
+                    yield f'data: {json.dumps({"type": "proposal_created"})}\n\n'
+                if tool_block.name not in _NO_PLAN_CHANGE_TOOLS:
                     plan_was_updated = True
 
             messages.append({"role": "user", "content": tool_results})

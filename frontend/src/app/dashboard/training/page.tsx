@@ -21,7 +21,12 @@ import { Kicker } from "@/components/ui/kicker";
 import { DataTile } from "@/components/ui/data-tile";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CoachNote } from "@/components/ui/coach-note";
-import type { Workout, GoalEvent } from "@/lib/api";
+import { CadenceSpinner } from "@/components/ui/cadence-spinner";
+import {
+  PlanProposalCard,
+  usePlanProposals,
+} from "@/components/training/plan-proposal-card";
+import type { Workout, GoalEvent, PlanProposal } from "@/lib/api";
 
 // Plan-phase ramp, cold to hot as the season sharpens toward race day.
 // Colours come from the palette only; flamme marks race day itself.
@@ -192,6 +197,33 @@ export default function TrainingPage() {
         `Let's talk about my goal "${nextUpcomingGoal.event_name}". Ask me one question at a time and help me find why this one matters to me and who it's turning me into. Then save it to the goal.`
       )
     : "";
+
+  // The coach's standing argument with its own plan. Most days there is
+  // nothing pending, and nothing is what gets rendered.
+  const { data: proposals } = usePlanProposals();
+  const pendingProposal = proposals?.[0];
+
+  // The same interrogation, asked for rather than waited for. The verdict
+  // line only speaks when the review comes back with nothing to change.
+  const [reviewVerdict, setReviewVerdict] = useState<string | null>(null);
+  const reviewMutation = useMutation({
+    mutationFn: async () => {
+      const res = await training.requestReview();
+      // Settle the proposals cache before deciding what to say. A review can
+      // raise a proposal without echoing it in the response body, and the
+      // card must never sit next to a line claiming nothing needs changing.
+      await queryClient.invalidateQueries({ queryKey: ["plan-proposals"] });
+      const fresh = queryClient.getQueryData<PlanProposal[]>([
+        "plan-proposals",
+      ]);
+      if (res?.proposal || (fresh && fresh.length > 0)) return null;
+      return (
+        res?.message ??
+        "The plan still stands. Nothing in your recent riding changes what I would have you do next."
+      );
+    },
+    onSuccess: (verdict) => setReviewVerdict(verdict),
+  });
 
   const statusMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) =>
@@ -452,6 +484,51 @@ export default function TrainingPage() {
             </Link>
           </div>
         </section>
+      )}
+
+      {/* ============ THE COACH CHALLENGES THE PLAN ============
+          Sits directly under the goal, because that is what the argument is
+          about: the plan bends, the goal holds. No proposal, no card. */}
+      {pendingProposal && (
+        <PlanProposalCard proposal={pendingProposal} coachName={coachName} />
+      )}
+
+      {/* The rider asking for the review rather than waiting for it. Quiet by
+          design: the coach raising it unprompted is the main event. */}
+      {hasActivePlan && !pendingProposal && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <button
+            type="button"
+            onClick={() => {
+              setReviewVerdict(null);
+              reviewMutation.mutate();
+            }}
+            disabled={reviewMutation.isPending}
+            className="f-kicker text-vb-text-muted transition-colors hover:text-vb-red disabled:opacity-40"
+          >
+            Ask {coachName} to review this plan
+          </button>
+          {reviewMutation.isPending && (
+            <span className="flex items-center gap-2 text-xs text-vb-text-dim">
+              <CadenceSpinner
+                size={14}
+                className="text-vb-red"
+                title="Reviewing your plan"
+              />
+              Reading the plan against your goal&hellip;
+            </span>
+          )}
+          {reviewVerdict && !reviewMutation.isPending && (
+            <p className="text-sm leading-relaxed text-vb-text-dim">
+              {reviewVerdict}
+            </p>
+          )}
+          {reviewMutation.isError && !reviewMutation.isPending && (
+            <p className="f-kicker text-vb-text-muted">
+              That did not land. Try again in a moment.
+            </p>
+          )}
+        </div>
       )}
 
       {/* Header */}

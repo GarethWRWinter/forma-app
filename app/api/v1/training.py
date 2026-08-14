@@ -1,12 +1,18 @@
 """Training plan and workout API endpoints."""
 
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_current_user
-from app.core.exceptions import BadRequestException, NotFoundException
+from app.core.exceptions import (
+    BadRequestException,
+    ConflictException,
+    NotFoundException,
+)
+from app.core.ratelimit import rate_limit
 from app.database import get_db
 from app.models.user import User
 from app.schemas.training import (
@@ -37,6 +43,11 @@ from app.services.ride_service import get_ride
 from app.services.workout_assessment_service import generate_assessment
 
 router = APIRouter(tags=["training"])
+
+# An on-demand review costs a Sonnet call, so it is capped. Per client rather
+# than per user (the limiter is IP based), which is the blunt instrument that
+# stops a stuck retry loop burning the rider's monthly budget.
+_review_limit = rate_limit(5, 3600)  # 5 plan reviews / hour
 
 
 # --- Plans ---
@@ -216,7 +227,232 @@ def get_workout_assessment(
     )
 
 
+# --- Plan proposals ---
+#
+# The coach interrogates the plan it wrote and, when the evidence says the plan
+# is wrong, files a proposal. A proposal is an argument, not an edit: the
+# rider's calendar only moves through accept, and it moves exactly once.
+
+
+class PlanProposalResponse(BaseModel):
+    """A change the coach is putting to the rider, and its reasoning."""
+    id: str
+    trigger: str
+    observation: str
+    rationale: str
+    changes: list[dict] = []
+    created_at: datetime | None = None
+
+
+class ProposalListResponse(BaseModel):
+    proposals: list[PlanProposalResponse]
+    total: int
+
+
+class ProposalDecisionResponse(BaseModel):
+    id: str
+    status: str
+    workouts_changed: int = 0
+    # Same number under the name the app reads. One decision, one count, so a
+    # rider is never told two different stories about what just moved.
+    changes_applied: int = 0
+    message: str = ""
+
+
+class PlanReviewResponse(BaseModel):
+    """`verdict` is what actually happened, so the app never reports "nothing
+    to change" for a review that did not run."""
+    verdict: str  # "proposal" | "no_change" | "no_plan" | "unavailable"
+    message: str
+    proposal: PlanProposalResponse | None = None
+
+
+@router.get("/training/proposals", response_model=ProposalListResponse)
+def list_plan_proposals(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Proposals waiting on the rider: what the coach noticed, why it matters,
+    and exactly what would change if they say yes."""
+    from app.models.plan_proposal import PlanProposal
+
+    proposals = (
+        db.query(PlanProposal)
+        .filter(
+            PlanProposal.user_id == current_user.id,
+            PlanProposal.status == "pending",
+        )
+        .order_by(PlanProposal.created_at.desc())
+        .all()
+    )
+    return ProposalListResponse(
+        proposals=[_proposal_to_response(p) for p in proposals],
+        total=len(proposals),
+    )
+
+
+@router.post("/training/proposals/{proposal_id}/accept", response_model=ProposalDecisionResponse)
+def accept_plan_proposal(
+    proposal_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Apply a proposal to the plan. This is the only path that turns a
+    proposal into real workouts, so a decided proposal is refused rather than
+    applied twice."""
+    from app.services.plan_review_service import apply_proposal
+
+    proposal = _get_pending_proposal(db, current_user, proposal_id)
+    try:
+        changed = apply_proposal(db, current_user, proposal)
+    except ValueError as e:
+        raise BadRequestException(detail=str(e))
+
+    return ProposalDecisionResponse(
+        id=proposal.id,
+        status=_plain_str(proposal.status) or "accepted",
+        workouts_changed=changed,
+        changes_applied=changed,
+        message=(
+            f"{changed} session{'' if changed == 1 else 's'} updated."
+            if changed
+            else "Nothing needed changing on the calendar."
+        ),
+    )
+
+
+@router.post("/training/proposals/{proposal_id}/decline", response_model=ProposalDecisionResponse)
+def decline_plan_proposal(
+    proposal_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Turn a proposal down. The plan is untouched and the coach is told, so it
+    stops making the same case."""
+    from app.services.plan_review_service import decline_proposal
+
+    proposal = _get_pending_proposal(db, current_user, proposal_id)
+    try:
+        decline_proposal(db, current_user, proposal)
+    except ValueError as e:
+        raise BadRequestException(detail=str(e))
+
+    return ProposalDecisionResponse(
+        id=proposal.id,
+        status=_plain_str(proposal.status) or "declined",
+        message="Left as it is. Your plan has not changed.",
+    )
+
+
+@router.post(
+    "/training/review",
+    response_model=PlanReviewResponse,
+    dependencies=[Depends(_review_limit)],
+)
+def review_training_plan(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Ask the coach to interrogate the plan now, against everything it knows.
+
+    Returns the proposal it raises, or an honest "nothing to change" when the
+    plan still holds. Nothing is applied here either way.
+    """
+    from app.core import forma_core
+    from app.services.plan_review_service import review_plan
+
+    # There is nothing to interrogate without an active plan, and "I would not
+    # change anything" would be a strange thing to hear when nothing exists.
+    # Checked here so the rider gets the real answer and no call is spent.
+    if not any(p.status == "active" for p in get_plans(db, current_user.id)):
+        return PlanReviewResponse(
+            verdict="no_plan",
+            message=(
+                "You have no active plan for me to interrogate yet. Give me a "
+                "goal and I will write one, then I will keep questioning it."
+            ),
+        )
+
+    try:
+        proposal = review_plan(db, current_user, trigger="manual")
+    except forma_core.BudgetExceededError:
+        # Saying "nothing to change" for a review that never ran would be a
+        # lie the rider could act on, so name what happened.
+        return PlanReviewResponse(
+            verdict="unavailable",
+            message=forma_core.QUOTA_MESSAGE,
+        )
+    except ValueError as e:
+        raise BadRequestException(detail=str(e))
+
+    if not proposal:
+        return PlanReviewResponse(
+            verdict="no_change",
+            message=(
+                "I have been back through your plan against your goal and your "
+                "recent riding. I would not change anything today."
+            ),
+        )
+
+    return PlanReviewResponse(
+        verdict="proposal",
+        message=proposal.observation or "I have a change to put to you.",
+        proposal=_proposal_to_response(proposal),
+    )
+
+
 # --- Helpers ---
+
+def _plain_str(value) -> str | None:
+    """A column's value as a plain string, whether it holds a str or an enum.
+
+    Status and trigger are plain strings on the model today. The coercion is
+    what stops a later enum column leaking `PlanProposalStatus.pending` into
+    the API and quietly breaking the app's status checks.
+    """
+    if value is None:
+        return None
+    return str(getattr(value, "value", value))
+
+
+def _get_pending_proposal(db: Session, user: User, proposal_id: str):
+    """Load one of the rider's own pending proposals, or refuse.
+
+    Scoping the query to the caller keeps a guessed id from reaching another
+    rider's plan; the pending check stops the same change being applied twice
+    if the card is tapped from two places.
+    """
+    from app.models.plan_proposal import PlanProposal
+
+    proposal = (
+        db.query(PlanProposal)
+        .filter(
+            PlanProposal.id == proposal_id,
+            PlanProposal.user_id == user.id,
+        )
+        .first()
+    )
+    if not proposal:
+        raise NotFoundException(detail="Proposal not found")
+    if _plain_str(proposal.status) != "pending":
+        raise ConflictException(
+            detail=f"This proposal has already been {_plain_str(proposal.status)}"
+        )
+    return proposal
+
+
+def _proposal_to_response(proposal) -> PlanProposalResponse:
+    """Convert PlanProposal to response schema."""
+    changes = proposal.changes or []
+    return PlanProposalResponse(
+        id=proposal.id,
+        trigger=_plain_str(proposal.trigger) or "",
+        observation=proposal.observation or "",
+        rationale=proposal.rationale or "",
+        changes=[c for c in changes if isinstance(c, dict)],
+        created_at=proposal.created_at,
+    )
+
 
 def _plan_to_response(plan) -> TrainingPlanResponse:
     """Convert TrainingPlan to response schema."""
