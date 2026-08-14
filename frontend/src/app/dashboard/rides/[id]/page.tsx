@@ -16,11 +16,17 @@ import { RideChart } from "@/components/charts/ride-chart";
 import dynamic from "next/dynamic";
 
 // Leaflet touches `window` at import time; load the map client-side only.
+const RouteWindMap = dynamic(
+  () => import("@/components/charts/route-wind-map").then((m) => m.RouteWindMap),
+  { ssr: false }
+);
 const RideMap = dynamic(
   () => import("@/components/charts/ride-map").then((m) => m.RideMap),
   { ssr: false }
 );
 import { PowerCurveChart } from "@/components/charts/power-curve-chart";
+import { buildWindRoute, windTotals } from "@/lib/windSegments";
+import { RideElevation } from "@/components/charts/ride-elevation";
 import { RideZonesChart } from "@/components/charts/ride-zones-chart";
 import { DataTile } from "@/components/ui/data-tile";
 import { Badge } from "@/components/ui/badge";
@@ -263,6 +269,64 @@ export default function RideDetailPage() {
           <RideMap data={rideData.data_points} />
         </div>
       )}
+
+      {/* ============ ELEVATION ============ */}
+      {rideData && rideData.data_points.some((p) => p.altitude != null) && (
+        <div className="border border-vb-border-subtle bg-vb-surface p-5">
+          <Kicker className="mb-4">
+            Elevation
+            {ride.elevation_gain_meters != null
+              ? ` · ${Math.round(ride.elevation_gain_meters)} m climbed`
+              : ""}
+          </Kicker>
+          <RideElevation points={rideData.data_points} />
+        </div>
+      )}
+
+      {/* ============ WIND ============ */}
+      {(() => {
+        const w = ride.weather as Record<string, number | null> | null;
+        if (!rideData || !w || w.wind_deg == null) return null;
+        const route = buildWindRoute(
+          rideData.data_points,
+          w.wind_deg as number,
+          (w.wind_kph as number) ?? null
+        );
+        if (!route || route.segments.length === 0) return null;
+        const t = windTotals(route.segments);
+        const total = t.head + t.tail + t.cross || 1;
+        const pct = (v: number) => Math.round((v / total) * 100);
+        return (
+          <div className="border border-vb-border-subtle bg-vb-surface p-5">
+            <Kicker className="mb-4">
+              The wind · {Math.round((w.wind_kph as number) ?? 0)} km/h from{" "}
+              {(ride.weather as Record<string, string>).wind_dir ?? "?"}
+            </Kicker>
+            <RouteWindMap route={route} />
+            <div className="f-data mt-4 flex flex-wrap gap-x-6 gap-y-2 text-xs text-vb-text-dim">
+              <span>
+                <span className="mr-1.5 inline-block h-2 w-2 rounded-full align-middle" style={{ background: "#D92420" }} />
+                Headwind {pct(t.head)}%
+              </span>
+              <span>
+                <span className="mr-1.5 inline-block h-2 w-2 rounded-full align-middle" style={{ background: "#439D7C" }} />
+                Tailwind {pct(t.tail)}%
+              </span>
+              <span>
+                <span className="mr-1.5 inline-block h-2 w-2 rounded-full align-middle" style={{ background: "#D9AC34" }} />
+                Crosswind {pct(t.cross)}%
+              </span>
+            </div>
+            <p className="mt-3 max-w-xl text-sm text-vb-text-dim">
+              {t.head > t.tail
+                ? "More of this ride was paid for into the wind than given back by it. Worth remembering before you read anything into the average speed."
+                : t.tail > t.head
+                  ? "The wind was on your side for more of this than it was against you, which flatters the average a little."
+                  : "Wind roughly balanced out across the ride."}
+            </p>
+          </div>
+        );
+      })()}
 
       {/* ============ RIDE CHART ============ */}
       {/* RideChart draws its own card (border, heading, legend); wrapping it

@@ -279,7 +279,9 @@ export default function RidesPage() {
 
       {/* ============ PAGINATION ============ */}
       {data && data.total > 20 && (
-        <div className="flex items-center justify-between gap-4 border-t border-vb-border-subtle pt-5">
+        // Centred as a group: the coach dock sits bottom right and was
+        // covering Next when the controls were pushed to the edges.
+        <div className="flex items-center justify-center gap-5 border-t border-vb-border-subtle pb-16 pt-5">
           <Button
             variant="ghost"
             size="sm"
