@@ -20,6 +20,7 @@ import {
   Trash2,
   Volume2,
   VolumeX,
+  Paperclip,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -28,6 +29,13 @@ import { cn } from "@/lib/utils";
 import { CoachDot, CoachGlyph } from "@/components/ui/coach-glyph";
 import { CadenceSpinner } from "@/components/ui/cadence-spinner";
 import { StarterChips, useCoachStarters } from "@/components/coach/coach-starters";
+import {
+  AttachButton,
+  AttachmentChips,
+  ATTACHMENT_ASK,
+  MAX_ATTACHMENTS,
+  type ComposerAttachment,
+} from "@/components/coach/ride-attachments";
 import { useVoiceChat } from "@/hooks/useVoiceChat";
 import { useAuth } from "@/lib/auth-context";
 import { VoiceButton } from "@/components/voice/VoiceButton";
@@ -52,7 +60,14 @@ function CoachPageInner() {
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<
-    { role: "user" | "assistant"; content: string; id?: string; created_at?: string }[]
+    {
+      role: "user" | "assistant";
+      content: string;
+      id?: string;
+      created_at?: string;
+      /** filenames handed over with this message, so the thread shows the swap */
+      attachments?: string[];
+    }[]
   >([]);
   const [hasEarlier, setHasEarlier] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -74,6 +89,98 @@ function CoachPageInner() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const audioMutedRef = useRef(false);
 
+  // Ride files waiting on the composer, and whatever went wrong last time.
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const attachKeyRef = useRef(0);
+  // The voice path fires from a callback the hook holds, so it reads the
+  // chips through a ref rather than a closure that may be a turn behind.
+  const attachmentsRef = useRef<ComposerAttachment[]>([]);
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
+  const uploading = attachments.some((a) => a.status === "uploading");
+  const readyAttachments = attachments.filter(
+    (a) => a.status === "ready" && a.id
+  );
+
+  const handleFiles = useCallback((picked: File[]) => {
+    setAttachError(null);
+
+    const room = MAX_ATTACHMENTS - attachmentsRef.current.length;
+    if (room <= 0) {
+      setAttachError(
+        "Three files is the limit for one message. Send these, then attach the rest."
+      );
+      return;
+    }
+    if (picked.length > room) {
+      setAttachError(
+        `Only the first ${room === 1 ? "file" : `${room} files`} went on. Three is the limit for one message.`
+      );
+    }
+
+    for (const file of picked.slice(0, room)) {
+      const key = `attachment-${++attachKeyRef.current}`;
+      setAttachments((prev) => [
+        ...prev,
+        { key, filename: file.name, status: "uploading" },
+      ]);
+
+      chat
+        .uploadAttachment(file)
+        .then((saved) => {
+          setAttachments((prev) =>
+            prev.map((a) =>
+              a.key === key
+                ? {
+                    ...a,
+                    status: "ready" as const,
+                    id: saved.id,
+                    filename: saved.filename || a.filename,
+                    summary: saved.summary,
+                  }
+                : a
+            )
+          );
+          // The rider still holds the pen: this only fills an empty box, and
+          // it sits there to be edited or written over before they send.
+          setInput((prev) => (prev.trim() ? prev : ATTACHMENT_ASK));
+        })
+        .catch((error: unknown) => {
+          // A file that would not parse is not attached at all: a chip that
+          // cannot be sent is worse than no chip.
+          setAttachments((prev) => prev.filter((a) => a.key !== key));
+          setAttachError(
+            error instanceof Error && error.message
+              ? `${file.name}: ${error.message}`
+              : `${file.name} could not be read. Try the original file from your head unit.`
+          );
+        });
+    }
+  }, []);
+
+  const removeAttachment = useCallback((key: string) => {
+    setAttachments((prev) => prev.filter((a) => a.key !== key));
+    setAttachError(null);
+  }, []);
+
+  // Both send paths hand over the same chips, so the take is shared: read the
+  // settled ids, clear the composer, and let the caller stamp the filenames
+  // onto the rider's message.
+  const takeAttachments = useCallback(() => {
+    const settled = attachmentsRef.current.filter(
+      (a) => a.status === "ready" && a.id
+    );
+    setAttachments([]);
+    setAttachError(null);
+    return {
+      ids: settled.map((a) => a.id as string),
+      names: settled.map((a) => a.filename),
+    };
+  }, []);
+
   // Voice send handler (defined below, used by hook)
   const handleVoiceSend = useCallback(
     async (transcript: string) => {
@@ -92,9 +199,15 @@ function CoachPageInner() {
         queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
       }
 
+      const handedOver = takeAttachments();
+
       setMessages((prev) => [
         ...prev,
-        { role: "user" as const, content: transcript.trim() },
+        {
+          role: "user" as const,
+          content: transcript.trim(),
+          attachments: handedOver.names.length ? handedOver.names : undefined,
+        },
       ]);
       setStreaming(true);
 
@@ -108,7 +221,8 @@ function CoachPageInner() {
         let assistantContent = "";
         for await (const chunk of chat.sendVoiceMessage(
           sessionId,
-          transcript.trim()
+          transcript.trim(),
+          handedOver.ids
         )) {
           if (chunk.type === "status") {
             setStatus(chunk.content ?? null);
@@ -419,7 +533,13 @@ function CoachPageInner() {
 
   // Send message with streaming
   const handleSend = async () => {
-    if (!input.trim() || streaming) return;
+    if (streaming) return;
+    // A file on its own is a fair question: "here, look at this".
+    if (!input.trim() && readyAttachments.length === 0) return;
+    if (uploading) {
+      setAttachError("One file is still being read. It will only be a moment.");
+      return;
+    }
 
     let sessionId = activeSessionId;
 
@@ -431,9 +551,20 @@ function CoachPageInner() {
       queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
     }
 
-    const userMessage = input.trim();
+    const handedOver = takeAttachments();
+    // The coach cannot be handed a file and no question, so a rider who
+    // clears the box gets the plain version of what they meant by attaching.
+    const userMessage =
+      input.trim() || (handedOver.ids.length ? ATTACHMENT_ASK : "");
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "user",
+        content: userMessage,
+        attachments: handedOver.names.length ? handedOver.names : undefined,
+      },
+    ]);
     setStreaming(true);
 
     // Add empty assistant message
@@ -441,7 +572,11 @@ function CoachPageInner() {
 
     try {
       let assistantContent = "";
-      for await (const chunk of chat.sendMessage(sessionId, userMessage)) {
+      for await (const chunk of chat.sendMessage(
+        sessionId,
+        userMessage,
+        handedOver.ids
+      )) {
         if (chunk.type === "status") {
           setStatus(chunk.content ?? null);
         } else if (chunk.type === "text") {
@@ -827,7 +962,28 @@ function CoachPageInner() {
                         )}
                       </div>
                     ) : (
-                      <p>{msg.content}</p>
+                      <>
+                        {msg.content && <p>{msg.content}</p>}
+                        {/* What the rider handed over, kept on the record */}
+                        {msg.attachments && msg.attachments.length > 0 && (
+                          <ul
+                            className={cn(
+                              "space-y-1",
+                              msg.content && "mt-2 border-t border-white/20 pt-2"
+                            )}
+                          >
+                            {msg.attachments.map((name) => (
+                              <li
+                                key={name}
+                                className="flex items-center gap-1.5 text-[11px] text-white/75"
+                              >
+                                <Paperclip className="h-3 w-3 shrink-0" />
+                                <span className="truncate">{name}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </>
                     )}
                   </div>
                 )}
@@ -855,7 +1011,7 @@ function CoachPageInner() {
           )}
 
           {/* Doors into the coach's range, ranked by what's being discussed */}
-          {!input && (
+          {!input && attachments.length === 0 && (
             <StarterChips
               starters={starters}
               scrollable
@@ -865,6 +1021,17 @@ function CoachPageInner() {
               }}
               className="mb-3"
             />
+          )}
+
+          <AttachmentChips
+            attachments={attachments}
+            onRemove={removeAttachment}
+          />
+
+          {attachError && (
+            <p className="mb-3 border-l-2 border-vb-red pl-3 text-xs text-vb-text-dim">
+              {attachError}
+            </p>
           )}
 
           <div className="flex items-end gap-2">
@@ -885,6 +1052,12 @@ function CoachPageInner() {
                 el.style.height = "auto";
                 el.style.height = Math.min(el.scrollHeight, 128) + "px";
               }}
+            />
+
+            {/* Hand a ride file over: GPX, FIT or TCX, gzipped or not */}
+            <AttachButton
+              onFiles={handleFiles}
+              disabled={streaming || attachments.length >= MAX_ATTACHMENTS}
             />
 
             {/* Coach audio on/off — some riders want text only. Also stops
@@ -938,7 +1111,11 @@ function CoachPageInner() {
             {/* Send button */}
             <button
               onClick={handleSend}
-              disabled={!input.trim() || streaming}
+              disabled={
+                (!input.trim() && readyAttachments.length === 0) ||
+                streaming ||
+                uploading
+              }
               className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-sm bg-vb-forest text-white hover:bg-vb-forest-soft disabled:opacity-50"
             >
               <Send className="h-4 w-4" />

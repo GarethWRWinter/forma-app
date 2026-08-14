@@ -983,6 +983,26 @@ export interface ChatMessage {
   created_at: string;
 }
 
+/**
+ * What the parser found in an attached ride file. The named fields are the
+ * ones the composer chip reads; the index signature keeps the rest, because
+ * the coach uses far more of the summary than the chip ever shows.
+ */
+export interface ChatAttachmentSummary {
+  distance_km?: number;
+  total_distance?: number;
+  elevation_gain_m?: number;
+  total_ascent?: number;
+  [key: string]: unknown;
+}
+
+export interface ChatAttachment {
+  id: string;
+  filename: string;
+  kind: string;
+  summary?: ChatAttachmentSummary | null;
+}
+
 export const chat = {
   getSessions: (includeArchived?: boolean) =>
     request<ChatSession[]>(
@@ -1014,7 +1034,18 @@ export const chat = {
     );
   },
 
-  sendMessage: async function* (sessionId: string, content: string) {
+  /**
+   * Hand a ride file to the coach. Multipart, so the Content-Type header is
+   * left alone deliberately: the browser has to write its own boundary.
+   */
+  uploadAttachment: (file: File) =>
+    uploadFile<ChatAttachment>("/chat/attachments", file),
+
+  sendMessage: async function* (
+    sessionId: string,
+    content: string,
+    attachmentIds?: string[]
+  ) {
     const token = getToken();
     const response = await fetch(`${API_BASE}/chat/sessions/${sessionId}/messages`, {
       method: "POST",
@@ -1022,7 +1053,10 @@ export const chat = {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content,
+        ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
+      }),
     });
 
     if (!response.ok || !response.body) {
@@ -1056,7 +1090,11 @@ export const chat = {
    * Send a voice message — receives both text and audio chunks via SSE.
    * Audio chunks are base64-encoded MP3 for each sentence.
    */
-  sendVoiceMessage: async function* (sessionId: string, content: string) {
+  sendVoiceMessage: async function* (
+    sessionId: string,
+    content: string,
+    attachmentIds?: string[]
+  ) {
     const token = getToken();
     const response = await fetch(
       `${API_BASE}/chat/sessions/${sessionId}/voice-message`,
@@ -1066,7 +1104,10 @@ export const chat = {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({
+          content,
+          ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
+        }),
       }
     );
 

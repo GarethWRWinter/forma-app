@@ -8,6 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field
 class ChatMessageRequest(BaseModel):
     """Send a message to the AI coach."""
     content: str = Field(..., min_length=1, max_length=4000)
+    # Ride files uploaded to /chat/attachments and being handed to the coach
+    # with this message. Capped because each one carries a read of the file
+    # into context.
+    attachment_ids: list[str] = Field(default_factory=list, max_length=5)
 
 
 class TTSRequest(BaseModel):

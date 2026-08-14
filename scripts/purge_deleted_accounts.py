@@ -33,9 +33,14 @@ _CHILD = [
 # everything that references it). rides<->workouts is circular, so we null
 # those two link columns first (below). training_phases → training_plans →
 # goal_events; memory_edges → memory_entities.
+# chat_attachments holds the rider's raw uploaded ride file, GPS included, so
+# it must go before users or an erasure request leaves the most personal data
+# of the lot behind. It also carries a hard FK to users.id, so omitting it
+# fails the whole purge on the final DELETE rather than failing quietly.
 _USER_TABLES = [
     "workouts", "rides", "training_plans", "goal_events",
-    "chat_sessions", "daily_metrics", "coach_nudges", "onboarding_responses",
+    "chat_attachments", "chat_sessions", "daily_metrics", "coach_nudges",
+    "onboarding_responses",
     "mem_edges", "mem_entities", "forma_calls", "refresh_tokens",
     "strava_tokens", "dropbox_tokens", "trainingpeaks_tokens",
 ]

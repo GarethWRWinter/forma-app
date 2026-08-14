@@ -1,5 +1,6 @@
 from app.models.base import Base
 from app.models.chat import ChatMessage, ChatSession
+from app.models.chat_attachment import ChatAttachment
 from app.models.coach import CoachNudge
 from app.models.forma_call import FormaCall
 from app.models.integration import StravaToken, TrainingPeaksToken
@@ -29,6 +30,7 @@ __all__ = [
     "TrainingPeaksToken",
     "ChatSession",
     "ChatMessage",
+    "ChatAttachment",
     "CoachNudge",
     "FormaCall",
     "FoundingLedger",
