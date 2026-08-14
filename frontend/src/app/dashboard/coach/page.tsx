@@ -768,18 +768,24 @@ function CoachPageInner() {
                       msg.role === "user" ? "justify-end" : "justify-start"
                     )}
                   >
-                {msg.role === "assistant" && (
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center">
-                    <CoachDot
-                      state={
-                        streaming && i === messages.length - 1
-                          ? "pulsing"
-                          : "still"
-                      }
-                      size="10px"
-                    />
-                  </span>
-                )}
+                {msg.role === "assistant" &&
+                  !(
+                    status &&
+                    !msg.content &&
+                    streaming &&
+                    i === messages.length - 1
+                  ) && (
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center">
+                      <CoachDot
+                        state={
+                          streaming && i === messages.length - 1
+                            ? "pulsing"
+                            : "still"
+                        }
+                        size="10px"
+                      />
+                    </span>
+                  )}
                 {/* C2 · active · pulsing — the dot breathes while the coach
                     works. Before the first word arrives there is no bubble,
                     just the brand's thinking state: dot + mono status line. */}
@@ -787,16 +793,22 @@ function CoachPageInner() {
                 !msg.content &&
                 streaming &&
                 i === messages.length - 1 ? (
-                  <p className="f-kicker self-center text-vb-text-muted">
-                    {status ? (
-                      <span className="inline-flex items-center gap-2 text-vb-red">
-                        <CadenceSpinner size={14} title="Analysing" />
-                        <span className="text-vb-text-muted">{status}&hellip;</span>
+                  status ? (
+                    <div className="flex items-center gap-4 self-center py-1">
+                      <CadenceSpinner
+                        size={34}
+                        className="text-vb-red"
+                        title="Analysing your ride"
+                      />
+                      <span className="max-w-md text-sm leading-relaxed text-vb-text-dim">
+                        {status}&hellip;
                       </span>
-                    ) : (
-                      <>{coach} is thinking&hellip;</>
-                    )}
-                  </p>
+                    </div>
+                  ) : (
+                    <p className="f-kicker self-center text-vb-text-muted">
+                      {coach} is thinking&hellip;
+                    </p>
+                  )
                 ) : (
                   <div
                     className={cn(
