@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Download, X } from "lucide-react";
+import { ArrowLeft, Download, Pencil, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { rides, exports_, metrics, coachInsights } from "@/lib/api";
@@ -40,6 +40,10 @@ export default function RideDetailPage() {
   const rideId = params.id as string;
   const coachName = user?.coach_name || "Forma";
 
+  const queryClient = useQueryClient();
+  const [editingTitle, setEditingTitle] = React.useState(false);
+  const [titleDraft, setTitleDraft] = React.useState("");
+
   const { data: ride, isLoading } = useQuery({
     queryKey: ["ride", rideId],
     queryFn: () => rides.get(rideId),
@@ -67,6 +71,15 @@ export default function RideDetailPage() {
     queryKey: ["ride-segments", rideId],
     queryFn: () => rides.getSegments(rideId),
     enabled: !!ride,
+  });
+
+  const renameRide = useMutation({
+    mutationFn: (title: string) => rides.update(rideId, { title }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["ride", rideId], updated);
+      queryClient.invalidateQueries({ queryKey: ["rides"] });
+      setEditingTitle(false);
+    },
   });
 
   const { data: debrief, isLoading: debriefLoading } = useQuery({
@@ -107,7 +120,53 @@ export default function RideDetailPage() {
             {ride.source && ` · ${ride.source.replace("_", " ")}`}
             {ride.ftp_at_time && ` · FTP ${ride.ftp_at_time}W`}
           </Kicker>
-          <h1 className="f-display text-4xl md:text-5xl">{ride.title}</h1>
+          {editingTitle ? (
+            <form
+              className="flex flex-wrap items-center gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const next = titleDraft.trim();
+                if (!next || next === ride.title) return setEditingTitle(false);
+                renameRide.mutate(next);
+              }}
+            >
+              <input
+                autoFocus
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onKeyDown={(e) => e.key === "Escape" && setEditingTitle(false)}
+                maxLength={255}
+                aria-label="Ride name"
+                className="f-display min-w-0 flex-1 border-b-2 border-vb-red bg-transparent text-4xl outline-none md:text-5xl"
+              />
+              <Button type="submit" size="sm" disabled={renameRide.isPending}>
+                {renameRide.isPending ? "Saving" : "Save"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setEditingTitle(false)}
+              >
+                Cancel
+              </Button>
+            </form>
+          ) : (
+            <div className="group flex flex-wrap items-center gap-3">
+              <h1 className="f-display text-4xl md:text-5xl">{ride.title}</h1>
+              <button
+                onClick={() => {
+                  setTitleDraft(ride.title);
+                  setEditingTitle(true);
+                }}
+                aria-label="Rename this ride"
+                title="Rename this ride"
+                className="f-kicker text-vb-text-muted transition-colors hover:text-vb-red"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
         </div>
         <Button
           variant="ghost"

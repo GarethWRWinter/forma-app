@@ -747,7 +747,7 @@ COACH_TOOLS = [
     },
     {
         "name": "find_ride",
-        "description": "Search the rider's whole ride history and return matching rides. Use this the moment the rider refers to a ride that is not sitting in the recent_rides context: a personal best on a named climb, a ride in a particular place, a ride from an earlier season, the biggest week of last winter, their longest ever day. Search on words in the ride's title or location, on a date range, on distance, or on elevation. IMPORTANT: this returns ride level SUMMARIES ONLY. Those numbers describe each whole ride and nothing smaller, so they can never tell you what happened on a climb, in an interval, or in the last hour. Once you have found the ride you want, call analyse_ride with its ride_id to open the actual file and read the real numbers.",
+        "description": "Search the rider's whole ride history and return matching rides. Use this the moment the rider refers to a ride that is not sitting in the recent_rides context: a personal best on a named climb, a ride in a particular place, a ride from an earlier season, the biggest week of last winter, their longest ever day. Search on words in the ride's title, location or story, on a date range, on distance, or on elevation. CRITICAL: ride titles are written by the system, not by the rider, so the words the rider uses will often appear NOWHERE in the data. A Sa Calobra personal best was stored as 'Sprint Training' in 'Escorca, Spain'. So if a name search comes back empty, do NOT conclude the ride is missing. Search again immediately on whatever else you were given: the date or month alone, or the shape of the ride (roughly its distance and elevation). Only say you cannot find it after a date search and a shape search have both failed. IMPORTANT: this returns ride level SUMMARIES ONLY. Those numbers describe each whole ride and nothing smaller, so they can never tell you what happened on a climb, in an interval, or in the last hour. Once you have found the ride you want, call analyse_ride with its ride_id to open the actual file and read the real numbers.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1024,12 +1024,24 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
             )
         )
 
+        # Titles are machine written, so a rider's words rarely appear in
+        # them: a Sa Calobra PB was sitting under "Sprint Training" in
+        # "Escorca, Spain". Match ANY word of the query across every field
+        # that carries language, rather than the whole phrase against two.
         text = (tool_input.get("query") or "").strip()
         if text:
-            like = f"%{text}%"
-            query = query.filter(
-                or_(Ride.title.ilike(like), Ride.location_name.ilike(like))
-            )
+            words = [w for w in re.split(r"[\s,]+", text) if len(w) > 2]
+            clauses = []
+            for w in words or [text]:
+                like = f"%{w}%"
+                clauses += [
+                    Ride.title.ilike(like),
+                    Ride.forma_title.ilike(like),
+                    Ride.location_name.ilike(like),
+                    Ride.story.ilike(like),
+                ]
+            if clauses:
+                query = query.filter(or_(*clauses))
 
         try:
             if tool_input.get("date_from"):

@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy import JSON as SA_JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -82,6 +82,11 @@ class Ride(TimestampMixin, Base):
 
     # Forma's voice on the list: a name for the ride and a one-line story
     # that teaches. Written once by the coach (Haiku), never regenerated.
+    # Set when the rider names a ride themselves. The AI re-titler skips
+    # these, so a name a human chose is never quietly overwritten.
+    title_is_custom: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
     forma_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     story: Mapped[str | None] = mapped_column(Text, nullable=True)
 

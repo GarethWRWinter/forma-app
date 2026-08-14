@@ -300,6 +300,7 @@ export interface Ride {
   } | null;
   /** Forma's name for the ride (falls back to source title) */
   forma_title?: string | null;
+  title_is_custom?: boolean;
   location_name?: string | null;
   weather?: {
     none?: boolean;
@@ -368,6 +369,12 @@ export const rides = {
     request<RideListResponse>(`/rides?page=${page}&per_page=${perPage}`),
 
   get: (id: string) => request<Ride>(`/rides/${id}`),
+
+  update: (id: string, data: { title?: string; location_name?: string }) =>
+    request<Ride>(`/rides/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
 
   getData: (id: string, resolution = "5s") =>
     request<{ ride_id: string; data_points: RideDataPoint[]; resolution: string }>(

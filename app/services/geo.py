@@ -42,7 +42,17 @@ def locale_for(lat: float, lon: float) -> str | None:
         country = _COUNTRY.get(cc, hit.get("admin1") or cc)
         if not name:
             return None
-        return f"{name}, {country}" if country and country != name else name
+        # Keep the region too. A rider searching their own history thinks in
+        # islands and areas ("Mallorca", "the Peak District"), not in the
+        # nearest village: storing only "Escorca, Spain" made a Sa Calobra
+        # PB unfindable by any word the rider would actually reach for.
+        region = hit.get("admin1") or ""
+        parts = [name]
+        if region and region not in (name, country):
+            parts.append(region)
+        if country and country != name:
+            parts.append(country)
+        return ", ".join(parts)
     except Exception:
         logger.exception("Reverse geocode failed for (%s, %s)", lat, lon)
         return None
