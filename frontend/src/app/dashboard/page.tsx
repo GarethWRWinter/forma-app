@@ -26,6 +26,10 @@ import {
   PlanProposalCard,
   usePlanProposals,
 } from "@/components/training/plan-proposal-card";
+import {
+  CoachInitiativeCard,
+  useCoachInitiative,
+} from "@/components/coach/coach-initiative-card";
 
 /**
  * FORMA dashboard, the daily face of the product.
@@ -166,8 +170,15 @@ export default function DashboardPage() {
 
   // The coach's own reading of the plan it wrote. Usually there is nothing,
   // and nothing is what gets rendered.
-  const { data: proposals } = usePlanProposals();
+  const { data: proposals, isPending: proposalsPending } = usePlanProposals();
   const pendingProposal = proposals?.[0];
+
+  // Something the coach wants to raise. Held back until we know no proposal is
+  // waiting, so it never composes a second thought while the rider still owes
+  // it an answer on the first.
+  const { data: initiative } = useCoachInitiative(
+    !proposalsPending && !pendingProposal
+  );
 
   const { data: weeklyLoad } = useQuery({
     queryKey: ["weekly-load-12"],
@@ -288,13 +299,18 @@ export default function DashboardPage() {
           saying something real and a place to answer it. */}
       <CoachInvite coach={coach} nudge={nudge?.nudge} loading={nudgePending} />
 
-      {/* ============ THE COACH CHALLENGES THE PLAN ============
-          Raised unprompted when the evidence says the prescription is
-          wrong. Silence is the correct state most days, so no proposal
-          means no card, no placeholder, no empty state. */}
-      {pendingProposal && (
+      {/* ============ ONE THING AT A TIME ============
+          The coach either challenges the plan or raises something it has
+          noticed, never both, because the rider should face a single ask or
+          none at all. The proposal wins when both exist: it is the one that
+          has already been written and is waiting on a yes. Silence is the
+          correct state most days, so nothing pending means no card, no
+          placeholder, no empty state. */}
+      {pendingProposal ? (
         <PlanProposalCard proposal={pendingProposal} coachName={coach} />
-      )}
+      ) : initiative ? (
+        <CoachInitiativeCard initiative={initiative} coachName={coach} />
+      ) : null}
 
       {/* ============ GOAL BAND (carbon) ============ */}
       {nextGoal && (

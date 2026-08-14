@@ -16,6 +16,7 @@ export const INKSCAPES: Inkscape[] = [
   { src: "/inkscapes/stelvio.jpg", label: "PASSO DELLO STELVIO · 48 TORNANTI" },
   { src: "/inkscapes/sa-calobra.jpg", label: "SA CALOBRA · 26 BENDS" },
   { src: "/inkscapes/tourmalet.jpg", label: "COL DU TOURMALET" },
+  { src: "/inkscapes/velodrome.jpg", label: "THE VELODROME · THE BOARDS" },
   { src: "/inkscapes/road-art-1.jpg", label: "THE SWITCHBACKS" },
   { src: "/inkscapes/road-art-2.jpg", label: "THE HIGH ROAD" },
 ];

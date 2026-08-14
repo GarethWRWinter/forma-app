@@ -94,6 +94,9 @@ TASKS: dict[str, TaskConfig] = {
     # Interrogating the coach's own prescription against the evidence. Sonnet:
     # this is the judgement call that decides whether to interrupt the rider.
     "plan_review": TaskConfig(SONNET, 1200),
+    # The coach opening a conversation the rider did not start. Short, frequent
+    # and already handed the finding, so the writing is the only job: Haiku.
+    "initiative": TaskConfig(HAIKU, 320),
     "explain": TaskConfig(HAIKU, 200),         # metric explanation
     "memory_extraction": TaskConfig(HAIKU, 1500),
     "memory_reading": TaskConfig(HAIKU, 220),  # Brain page narration

@@ -1459,6 +1459,39 @@ export interface CoachBriefing {
   } | null;
 }
 
+/**
+ * The coach going first: one thing it wants to raise, and the question that is
+ * the whole reason for raising it. `kind` names which generator found it,
+ * open_loop, ride_insight or weekly_checkin.
+ */
+export interface CoachInitiative {
+  id: string;
+  kind: string;
+  headline: string;
+  body: string;
+  question: string;
+  created_at: string;
+}
+
+/**
+ * Unwrap whatever the initiative endpoints hand back.
+ *
+ * Nothing is the normal answer here, so an unfamiliar envelope has to read as
+ * silence rather than throw. A half-populated card written in the coach's
+ * voice is far worse for the rider than no card at all.
+ */
+async function readInitiative(
+  path: string,
+  options?: RequestInit
+): Promise<CoachInitiative | null> {
+  const res = await request<
+    CoachInitiative | { initiative: CoachInitiative | null } | null
+  >(path, options);
+  if (!res) return null;
+  if ("initiative" in res) return res.initiative ?? null;
+  return res.id ? res : null;
+}
+
 export const coachInsights = {
   getNudge: () => request<CoachNudge>("/coach/nudge"),
   getBriefing: () => request<CoachBriefing>("/coach/briefing"),
@@ -1471,6 +1504,29 @@ export const coachInsights = {
       method: "POST",
       body: JSON.stringify({ metric_name: metricName, metric_value: String(metricValue) }),
     }),
+
+  // === Initiatives: the coach raising something, unprompted ===
+
+  /** Whatever the coach already has pending. Null is the usual answer. */
+  getInitiative: () => readInitiative("/coach/initiative"),
+
+  /** Ask the coach whether it has anything worth raising. It is allowed to
+      say no, and most of the time it should. */
+  generateInitiative: () =>
+    readInitiative("/coach/initiative/generate", { method: "POST" }),
+
+  dismissInitiative: (id: string) =>
+    request<{ id?: string; status?: string } | null>(
+      `/coach/initiative/${id}/dismiss`,
+      { method: "POST" }
+    ),
+
+  /** Tell the coach the rider carried the question into the conversation. */
+  openInitiative: (id: string) =>
+    request<{ id?: string; status?: string } | null>(
+      `/coach/initiative/${id}/opened`,
+      { method: "POST" }
+    ),
 };
 
 export const exports_ = {
