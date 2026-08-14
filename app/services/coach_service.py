@@ -691,10 +691,9 @@ COACH_TOOLS = [
 ]
 
 
-# What the rider sees while a tool runs. Opening a ride file is
-# the slow one, so it gets an honest label rather than a spinner.
-TOOL_STATUS = {
-    "analyse_ride": "Opening your ride file",
+# What the rider sees while a tool runs. Deep-diving a ride file is the
+# slow one, so it names the ride and says plainly what is happening.
+_TOOL_STATUS = {
     "create_goal": "Filing your goal",
     "update_goal": "Updating your goal",
     "update_workout": "Adjusting the session",
@@ -702,6 +701,29 @@ TOOL_STATUS = {
     "add_workout": "Adding the session",
     "skip_workout": "Marking it skipped",
 }
+
+
+def _tool_status(db: Session, user: User, name: str, tool_input: dict) -> str | None:
+    """The line shown while a tool runs. Named, so the rider knows exactly
+    which ride is being opened rather than watching a generic spinner."""
+    if name == "analyse_ride":
+        from app.models.ride import Ride
+
+        title = None
+        try:
+            ride = (
+                db.query(Ride)
+                .filter(Ride.id == tool_input.get("ride_id"), Ride.user_id == user.id)
+                .first()
+            )
+            title = ride.title if ride else None
+        except Exception:
+            title = None
+        ride_name = f'"{title}"' if title else "your ride"
+        return (
+            f"Analysing {ride_name}. Bear with me while I deep dive on your data"
+        )
+    return _TOOL_STATUS.get(name)
 
 
 def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> str:
@@ -1064,7 +1086,7 @@ async def stream_response(
 
             tool_results = []
             for tool_block in tool_use_blocks:
-                label = TOOL_STATUS.get(tool_block.name)
+                label = _tool_status(db, user, tool_block.name, tool_block.input)
                 if label:
                     yield f'data: {json.dumps({"type": "status", "content": label})}\n\n'
                 result_text = _execute_tool(
@@ -1313,7 +1335,7 @@ async def stream_voice_response(
 
             tool_results = []
             for tool_block in tool_use_blocks:
-                label = TOOL_STATUS.get(tool_block.name)
+                label = _tool_status(db, user, tool_block.name, tool_block.input)
                 if label:
                     yield f'data: {json.dumps({"type": "status", "content": label})}\n\n'
                 result_text = _execute_tool(

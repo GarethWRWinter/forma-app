@@ -15,6 +15,7 @@ Canonical source: `frontend/docs/brand/FORMA-Brand-v2-source.html` (Gareth's bra
 - Never an arrow, never rotated, never outlined, never any colour but flamme.
 - Type inside the kite only at display sizes ≥64px.
 - One kite moment per screen (list markers / sign-offs / page furniture count).
+- **The one sanctioned exception: the cadence spinner** (`CadenceSpinner`, 12 Aug 2026). The kite rides a faint crank circle as the coach's working indicator, nose tangential to the path so it leads the direction of travel, turning with pedal-stroke easing (quick through the downstroke, easing over the dead spots). Permitted because here the kite is a moving part, not a mark. It does not count against the one-kite-per-screen rule, and no other animated use of the kite is approved.
 
 ## The six inks (tokens in `frontend/src/app/globals.css` @theme, names `vb-*`)
 

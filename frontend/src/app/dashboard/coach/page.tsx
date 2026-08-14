@@ -26,6 +26,7 @@ import remarkGfm from "remark-gfm";
 import { chat, goals as goalsApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { CoachDot, CoachGlyph } from "@/components/ui/coach-glyph";
+import { CadenceSpinner } from "@/components/ui/cadence-spinner";
 import { StarterChips, useCoachStarters } from "@/components/coach/coach-starters";
 import { useVoiceChat } from "@/hooks/useVoiceChat";
 import { useAuth } from "@/lib/auth-context";
@@ -788,10 +789,10 @@ function CoachPageInner() {
                 i === messages.length - 1 ? (
                   <p className="f-kicker self-center text-vb-text-muted">
                     {status ? (
-                      <>
-                        <span className="mr-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-vb-red align-middle" />
-                        {status}. Bear with me.
-                      </>
+                      <span className="inline-flex items-center gap-2 text-vb-red">
+                        <CadenceSpinner size={14} title="Analysing" />
+                        <span className="text-vb-text-muted">{status}&hellip;</span>
+                      </span>
                     ) : (
                       <>{coach} is thinking&hellip;</>
                     )}

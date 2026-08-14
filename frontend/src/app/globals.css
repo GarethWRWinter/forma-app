@@ -363,3 +363,15 @@ p, li, blockquote, dd, figcaption {
   -ms-overflow-style: none;
   &::-webkit-scrollbar { display: none; }
 }
+
+/* Cadence spinner: pedal-stroke easing, quick through the downstroke and
+   easing over the dead spots at top and bottom. */
+.f-cadence { transform-origin: 50% 50%; animation: f-cadence-rot 1.25s cubic-bezier(.36,.06,.64,.94) infinite; }
+@keyframes f-cadence-rot {
+  0%   { transform: rotate(0deg); }
+  18%  { transform: rotate(30deg); }
+  50%  { transform: rotate(190deg); }
+  68%  { transform: rotate(215deg); }
+  100% { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) { .f-cadence { animation: none; } }
