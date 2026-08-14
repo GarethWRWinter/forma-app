@@ -57,6 +57,8 @@ function CoachPageInner() {
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const resumedRef = useRef(false);
   const [input, setInput] = useState("");
+  // What the coach is doing right now (tool work), shown while it runs.
+  const [status, setStatus] = useState<string | null>(null);
   // The last few turns steer which starter chips lead: the conversation's
   // own topics outrank the general pool.
   const recentText = useMemo(
@@ -107,8 +109,11 @@ function CoachPageInner() {
           sessionId,
           transcript.trim()
         )) {
-          if (chunk.type === "text") {
+          if (chunk.type === "status") {
+            setStatus(chunk.content ?? null);
+          } else if (chunk.type === "text") {
             // Text always streams fully — never interrupted
+            setStatus(null);
             assistantContent += chunk.content;
             setMessages((prev) => {
               const updated = [...prev];
@@ -140,6 +145,7 @@ function CoachPageInner() {
       }
 
       setStreaming(false);
+      setStatus(null);
       queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -435,7 +441,10 @@ function CoachPageInner() {
     try {
       let assistantContent = "";
       for await (const chunk of chat.sendMessage(sessionId, userMessage)) {
-        if (chunk.type === "text") {
+        if (chunk.type === "status") {
+          setStatus(chunk.content ?? null);
+        } else if (chunk.type === "text") {
+          setStatus(null);
           assistantContent += chunk.content;
           setMessages((prev) => {
             const updated = [...prev];
@@ -463,6 +472,7 @@ function CoachPageInner() {
     }
 
     setStreaming(false);
+    setStatus(null);
     queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
   };
 
@@ -777,7 +787,14 @@ function CoachPageInner() {
                 streaming &&
                 i === messages.length - 1 ? (
                   <p className="f-kicker self-center text-vb-text-muted">
-                    {coach} is thinking…
+                    {status ? (
+                      <>
+                        <span className="mr-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-vb-red align-middle" />
+                        {status}. Bear with me.
+                      </>
+                    ) : (
+                      <>{coach} is thinking&hellip;</>
+                    )}
                   </p>
                 ) : (
                   <div

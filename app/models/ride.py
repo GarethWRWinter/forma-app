@@ -75,6 +75,9 @@ class Ride(TimestampMixin, Base):
     # or {"none": true} when no power data. "shape" is the ride's power over
     # time in ~48 buckets — the thumbnail fingerprint. Computed lazily on
     # first list render, then free forever.
+    # Deep analysis cache: power curve, climbs, fade, honest time in zone.
+    # Written by ride_analysis_service the first time the coach opens the file.
+    analysis: Mapped[dict | None] = mapped_column(SA_JSON, nullable=True)
     zone_summary: Mapped[dict | None] = mapped_column(SA_JSON, nullable=True)
 
     # Forma's voice on the list: a name for the ride and a one-line story

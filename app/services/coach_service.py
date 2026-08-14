@@ -458,6 +458,10 @@ def _build_rider_context(db: Session, user: User) -> str:
             context["recent_rides"] = [
                 {
                     k: v for k, v in {
+                        # The coach needs this to call analyse_ride and open
+                        # the actual file rather than describing the ride from
+                        # its averages.
+                        "ride_id": r.id,
                         "date": str(r.ride_date.date() if hasattr(r.ride_date, "date") else r.ride_date),
                         "title": r.title,
                         "duration_min": round(r.duration_seconds / 60) if r.duration_seconds else None,
@@ -670,7 +674,34 @@ COACH_TOOLS = [
             "required": ["goal_id"],
         },
     },
+    {
+        "name": "analyse_ride",
+        "description": "Open a ride's actual data file and compute the real analysis: the power curve with every peak expressed against the rider's FTP, where each peak happened, the climbs with their gradients and the power held on them, honest time in zone, and whether the rider faded. Use this WHENEVER the rider asks about anything inside a ride (a specific effort, a climb, a segment, where power peaked, how they paced it) rather than describing it from ride-level averages. Ride-level numbers like IF and NP describe the whole ride and nothing smaller.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ride_id": {
+                    "type": "string",
+                    "description": "The ride ID from the recent_rides context",
+                },
+            },
+            "required": ["ride_id"],
+        },
+    },
 ]
+
+
+# What the rider sees while a tool runs. Opening a ride file is
+# the slow one, so it gets an honest label rather than a spinner.
+TOOL_STATUS = {
+    "analyse_ride": "Opening your ride file",
+    "create_goal": "Filing your goal",
+    "update_goal": "Updating your goal",
+    "update_workout": "Adjusting the session",
+    "swap_workout_date": "Rearranging the week",
+    "add_workout": "Adding the session",
+    "skip_workout": "Marking it skipped",
+}
 
 
 def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> str:
@@ -808,6 +839,33 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
         except ValueError as e:
             return f"Error: {e}"
         return f"Updated the goal '{goal.event_name}' ({', '.join(updates)})."
+
+    elif tool_name == "analyse_ride":
+        from app.models.ride import Ride
+        from app.services.ride_analysis_service import analyse_ride as _analyse
+
+        ride = (
+            db.query(Ride)
+            .filter(Ride.id == tool_input["ride_id"], Ride.user_id == user.id)
+            .first()
+        )
+        if not ride:
+            return "Error: Ride not found."
+        try:
+            data = _analyse(db, user, ride)
+        except Exception:
+            logger.exception("ride analysis failed")
+            return (
+                "The analysis failed to run. Tell the rider plainly that you "
+                "could not open the file, and do not describe the ride from "
+                "its averages instead."
+            )
+        import json as _json
+
+        return (
+            f"Analysis of '{ride.title}' ({ride.ride_date}):\n"
+            + _json.dumps(data, default=str)
+        )
 
     return f"Error: Unknown tool '{tool_name}'."
 
@@ -1006,6 +1064,9 @@ async def stream_response(
 
             tool_results = []
             for tool_block in tool_use_blocks:
+                label = TOOL_STATUS.get(tool_block.name)
+                if label:
+                    yield f'data: {json.dumps({"type": "status", "content": label})}\n\n'
                 result_text = _execute_tool(
                     db, user, tool_block.name, tool_block.input
                 )
@@ -1252,6 +1313,9 @@ async def stream_voice_response(
 
             tool_results = []
             for tool_block in tool_use_blocks:
+                label = TOOL_STATUS.get(tool_block.name)
+                if label:
+                    yield f'data: {json.dumps({"type": "status", "content": label})}\n\n'
                 result_text = _execute_tool(
                     db, user, tool_block.name, tool_block.input
                 )
