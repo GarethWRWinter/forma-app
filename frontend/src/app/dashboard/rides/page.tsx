@@ -5,7 +5,7 @@ import { Upload } from "lucide-react";
 import Link from "next/link";
 import { useRef, useState } from "react";
 import { rides, type Ride } from "@/lib/api";
-import { formatDate, formatDuration, formatPower, formatTSS } from "@/lib/utils";
+import { cn, formatDate, formatDuration, formatPower, formatTSS } from "@/lib/utils";
 import { ZONES } from "@/lib/palette";
 import { rideStory, dominantZone } from "@/lib/rideStory";
 import { RideShape, ZoneStrip } from "@/components/ui/ride-shape";
@@ -60,6 +60,23 @@ function ZoneTag({ ride }: { ride: Ride }) {
       </span>
     </span>
   );
+}
+
+/**
+ * Which page numbers to show, with gaps. Always offers the first and last
+ * page plus a window around the current one, so a rider hunting an old ride
+ * can jump rather than click Next forty times.
+ */
+function pageWindow(current: number, total: number): (number | null)[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const out: (number | null)[] = [1];
+  const from = Math.max(2, current - 1);
+  const to = Math.min(total - 1, current + 1);
+  if (from > 2) out.push(null);
+  for (let n = from; n <= to; n++) out.push(n);
+  if (to < total - 1) out.push(null);
+  out.push(total);
+  return out;
 }
 
 export default function RidesPage() {
@@ -281,26 +298,74 @@ export default function RidesPage() {
       {data && data.total > 20 && (
         // Centred as a group: the coach dock sits bottom right and was
         // covering Next when the controls were pushed to the edges.
-        <div className="flex items-center justify-center gap-5 border-t border-vb-border-subtle pb-16 pt-5">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page <= 1}
-          >
-            ← Previous
-          </Button>
-          <span className="f-data text-xs text-vb-text-muted">
-            Page {page} of {totalPages}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setPage((p) => p + 1)}
-            disabled={page * 20 >= data.total}
-          >
-            Next →
-          </Button>
+        <div className="flex flex-col items-center gap-3 border-t border-vb-border-subtle pb-16 pt-5">
+          <div className="flex flex-wrap items-center justify-center gap-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setPage(1)}
+              disabled={page <= 1}
+              aria-label="First page"
+            >
+              ⇤ First
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+            >
+              ← Prev
+            </Button>
+
+            {/* Numbered jumps, windowed with gaps: 42 pages of Next clicks
+                is not navigation. */}
+            {pageWindow(page, totalPages).map((n, i) =>
+              n === null ? (
+                <span
+                  key={`gap-${i}`}
+                  className="f-data px-1 text-xs text-vb-text-muted"
+                >
+                  &hellip;
+                </span>
+              ) : (
+                <button
+                  key={n}
+                  onClick={() => setPage(n)}
+                  aria-current={n === page ? "page" : undefined}
+                  className={cn(
+                    "f-data min-w-[30px] rounded-sm px-2 py-1.5 text-xs transition-colors",
+                    n === page
+                      ? "bg-vb-text text-white"
+                      : "text-vb-text-dim hover:bg-vb-surface hover:text-vb-text"
+                  )}
+                >
+                  {n}
+                </button>
+              )
+            )}
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setPage((p) => p + 1)}
+              disabled={page * 20 >= data.total}
+            >
+              Next →
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setPage(totalPages)}
+              disabled={page >= totalPages}
+              aria-label="Last page, the oldest rides"
+            >
+              Oldest ⇥
+            </Button>
+          </div>
+          <p className="f-data text-[11px] text-vb-text-muted">
+            Page {page} of {totalPages} · {data.total.toLocaleString()} rides
+          </p>
         </div>
       )}
     </div>
