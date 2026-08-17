@@ -43,6 +43,13 @@ class WahooToken(Base):
     wahoo_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     scope: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_sync_at: Mapped[str | None] = mapped_column(DateTime, nullable=True)
+    # Set when Wahoo rejects our refresh token (400 on the token endpoint).
+    # The rider's rides silently stopped syncing for two days once because
+    # this state existed but nothing recorded it: never again. Cleared on a
+    # successful reconnect.
+    needs_reauth: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
 
     # Historical import tracking (mirrors StravaToken)
     backfill_status: Mapped[str | None] = mapped_column(

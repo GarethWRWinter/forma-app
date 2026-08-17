@@ -138,5 +138,16 @@ async def wahoo_webhook_receive(request: Request):
             return JSONResponse(status_code=403, content={"error": "Bad token"})
 
     logger.info("Wahoo webhook event: %s", payload.get("event_type", "unknown"))
-    asyncio.create_task(wahoo_service.handle_webhook_event(payload))
+    async def _run_captured() -> None:
+        # A bare create_task swallows exceptions ("Task exception was never
+        # retrieved"), which is how rides silently stopped syncing for two
+        # days. Capture everything; the reauth case is expected and quiet.
+        try:
+            await wahoo_service.handle_webhook_event(payload)
+        except wahoo_service.WahooReauthRequired:
+            logger.warning("Wahoo webhook skipped: connection needs reauth")
+        except Exception:
+            logger.exception("Wahoo webhook import failed")
+
+    asyncio.create_task(_run_captured())
     return JSONResponse(status_code=200, content={"status": "ok"})

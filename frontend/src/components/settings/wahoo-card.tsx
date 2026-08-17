@@ -49,10 +49,29 @@ export function WahooCard() {
     <section className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6">
       <div className="flex items-center justify-between gap-3">
         <h2 className="f-display text-2xl text-vb-text">Wahoo</h2>
-        {status?.connected && <Badge variant="ink">Linked</Badge>}
+        {status?.connected &&
+          (status.needs_reauth ? (
+            <Badge variant="outline">Needs reconnecting</Badge>
+          ) : (
+            <Badge variant="ink">Linked</Badge>
+          ))}
       </div>
 
-      {status?.connected ? (
+      {status?.connected && status.needs_reauth ? (
+        <div className="mt-4 space-y-3">
+          <div className="border border-vb-red/40 bg-vb-surface p-4">
+            <p className="text-sm text-vb-text-dim">
+              Wahoo stopped accepting our connection, which happens from time
+              to time with their tokens, so new rides have not been arriving.
+              Reconnect and everything picks up where it left off, including
+              the rides you did in the meantime.
+            </p>
+          </div>
+          <Button size="sm" onClick={connect}>
+            Reconnect Wahoo
+          </Button>
+        </div>
+      ) : status?.connected ? (
         <div className="mt-4 space-y-3">
           <p className="text-sm text-vb-text-dim">
             Finish the ride, and it&apos;s here before the bike is racked.

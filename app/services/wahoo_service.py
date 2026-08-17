@@ -82,9 +82,14 @@ async def exchange_code(db: Session, user_id: str, code: str) -> WahooToken:
     token.scope = data.get("scope") or SCOPES
     if wahoo_user_id is not None:
         token.wahoo_user_id = wahoo_user_id
+    token.needs_reauth = False
     db.commit()
     db.refresh(token)
     return token
+
+
+class WahooReauthRequired(Exception):
+    """The stored Wahoo credentials are dead: only a fresh OAuth fixes it."""
 
 
 async def _access_token(db: Session, token: WahooToken) -> str:
@@ -102,6 +107,16 @@ async def _access_token(db: Session, token: WahooToken) -> str:
             "grant_type": "refresh_token",
             "refresh_token": token.refresh_token,
         })
+        if response.status_code in (400, 401):
+            # The refresh token is dead (Wahoo rotates them on every use, so
+            # a deploy landing between refresh and commit kills the chain).
+            # Record it so the settings card can say "reconnect" instead of
+            # rides silently stopping, which is how it failed on 14 Aug.
+            token.needs_reauth = True
+            db.commit()
+            raise WahooReauthRequired(
+                "Wahoo rejected the refresh token; the rider must reconnect."
+            )
         response.raise_for_status()
         data = response.json()
 
@@ -349,6 +364,7 @@ def get_connection_status(db: Session, user_id: str) -> dict:
     status: dict = {
         "connected": True,
         "configured": is_configured(),
+        "needs_reauth": bool(token.needs_reauth),
         "wahoo_user_id": token.wahoo_user_id,
         "last_sync_at": token.last_sync_at.isoformat() if token.last_sync_at else None,
     }

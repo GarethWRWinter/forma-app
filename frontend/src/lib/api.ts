@@ -1315,6 +1315,7 @@ export const billing = {
 export interface WahooStatus {
   connected: boolean;
   configured: boolean;
+  needs_reauth?: boolean;
   wahoo_user_id?: number | null;
   last_sync_at?: string | null;
   backfill?: {
