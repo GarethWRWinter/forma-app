@@ -139,6 +139,60 @@ function tryRefreshToken(): Promise<boolean> {
   return refreshInFlight;
 }
 
+/**
+ * Authenticated fetch for the streaming/blob paths that cannot go through
+ * apiFetch (they need the raw Response, not parsed JSON).
+ *
+ * Access tokens live ~30 minutes. Without this, a rider who left the coach tab
+ * open over lunch lost their typed message to "Sorry, I had trouble
+ * connecting" — the one place a silent 401 is most expensive, because the text
+ * is already cleared from the composer by the time it fails.
+ *
+ * Also surfaces the server's own error detail instead of swallowing it, so a
+ * quota or payment response can be told apart from a genuine outage.
+ */
+async function authedFetch(
+  path: string,
+  init: RequestInit,
+  fallbackMessage: string
+): Promise<Response> {
+  const headers = (extra?: string): HeadersInit => ({
+    ...(init.headers as Record<string, string>),
+    Authorization: `Bearer ${extra ?? getToken()}`,
+  });
+
+  let response = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: headers(),
+  });
+
+  if (response.status === 401) {
+    const refreshed = await tryRefreshToken();
+    if (!refreshed) {
+      clearTokens();
+      if (typeof window !== "undefined") window.location.href = "/login";
+      throw new ApiError("Unauthorized", 401);
+    }
+    response = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers: headers(),
+    });
+  }
+
+  if (!response.ok) {
+    let detail = fallbackMessage;
+    try {
+      const body = await response.clone().json();
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      // non-JSON error body; keep the fallback
+    }
+    throw new ApiError(detail, response.status);
+  }
+
+  return response;
+}
+
 async function uploadFile<T>(path: string, file: File): Promise<T> {
   const token = getToken();
   const formData = new FormData();
@@ -260,6 +314,12 @@ export const users = {
     }),
   clearBadgePhoto: () =>
     request<void>("/users/me/badge-photo", { method: "DELETE" }),
+
+  /** GDPR portability: everything we hold on you, as JSON. */
+  exportMyData: () => request<Record<string, unknown>>("/users/me/export"),
+
+  /** GDPR erasure: locks the account now, purges after the retention window. */
+  deleteMyAccount: () => request<void>("/users/me", { method: "DELETE" }),
 };
 
 // === Rides ===
@@ -1123,20 +1183,20 @@ export const chat = {
     content: string,
     attachmentIds?: string[]
   ) {
-    const token = getToken();
-    const response = await fetch(`${API_BASE}/chat/sessions/${sessionId}/messages`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
+    const response = await authedFetch(
+      `/chat/sessions/${sessionId}/messages`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content,
+          ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
+        }),
       },
-      body: JSON.stringify({
-        content,
-        ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
-      }),
-    });
+      "Failed to send message"
+    );
 
-    if (!response.ok || !response.body) {
+    if (!response.body) {
       throw new ApiError("Failed to send message", response.status);
     }
 
@@ -1172,23 +1232,20 @@ export const chat = {
     content: string,
     attachmentIds?: string[]
   ) {
-    const token = getToken();
-    const response = await fetch(
-      `${API_BASE}/chat/sessions/${sessionId}/voice-message`,
+    const response = await authedFetch(
+      `/chat/sessions/${sessionId}/voice-message`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           content,
           ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
         }),
-      }
+      },
+      "Failed to send voice message"
     );
 
-    if (!response.ok || !response.body) {
+    if (!response.body) {
       throw new ApiError("Failed to send voice message", response.status);
     }
 
@@ -1217,18 +1274,15 @@ export const chat = {
 
   /** Convert text to speech. Returns audio blob for playback. */
   textToSpeech: async (text: string): Promise<Blob> => {
-    const token = getToken();
-    const response = await fetch(`${API_BASE}/chat/tts`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
+    const response = await authedFetch(
+      "/chat/tts",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
       },
-      body: JSON.stringify({ text }),
-    });
-    if (!response.ok) {
-      throw new ApiError("TTS failed", response.status);
-    }
+      "TTS failed"
+    );
     return response.blob();
   },
 };

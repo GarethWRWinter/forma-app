@@ -36,7 +36,12 @@ export default function WorkoutDetailPage() {
   const workoutId = params.id as string;
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const ftp = user?.ftp || 200;
+  // No FTP means no watts. We never substitute a number and present it as the
+  // rider's own: a fabricated FTP turns a guess into an apparent measurement,
+  // and the same figure drives ERG resistance and the exported workout files.
+  const ftp = user?.ftp ?? null;
+  const watts = (pct: number | null | undefined) =>
+    pct && ftp ? Math.round(pct * ftp) : null;
   const coachName = user?.coach_name || "Forma";
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -408,7 +413,7 @@ export default function WorkoutDetailPage() {
                             width: `${widthPct / repeats}%`,
                             minWidth: "2px",
                           }}
-                          title={`${step.notes || "Interval"}: ${Math.round(powerPct * 100)}% FTP (${Math.round(powerPct * ftp)}W)`}
+                          title={`${step.notes || "Interval"}: ${Math.round(powerPct * 100)}% FTP${watts(powerPct) ? ` (${watts(powerPct)}W)` : ""}`}
                         />
                       );
                       // Off bar (between reps, not after the last one)
@@ -423,7 +428,7 @@ export default function WorkoutDetailPage() {
                               width: `${offWidthPct}%`,
                               minWidth: "2px",
                             }}
-                            title={`Recovery: ${Math.round(offPowerPct * 100)}% FTP (${Math.round(offPowerPct * ftp)}W)`}
+                            title={`Recovery: ${Math.round(offPowerPct * 100)}% FTP${watts(offPowerPct) ? ` (${watts(offPowerPct)}W)` : ""}`}
                           />
                         );
                       }
@@ -445,7 +450,7 @@ export default function WorkoutDetailPage() {
                         width: `${widthPct}%`,
                         minWidth: "4px",
                       }}
-                      title={`${step.notes || step.step_type}: ${Math.round(powerPct * 100)}% FTP (${Math.round(powerPct * ftp)}W)`}
+                      title={`${step.notes || step.step_type}: ${Math.round(powerPct * 100)}% FTP${watts(powerPct) ? ` (${watts(powerPct)}W)` : ""}`}
                     />
                   );
                 }
@@ -455,7 +460,20 @@ export default function WorkoutDetailPage() {
           </div>
 
           <p className="f-data mt-1 text-right text-[10px] text-vb-text-muted">
-            FTP {ftp}W
+            {ftp ? (
+              `FTP ${ftp}W`
+            ) : (
+              <>
+                Percentages only.{" "}
+                <Link
+                  href="/dashboard/settings"
+                  className="underline underline-offset-2 hover:text-vb-text"
+                >
+                  Set your FTP
+                </Link>{" "}
+                to see watts.
+              </>
+            )}
           </p>
         </div>
       )}
@@ -468,15 +486,9 @@ export default function WorkoutDetailPage() {
           </div>
           <div className="divide-y divide-vb-border-subtle">
             {workout.steps.map((step) => {
-              const powerW = step.power_target_pct
-                ? Math.round(step.power_target_pct * ftp)
-                : null;
-              const lowW = step.power_low_pct
-                ? Math.round(step.power_low_pct * ftp)
-                : null;
-              const highW = step.power_high_pct
-                ? Math.round(step.power_high_pct * ftp)
-                : null;
+              const powerW = watts(step.power_target_pct);
+              const lowW = watts(step.power_low_pct);
+              const highW = watts(step.power_high_pct);
 
               return (
                 <div key={step.id} className="flex items-center gap-4 px-5 py-3">

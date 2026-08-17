@@ -12,7 +12,7 @@ import {
   Trophy,
 } from "lucide-react";
 import { training, goals, users } from "@/lib/api";
-import { formatDuration, formatDate, cn } from "@/lib/utils";
+import { formatDuration, formatDate, cn, localISODate } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
 import { ZONE_BLOCKS, ZONES, SERIES } from "@/lib/palette";
 import { restLine } from "@/lib/voice";
@@ -112,7 +112,7 @@ function getWeekDates(offset: number): { start: Date; dates: Date[] } {
 }
 
 function formatWeekDate(d: Date): string {
-  return d.toISOString().split("T")[0];
+  return localISODate(d);
 }
 
 export default function TrainingPage() {
@@ -249,7 +249,7 @@ export default function TrainingPage() {
     goalsByDate[d].push(g);
   });
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = localISODate();
   const dayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
   // Where are we in the plan? Drives the header kicker and the timeline.

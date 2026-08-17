@@ -1135,6 +1135,20 @@ export default function SettingsPage() {
           </div>
         )}
       </section>
+
+      {/* ============ DATA OUT ============ */}
+      <SectionHeader kicker="Data out" title="Your data, and how to leave" />
+      <p className="-mt-4 max-w-2xl text-sm leading-relaxed text-vb-text-dim">
+        Everything Forma holds on you is yours. Take a copy whenever you want
+        one, and close the account the day you decide to. No forms, no email
+        to support, no waiting on a reply.
+      </p>
+
+      {/* The whole archive, straight to the rider's machine */}
+      <DataExportCard />
+
+      {/* The way out, deliberate by design */}
+      <DeleteAccountCard />
     </div>
   );
 }
@@ -1234,6 +1248,152 @@ function CoachSection() {
           </span>
         )}
       </div>
+    </section>
+  );
+}
+
+// ============ Data out, the copy and the way out ============
+
+function DataExportCard() {
+  const [stage, setStage] = useState<"idle" | "working" | "done" | "error">(
+    "idle"
+  );
+
+  async function runExport() {
+    setStage("working");
+    try {
+      const archive = await users.exportMyData();
+      const blob = new Blob([JSON.stringify(archive, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `forma-export-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setStage("done");
+    } catch {
+      setStage("error");
+    }
+  }
+
+  return (
+    <section className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6">
+      <h2 className="f-display text-2xl text-vb-text">Download your data</h2>
+      <p className="mt-2 text-sm leading-relaxed text-vb-text-dim">
+        Everything Forma knows about you in one file: your profile, every ride
+        it has read, your goals, your plans, and every conversation with your
+        coach. It arrives as JSON, so any tool can open it.
+      </p>
+      <div className="mt-4 flex items-center gap-3">
+        <Button size="sm" onClick={runExport} disabled={stage === "working"}>
+          {stage === "working" ? "Gathering…" : "Download my data"}
+        </Button>
+        {stage === "done" && (
+          <span className="f-kicker text-vb-success">In your downloads</span>
+        )}
+      </div>
+      {stage === "error" && (
+        <div className="mt-4 border border-vb-red/40 bg-vb-surface p-4">
+          <Kicker flamme>That didn&apos;t work</Kicker>
+          <p className="mt-2 text-sm text-vb-text-dim">
+            The file didn&apos;t come through. Give it a minute and ask again.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DeleteAccountCard() {
+  const { user, logout } = useAuth();
+  const [confirming, setConfirming] = useState(false);
+  const [typedEmail, setTypedEmail] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
+
+  // Only the rider's own address arms the button, so a stray click can't end
+  // an account.
+  const emailMatches =
+    !!user?.email &&
+    typedEmail.trim().toLowerCase() === user.email.toLowerCase();
+
+  async function deleteAccount() {
+    setDeleting(true);
+    setError("");
+    try {
+      await users.deleteMyAccount();
+      logout(); // clears the tokens and sends the rider to /login
+    } catch {
+      setError(
+        "That didn't go through, and nothing has changed. Try again in a minute."
+      );
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <section className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6">
+      <h2 className="f-display text-2xl text-vb-text">Delete your account</h2>
+      <p className="mt-2 text-sm leading-relaxed text-vb-text-dim">
+        Your access ends the moment you confirm. Your rides, your goals, your
+        plans and everything Forma remembers about you are purged once the
+        retention window closes. This one can&apos;t be undone, so take the
+        download above first if you want to keep a copy.
+      </p>
+
+      {confirming ? (
+        <div className="mt-4 border border-vb-red/40 bg-vb-surface p-4">
+          <Kicker flamme>Confirm</Kicker>
+          <p className="mt-2 text-sm text-vb-text-dim">
+            Type <span className="text-vb-text">{user?.email}</span> below and
+            the button goes live.
+          </p>
+          <div className="mt-3 max-w-xs">
+            <label className={labelClasses}>Your email address</label>
+            <Input
+              type="email"
+              autoComplete="off"
+              value={typedEmail}
+              onChange={(e) => setTypedEmail(e.target.value)}
+            />
+          </div>
+          {error && <p className="mt-3 text-sm text-vb-text-dim">{error}</p>}
+          <div className="mt-4 flex gap-2">
+            <Button
+              size="sm"
+              variant="flamme"
+              onClick={deleteAccount}
+              disabled={!emailMatches || deleting}
+            >
+              {deleting ? "Deleting…" : "Delete it"}
+            </Button>
+            <Button
+              size="sm"
+              variant="quiet"
+              onClick={() => {
+                setConfirming(false);
+                setTypedEmail("");
+                setError("");
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button
+          size="sm"
+          variant="ghost"
+          className="mt-4"
+          onClick={() => setConfirming(true)}
+        >
+          Delete my account
+        </Button>
+      )}
     </section>
   );
 }

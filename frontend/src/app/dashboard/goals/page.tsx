@@ -228,7 +228,11 @@ function GoalsPageInner() {
   return (
     <div className="space-y-10">
       {/* ============ MASTHEAD ============ */}
-      <header className="f-rise flex items-end justify-between gap-6 border-b-2 border-vb-border-strong pb-5">
+      {/* Row only from lg. Both actions are fixed width (nowrap labels), and at
+          md the static sidebar takes 256px while the h1 steps up to text-6xl,
+          so beside them there is nothing left to give and the page scrolls
+          sideways. Stacked below that, both stay reachable. */}
+      <header className="f-rise flex flex-col gap-6 border-b-2 border-vb-border-strong pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <Link
             href="/dashboard/training"
@@ -245,7 +249,7 @@ function GoalsPageInner() {
             with Forma, then the season builds itself backwards from it.
           </p>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-2">
+        <div className="flex flex-col items-start gap-2 lg:shrink-0 lg:items-end">
           <Link
             href={`/dashboard/coach?ask=${encodeURIComponent(
               "I want to craft a new goal with you. Ask me one question at a time and help me find the goal I would actually love: what it is, why it matters to me, and who it makes me. When we have it, file it for me."

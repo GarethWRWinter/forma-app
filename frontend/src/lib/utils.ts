@@ -50,3 +50,19 @@ export function zoneColor(zone: number): string {
   };
   return colors[zone] || "#6b7280";
 }
+
+/**
+ * The rider's own calendar date as YYYY-MM-DD.
+ *
+ * Not toISOString(): that converts to UTC first, so a rider in New York after
+ * 20:00 (or a UK rider after midnight in BST) gets tomorrow's date and is shown
+ * tomorrow's session under a heading that says Today. Workout scheduled_date is
+ * a plain calendar date with no timezone, so it must be compared against the
+ * rider's local calendar date, not an instant in UTC.
+ */
+export function localISODate(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}

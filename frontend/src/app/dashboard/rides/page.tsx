@@ -115,7 +115,10 @@ export default function RidesPage() {
   return (
     <div className="space-y-10">
       {/* ============ MASTHEAD ============ */}
-      <header className="f-rise flex items-end justify-between gap-6 border-b-2 border-vb-border-strong pb-5">
+      {/* Row only from lg. The upload button cannot compress, and at md the
+          static sidebar takes 256px while the h1 steps up to text-6xl, so a row
+          there overflows and the page scrolls sideways. Stacked below that. */}
+      <header className="f-rise flex flex-col gap-6 border-b-2 border-vb-border-strong pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <Kicker className="mb-2">The training log</Kicker>
           <h1 className="f-display text-5xl leading-[0.95] md:text-6xl">
@@ -127,7 +130,7 @@ export default function RidesPage() {
           </p>
         </div>
 
-        <div className="shrink-0">
+        <div className="lg:shrink-0">
           <input
             ref={fileInputRef}
             type="file"

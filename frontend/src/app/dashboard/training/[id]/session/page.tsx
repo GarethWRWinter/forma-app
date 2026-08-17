@@ -80,7 +80,10 @@ export default function TrainingSessionPage() {
   const router = useRouter();
   const workoutId = params.id as string;
   const { user } = useAuth();
-  const ftp = user?.ftp || 200;
+  // Ride mode commands real resistance on a real trainer. An invented FTP here
+  // is not a cosmetic error: it locks the rider to watts we made up. No FTP
+  // means no ride mode, and we say so instead of guessing.
+  const ftp = user?.ftp ?? null;
   const coachName = user?.coach_name || "Forma";
   const [showDevicePanel, setShowDevicePanel] = useState(false);
   const [showConfirmStop, setShowConfirmStop] = useState(false);
@@ -109,16 +112,19 @@ export default function TrainingSessionPage() {
 
   const handleTargetPowerChange = useCallback(
     async (watts: number) => {
+      // Belt and braces: the page refuses to start without an FTP, but never
+      // let a target derived from a missing one reach the trainer.
+      if (!ftp) return;
       if (btState.trainer.connected && btState.trainer.ergMode) {
         await btActions.setTargetPower(watts);
       }
     },
-    [btState.trainer.connected, btState.trainer.ergMode, btActions]
+    [ftp, btState.trainer.connected, btState.trainer.ergMode, btActions]
   );
 
   const [session, sessionActions] = useTrainingSession(
     workout?.steps || [],
-    ftp,
+    ftp ?? 0,
     handleTargetPowerChange
   );
 
@@ -221,7 +227,7 @@ export default function TrainingSessionPage() {
     currentTargetPct: session.currentTargetPct,
     currentStep: currentStep_,
     nextStep: nextStep_,
-    ftp,
+    ftp: ftp ?? 0,
     livePower: btState.power.value ?? 0,
     enabled: true,
   });
@@ -334,6 +340,35 @@ export default function TrainingSessionPage() {
     );
   }
 
+  if (!ftp) {
+    return (
+      <div className="f-carbon flex h-screen flex-col items-center justify-center px-8 text-center text-vb-chalk-dim">
+        <p className="max-w-sm text-vb-chalk">
+          Ride mode sets the resistance on your trainer, so it needs your real
+          FTP. I will not guess a number and then hold you to it.
+        </p>
+        <p className="mt-3 max-w-sm text-sm">
+          Add it in settings, or ride the session on feel and upload the file
+          afterwards. Either way I will find your FTP from the road soon enough.
+        </p>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-4">
+          <Link
+            href="/dashboard/settings"
+            className="font-mono text-xs uppercase tracking-[0.08em] text-vb-red"
+          >
+            Set your FTP
+          </Link>
+          <Link
+            href={`/dashboard/training/${workoutId}`}
+            className="font-mono text-xs uppercase tracking-[0.08em] text-vb-chalk-dim"
+          >
+            Back to workout
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   const currentStep = session.steps[session.currentStepIndex];
   const nextStep = session.steps[session.currentStepIndex + 1];
   const stepRemaining = currentStep
@@ -372,9 +407,11 @@ export default function TrainingSessionPage() {
 
   return (
     <div className="f-carbon fixed inset-0 z-50 flex flex-col">
-      {/* Top Bar */}
-      <div className="flex items-center justify-between border-b border-white/10 px-6 py-3">
-        <div className="flex items-center gap-4">
+      {/* Top Bar. On a phone this row holds four controls plus two clocks, which
+          will not fit in 375px, so below md the button labels drop to icons and
+          the clocks stand down (the metrics strip below already carries them). */}
+      <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-3 md:px-6">
+        <div className="flex min-w-0 items-center gap-2 md:gap-4">
           {session.status === "idle" && (
             <Link
               href={`/dashboard/training/${workoutId}`}
@@ -392,13 +429,17 @@ export default function TrainingSessionPage() {
               <span className="f-kicker text-vb-red">Live</span>
             </span>
           )}
-          <div>
-            <h1 className="f-display text-lg text-vb-chalk">{workout.title}</h1>
-            <p className="text-xs text-vb-chalk-dim">{workout.description}</p>
+          <div className="min-w-0">
+            <h1 className="f-display truncate text-base text-vb-chalk md:text-lg">
+              {workout.title}
+            </h1>
+            <p className="hidden truncate text-xs text-vb-chalk-dim md:block">
+              {workout.description}
+            </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-1.5 md:gap-3">
           {/* Step list toggle */}
           {isActive && (
             <button
@@ -411,7 +452,7 @@ export default function TrainingSessionPage() {
               )}
             >
               <List className="h-4 w-4" />
-              Steps
+              <span className="hidden md:inline">Steps</span>
             </button>
           )}
 
@@ -432,7 +473,7 @@ export default function TrainingSessionPage() {
               ) : (
                 <Volume2 className="h-4 w-4" />
               )}
-              Radio
+              <span className="hidden md:inline">Radio</span>
             </button>
           )}
 
@@ -451,13 +492,19 @@ export default function TrainingSessionPage() {
             ) : (
               <Bluetooth className="h-4 w-4" />
             )}
-            {connectedDeviceCount > 0
-              ? `${connectedDeviceCount} device${connectedDeviceCount > 1 ? "s" : ""}`
-              : "Connect"}
+            <span className="hidden md:inline">
+              {connectedDeviceCount > 0
+                ? `${connectedDeviceCount} device${connectedDeviceCount > 1 ? "s" : ""}`
+                : "Connect"}
+            </span>
+            {connectedDeviceCount > 0 && (
+              <span className="md:hidden">{connectedDeviceCount}</span>
+            )}
           </button>
 
-          {/* Elapsed / Remaining time */}
-          <div className="flex items-center gap-4 text-sm">
+          {/* Elapsed / Remaining time. Hidden on phones: the metrics strip
+              below carries both clocks, and this row has no width to spare. */}
+          <div className="hidden items-center gap-4 text-sm md:flex">
             <div className="text-center">
               <p className="f-kicker text-[9px] text-vb-chalk-dim">Elapsed</p>
               <p className="f-data font-semibold text-vb-chalk">
@@ -626,7 +673,11 @@ export default function TrainingSessionPage() {
         )}
 
         {/* Center: Current Step & Controls */}
-        <div className="flex flex-1 flex-col items-center justify-center gap-8 p-8">
+        {/* The running stack is taller than a phone screen. Centring it inside
+            an overflow-hidden parent pushed the stop/pause controls off both
+            ends with no way to reach them, so on small screens this column
+            starts at the top and scrolls. It centres again from md up. */}
+        <div className="flex flex-1 flex-col items-center justify-start gap-4 overflow-y-auto p-4 md:justify-center md:gap-8 md:overflow-visible md:p-8">
           {/* Auto-pause banner */}
           {autoPaused && session.status === "paused" && (
             <div className="flex items-center gap-3 rounded-sm border border-vb-warning/40 bg-vb-carbon-raised px-5 py-3">
@@ -835,7 +886,7 @@ export default function TrainingSessionPage() {
               {/* Target Power: the number is the screen */}
               <div className="text-center">
                 <p
-                  className="f-data text-8xl font-semibold leading-none md:text-9xl"
+                  className="f-data text-7xl font-semibold leading-none sm:text-8xl md:text-9xl"
                   style={{ color: currentHex }}
                 >
                   {session.currentTargetWatts}

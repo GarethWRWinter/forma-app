@@ -73,11 +73,18 @@ export default function DashboardLayout({
   if (!user) return null;
 
   return (
-    <div className="flex h-screen overflow-hidden bg-vb-bg">
+    // h-dvh, not h-screen: on iOS Safari 100vh is the *large* viewport (toolbar
+    // hidden). Since only the inner main scrolls, the toolbar never collapses,
+    // so a 100vh shell puts its own bottom edge permanently behind it. That is
+    // where the chat composer lives.
+    <div className="flex h-dvh overflow-hidden bg-vb-bg">
       <Sidebar />
       <main className="flex-1 overflow-y-auto bg-vb-bg pt-14 md:pt-0">
         {user.email_verified === false && <VerifyEmailBanner />}
-        <div className="mx-auto max-w-7xl px-4 py-6 sm:px-8 sm:py-10">
+        {/* flex column at min-h-full so a page can opt into filling the exact
+            remaining height with flex-1, instead of guessing it with a vh calc
+            that cannot know about the banner above or this padding. */}
+        <div className="mx-auto flex min-h-full max-w-7xl flex-col px-4 py-6 sm:px-8 sm:py-10">
           {children}
         </div>
       </main>

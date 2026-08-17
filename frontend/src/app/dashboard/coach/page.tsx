@@ -622,7 +622,11 @@ function CoachPageInner() {
   const [showSessions, setShowSessions] = useState(false);
 
   return (
-    <div className="flex h-[calc(100vh-5rem)] gap-0 md:h-[calc(100vh-3rem)] md:gap-4">
+    // Fill whatever height the shell has left rather than computing it from
+    // 100vh: on iOS Safari that unit is the toolbar-hidden viewport, so the
+    // composer ended up behind the toolbar, and the calc could not account for
+    // the verify-email banner or the wrapper's own padding either.
+    <div className="flex min-h-0 flex-1 gap-0 md:gap-4">
       {/* Sessions Sidebar - hidden on mobile, toggle with button */}
       <div
         className={cn(

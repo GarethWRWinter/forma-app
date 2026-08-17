@@ -81,6 +81,13 @@ export default function PerformancePage() {
 
   const fitness = fitnessFull ?? fitnessQuick;
 
+  // Until the numbers actually arrive, show nothing rather than a confident 0.
+  // A zero here is indistinguishable from a measurement, and a rider reading
+  // "Fitness 0" cannot tell a loading state from a dead backend from a real
+  // result. Same rule as the dashboard strip and the sidebar.
+  const load = (v: number | null | undefined) =>
+    typeof v === "number" ? Math.round(v) : "—";
+
   const { data: zones } = useQuery({
     queryKey: ["zones"],
     queryFn: () => metrics.getZones(),
@@ -179,7 +186,7 @@ export default function PerformancePage() {
         />
         <StatCard
           label="Fitness (CTL)"
-          value={Math.round(fitness?.current_ctl ?? 0)}
+          value={load(fitness?.current_ctl)}
           explainable="CTL"
           trend={
             (fitness?.ramp_rate ?? 0) > 0
@@ -191,7 +198,7 @@ export default function PerformancePage() {
         />
         <StatCard
           label="Fatigue (ATL)"
-          value={Math.round(fitness?.current_atl ?? 0)}
+          value={load(fitness?.current_atl)}
           explainable="ATL"
         />
         <div className="rounded-md border border-vb-border-subtle bg-vb-surface p-4">
@@ -199,7 +206,7 @@ export default function PerformancePage() {
             Form (TSB)
           </p>
           <p className={`mt-2 font-display text-2xl font-semibold tracking-[-0.02em] tabular-nums ${tsbColor}`}>
-            {Math.round(fitness?.current_tsb ?? 0)}
+            {load(fitness?.current_tsb)}
           </p>
         </div>
         <StatCard

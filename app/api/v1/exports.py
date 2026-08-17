@@ -21,6 +21,20 @@ from app.services.plan_service import get_workout
 router = APIRouter(prefix="/exports", tags=["exports"])
 
 
+def _require_ftp(user: User) -> int:
+    """An exported workout file bakes FTP into absolute watts, and once it is
+    open in Zwift or on a head unit nobody can tell the number was a guess.
+    So we refuse the export rather than ship a fabricated FTP off-platform."""
+    if not user.ftp:
+        raise BadRequestException(
+            detail=(
+                "Set your FTP before exporting. Workout files carry watts, not "
+                "percentages, so I need your real number to write them."
+            )
+        )
+    return user.ftp
+
+
 @router.get("/workout/{workout_id}/zwo")
 def export_workout_zwo(
     workout_id: str,
@@ -35,7 +49,7 @@ def export_workout_zwo(
     if not workout.steps:
         raise BadRequestException(detail="Workout has no steps to export")
 
-    zwo_content = workout_to_zwo(workout, ftp=current_user.ftp or 200)
+    zwo_content = workout_to_zwo(workout, ftp=_require_ftp(current_user))
 
     filename = f"{workout.title.replace(' ', '_')}.zwo"
     return Response(
@@ -58,7 +72,7 @@ def export_workout_erg(
     if not workout.steps:
         raise BadRequestException(detail="Workout has no steps to export")
 
-    erg_content = workout_to_erg(workout, ftp=current_user.ftp or 200)
+    erg_content = workout_to_erg(workout, ftp=_require_ftp(current_user))
     filename = f"{workout.title.replace(' ', '_')}.erg"
     return Response(
         content=erg_content,
@@ -80,7 +94,7 @@ def export_workout_mrc(
     if not workout.steps:
         raise BadRequestException(detail="Workout has no steps to export")
 
-    mrc_content = workout_to_mrc(workout, ftp=current_user.ftp or 200)
+    mrc_content = workout_to_mrc(workout, ftp=_require_ftp(current_user))
     filename = f"{workout.title.replace(' ', '_')}.mrc"
     return Response(
         content=mrc_content,
@@ -102,7 +116,7 @@ def export_workout_fit(
     if not workout.steps:
         raise BadRequestException(detail="Workout has no steps to export")
 
-    fit_content = workout_to_fit(workout, ftp=current_user.ftp or 200)
+    fit_content = workout_to_fit(workout, ftp=_require_ftp(current_user))
     filename = f"{workout.title.replace(' ', '_')}.fit"
     return Response(
         content=fit_content,

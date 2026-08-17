@@ -104,6 +104,14 @@ export default function OnboardingPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // The plan is the one thing Forma promises out loud on the last step, so a
+  // failed write gets said to the rider instead of hidden behind the
+  // dashboard. The goal id is held so a retry writes the plan again without
+  // re-submitting the quiz or creating a second goal.
+  const [planFailed, setPlanFailed] = useState(false);
+  const [planRetried, setPlanRetried] = useState(false);
+  const [savedGoalId, setSavedGoalId] = useState<string | null>(null);
+
   // Whether event step is needed
   const isEventGoal = goal === "target_event";
 
@@ -139,6 +147,44 @@ export default function OnboardingPage() {
     if (file && file.name.toLowerCase().endsWith(".gpx")) {
       setGpxFile(file);
     }
+  };
+
+  // A rider who named a goal meets their coach by crafting it: the
+  // first conversation is the why, not the watts.
+  const leaveOnboarding = (goalId: string | null) => {
+    if (goalId && eventName) {
+      router.push(
+        `/dashboard/coach?ask=${encodeURIComponent(
+          `I've just set my goal: ${eventName}. Before we talk training, help me craft it properly. Ask me one question at a time: why this one matters to me, and who it's turning me into. Then save that to the goal.`
+        )}`
+      );
+    } else {
+      router.push("/dashboard");
+    }
+  };
+
+  // Write the plan, then leave. A failure keeps the rider on this step: by
+  // now the account exists and the answers are stored, so the honest move is
+  // to say the plan is missing rather than run the success animation.
+  const writePlan = async (goalId: string | null) => {
+    try {
+      await training.generatePlan({
+        goal_event_id: goalId ?? undefined,
+        periodization_model: "traditional",
+      });
+      leaveOnboarding(goalId);
+    } catch (planErr) {
+      console.error("Plan generation failed during onboarding:", planErr);
+      setPlanFailed(true);
+    }
+  };
+
+  const handleRetryPlan = async () => {
+    setLoading(true);
+    setPlanFailed(false);
+    setPlanRetried(true);
+    await writePlan(savedGoalId);
+    setLoading(false);
   };
 
   const handleFinish = async () => {
@@ -194,34 +240,17 @@ export default function OnboardingPage() {
         }
       }
 
+      setSavedGoalId(createdGoalId);
+      // Everything the rider typed is stored by this point, so refresh before
+      // the plan attempt: they can still leave if the plan never writes.
+      await refreshUser();
+
       // 5. Auto-generate a training plan
       //    - If the user has a target event, build it around that goal so the
       //      plan peaks on race day.
       //    - Otherwise still generate a default 12-week plan so the user lands
       //      on the dashboard with something to do.
-      try {
-        await training.generatePlan({
-          goal_event_id: createdGoalId ?? undefined,
-          periodization_model: "traditional",
-        });
-      } catch (planErr) {
-        console.error("Plan generation failed during onboarding:", planErr);
-        // Don't block onboarding; user can generate manually from the
-        // training page if something went wrong here.
-      }
-
-      await refreshUser();
-      // A rider who named a goal meets their coach by crafting it: the
-      // first conversation is the why, not the watts.
-      if (createdGoalId && eventName) {
-        router.push(
-          `/dashboard/coach?ask=${encodeURIComponent(
-            `I've just set my goal: ${eventName}. Before we talk training, help me craft it properly. Ask me one question at a time: why this one matters to me, and who it's turning me into. Then save that to the goal.`
-          )}`
-        );
-      } else {
-        router.push("/dashboard");
-      }
+      await writePlan(createdGoalId);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Something went wrong";
@@ -718,37 +747,87 @@ export default function OnboardingPage() {
               </p>
             </details>
 
-            <CoachNote
-              className="mt-8"
-              kicker="Before you go"
-              coachName={coachName.trim() || "Forma"}
-            >
-              Right. Give me these answers and I&apos;ll write week one before
-              you&apos;ve closed the laptop.
-            </CoachNote>
+            {planFailed ? (
+              <CoachNote
+                className="mt-8"
+                kicker={planRetried ? "Still no plan" : "The plan didn't write"}
+                coachName={coachName.trim() || "Forma"}
+              >
+                {planRetried ? (
+                  <>
+                    Twice now, and it still won&apos;t write. Your account and
+                    your answers are safe, but you&apos;re going through
+                    without week one. Open Training on the dashboard, hit Build
+                    my season, and I&apos;ll get it done there.
+                  </>
+                ) : (
+                  <>
+                    Your account is made and every answer you gave me is saved.
+                    The plan itself didn&apos;t write. That one&apos;s on me,
+                    so let me have another go at it.
+                  </>
+                )}
+              </CoachNote>
+            ) : (
+              <CoachNote
+                className="mt-8"
+                kicker="Before you go"
+                coachName={coachName.trim() || "Forma"}
+              >
+                Right. Give me these answers and I&apos;ll write week one before
+                you&apos;ve closed the laptop.
+              </CoachNote>
+            )}
 
             {error && (
               <p className="mt-4 text-sm text-vb-red">{error}</p>
             )}
 
-            <div className="mt-8 flex gap-3">
-              <Button variant="ghost" onClick={() => setStep(3)} className="px-6">
-                Back
-              </Button>
+            {/* Once the answers are saved, Back and Start training would
+                re-submit the quiz and create a second goal, so the failure
+                state offers exactly one way onward. */}
+            {planFailed ? (
               <Button
                 variant="flamme"
                 size="lg"
-                onClick={handleFinish}
+                onClick={
+                  planRetried
+                    ? () => router.push("/dashboard")
+                    : handleRetryPlan
+                }
                 disabled={loading}
-                className="flex-1"
+                className="mt-8 w-full"
               >
-                {loading ? "Writing week one…" : (
+                {loading ? "Writing week one…" : planRetried ? (
                   <>
-                    Start training <Arrow />
+                    Go to my dashboard <Arrow />
+                  </>
+                ) : (
+                  <>
+                    Write the plan again <Arrow />
                   </>
                 )}
               </Button>
-            </div>
+            ) : (
+              <div className="mt-8 flex gap-3">
+                <Button variant="ghost" onClick={() => setStep(3)} className="px-6">
+                  Back
+                </Button>
+                <Button
+                  variant="flamme"
+                  size="lg"
+                  onClick={handleFinish}
+                  disabled={loading}
+                  className="flex-1"
+                >
+                  {loading ? "Writing week one…" : (
+                    <>
+                      Start training <Arrow />
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>

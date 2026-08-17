@@ -6,7 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { metrics, rides, training, goals as goalsApi, coachInsights, inspiration } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { formatDuration, formatDate, cn } from "@/lib/utils";
+import { formatDuration, formatDate, cn, localISODate } from "@/lib/utils";
 import { RiderProfileRadar } from "@/components/charts/rider-profile-radar";
 import { BriefingCard } from "@/components/dashboard/briefing-card";
 import { CoachInvite } from "@/components/dashboard/coach-invite";
@@ -92,6 +92,60 @@ function WorkoutShape({ steps }: { steps: WorkoutStep[] }) {
   );
 }
 
+/** A tile with no reading behind it. Keeps DataTile's shell so the strip
+    holds its rhythm, but the number slot never fills with a zero: with no
+    value it stays a blank bar, with one it speaks in words, not digits. */
+function QuietTile({
+  label,
+  value,
+  sub,
+  href,
+}: {
+  label: string;
+  value?: string;
+  sub?: string;
+  href?: string;
+}) {
+  const body = (
+    <>
+      <p className="f-kicker text-vb-text-muted">{label}</p>
+      {value ? (
+        <p className="f-data mt-2 text-2xl font-semibold leading-none text-vb-text-muted">
+          {value}
+        </p>
+      ) : (
+        <span
+          className="mt-2 block h-9 w-16 animate-pulse bg-vb-sunken"
+          aria-hidden
+        />
+      )}
+      {sub && <p className="mt-2 text-xs text-vb-text-dim">{sub}</p>}
+    </>
+  );
+  return href ? (
+    <Link
+      href={href}
+      className="f-lift block border border-vb-border-subtle bg-vb-surface p-4 transition-colors hover:border-vb-border"
+    >
+      {body}
+    </Link>
+  ) : (
+    <div className="border border-vb-border-subtle bg-vb-surface p-4">
+      {body}
+    </div>
+  );
+}
+
+/** Forma saying why the strip is bare, across the width the three load
+    numbers would have taken. */
+function StripNote({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="col-span-2 flex items-center border border-vb-border-subtle bg-vb-surface p-4 md:col-span-3">
+      <p className="text-sm leading-relaxed text-vb-text-dim">{children}</p>
+    </div>
+  );
+}
+
 // Physiological system → its TRUE zone ink. Data colours mean the data:
 // endurance is Z2 work, threshold Z4, VO2 Z5, anaerobic Z6, sprint Z7.
 const SYSTEM_ZONE_COLOR: Record<string, string> = {
@@ -109,12 +163,20 @@ const SYSTEM_ZONE_COLOR: Record<string, string> = {
 export default function DashboardPage() {
   const { user } = useAuth();
 
-  const { data: fitnessQuick } = useQuery({
+  const {
+    data: fitnessQuick,
+    isPending: fitnessQuickPending,
+    isError: fitnessQuickError,
+  } = useQuery({
     queryKey: ["fitness-summary-quick"],
     queryFn: () => metrics.getFitnessSummary(false),
   });
 
-  const { data: fitnessFull } = useQuery({
+  const {
+    data: fitnessFull,
+    isPending: fitnessFullPending,
+    isError: fitnessFullError,
+  } = useQuery({
     queryKey: ["fitness-summary"],
     queryFn: () => metrics.getFitnessSummary(true),
     staleTime: 5 * 60 * 1000,
@@ -150,7 +212,7 @@ export default function DashboardPage() {
     retry: false,
   });
 
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const todayISO = localISODate();
   const { data: todayWorkouts } = useQuery({
     queryKey: ["today-workouts", todayISO],
     queryFn: () => training.getWorkouts(todayISO),
@@ -198,6 +260,18 @@ export default function DashboardPage() {
 
   const coach = user?.coach_name || "Forma";
 
+  // Three states have to happen before a number is allowed on the strip:
+  // still asking, couldn't ask, and asked but nothing has been ridden.
+  // Zero is a reading, and none of those three is a reading.
+  const fitnessPending =
+    !fitness && (fitnessQuickPending || fitnessFullPending);
+  const fitnessFailed =
+    !fitness && !fitnessPending && (fitnessQuickError || fitnessFullError);
+  // A rider with nothing logged comes back as flat zeros, which is the
+  // absence of a measurement rather than a measurement of nothing.
+  const hasFitness =
+    !!fitness && (fitness.current_ctl > 0 || fitness.current_atl > 0);
+
   const tsb = Math.round(fitness?.current_tsb ?? 0);
   const tsbNotable = tsb > 10 || tsb < -20;
   const tsbLabel =
@@ -237,6 +311,19 @@ export default function DashboardPage() {
     const week = Math.max(1, Math.ceil((Date.now() - start) / (7 * 86400000)));
     if (week <= activePlan.total_weeks) weekOf = `Week ${week} of ${activePlan.total_weeks}`;
   }
+
+  // The wizard can be closed halfway and nothing in the app points back at
+  // it. No plan, no goal and no rides at all is the fingerprint of a rider
+  // who never finished; a quiet week still has one of the three. All three
+  // answers have to be in before we decide, or everyone sees this on the
+  // first paint.
+  const setupUnfinished =
+    !!plans &&
+    !!goalsData &&
+    !!recentRides &&
+    !activePlan &&
+    goalsData.goals.length === 0 &&
+    recentRides.total === 0;
 
   // Today's session (first planned workout today)
   const todaySession = todayWorkouts?.find((w) => w.status !== "skipped");
@@ -294,6 +381,30 @@ export default function DashboardPage() {
         </h1>
       </header>
 
+      {/* ============ FINISH SETUP ============
+          The only way back into the wizard. It sits above the coach
+          because there is nothing for the coach to say until it is done. */}
+      {setupUnfinished && (
+        <section className="f-rise border border-vb-border-subtle border-l-[3px] border-l-vb-red bg-vb-surface p-6 md:p-8">
+          <Kicker flamme className="mb-1.5">
+            Unfinished business
+          </Kicker>
+          <h2 className="f-display text-2xl leading-tight md:text-3xl">
+            Let&apos;s finish setting you up.
+          </h2>
+          <p className="mt-3 max-w-md text-sm leading-relaxed text-vb-text-dim">
+            I still need your goal, your experience and your numbers before I
+            can coach you properly. It takes a couple of minutes.
+          </p>
+          <Link
+            href="/onboarding"
+            className={cn(buttonVariants({ variant: "flamme" }), "mt-5")}
+          >
+            Finish setup <span className="f-arrow-head">→</span>
+          </Link>
+        </section>
+      )}
+
       {/* ============ THE COACH, LEANING IN ============
           Conversation is the product. The day opens with the coach
           saying something real and a place to answer it. */}
@@ -332,15 +443,19 @@ export default function DashboardPage() {
               {nextGoal.priority?.replace("_", "-")} · {formatDate(nextGoal.event_date)}
             </p>
           </div>
-          <div className="hidden shrink-0 border-l border-white/15 pl-6 text-right sm:block">
-            <p className="f-kicker text-white/50">Form · TSB</p>
-            <p className={cn("f-data mt-1 text-3xl font-bold leading-none", tsb >= 0 ? "text-vb-red" : "text-white")}>
-              {tsb > 0 ? `+${tsb}` : tsb}
-            </p>
-            <p className="f-kicker mt-1 text-white/50">
-              {tsb > 10 ? "Fresh" : tsb < -20 ? "Deep fatigue" : "On track"}
-            </p>
-          </div>
+          {/* Same reading as the strip, so it obeys the same rule: no
+              number until there is one. */}
+          {hasFitness && (
+            <div className="hidden shrink-0 border-l border-white/15 pl-6 text-right sm:block">
+              <p className="f-kicker text-white/50">Form · TSB</p>
+              <p className={cn("f-data mt-1 text-3xl font-bold leading-none", tsb >= 0 ? "text-vb-red" : "text-white")}>
+                {tsb > 0 ? `+${tsb}` : tsb}
+              </p>
+              <p className="f-kicker mt-1 text-white/50">
+                {tsb > 10 ? "Fresh" : tsb < -20 ? "Deep fatigue" : "On track"}
+              </p>
+            </div>
+          )}
         </section>
       )}
 
@@ -394,27 +509,56 @@ export default function DashboardPage() {
 
       {/* ============ FITNESS STAT STRIP ============ */}
       <section className="f-stagger grid grid-cols-2 gap-3 md:grid-cols-4">
-        <DataTile
-          label="Fitness · CTL"
-          value={Math.round(fitness?.current_ctl ?? 0)}
-          sub={ctlSub}
-        />
-        <DataTile
-          label="Fatigue · ATL"
-          value={Math.round(fitness?.current_atl ?? 0)}
-          sub="Rolling 7 days"
-        />
-        <DataTile label="Form · TSB" value={tsb} sub={tsbLabel} hot={tsbNotable} />
-        <DataTile
-          label="FTP"
-          value={user?.ftp ?? 0}
-          unit="w"
-          sub={
-            user?.weight_kg
-              ? `${((user.ftp ?? 0) / user.weight_kg).toFixed(2)} W/kg`
-              : "watts"
-          }
-        />
+        {fitnessPending ? (
+          <>
+            <QuietTile label="Fitness · CTL" />
+            <QuietTile label="Fatigue · ATL" />
+            <QuietTile label="Form · TSB" />
+          </>
+        ) : fitnessFailed ? (
+          <StripNote>
+            I can&apos;t reach your numbers right now. Give it a minute and
+            refresh.
+          </StripNote>
+        ) : hasFitness && fitness ? (
+          <>
+            <DataTile
+              label="Fitness · CTL"
+              value={Math.round(fitness.current_ctl)}
+              sub={ctlSub}
+            />
+            <DataTile
+              label="Fatigue · ATL"
+              value={Math.round(fitness.current_atl)}
+              sub="Rolling 7 days"
+            />
+            <DataTile label="Form · TSB" value={tsb} sub={tsbLabel} hot={tsbNotable} />
+          </>
+        ) : (
+          <StripNote>
+            Nothing measured yet. Log a ride and I&apos;ll start tracking your
+            fitness, fatigue and form.
+          </StripNote>
+        )}
+        {user?.ftp ? (
+          <DataTile
+            label="FTP"
+            value={user.ftp}
+            unit="w"
+            sub={
+              user.weight_kg
+                ? `${(user.ftp / user.weight_kg).toFixed(2)} W/kg`
+                : "watts"
+            }
+          />
+        ) : (
+          <QuietTile
+            label="FTP"
+            value="Not set"
+            sub="Set it in settings"
+            href="/dashboard/settings"
+          />
+        )}
       </section>
 
       {/* ============ THE CLIMB — 12 weeks of work ============ */}
@@ -680,7 +824,7 @@ export default function DashboardPage() {
                 </Link>
               }
             >
-              No rides yet. Upload one or connect Strava and I&apos;ll start
+              Connect Wahoo or drop in a ride file, and I&apos;ll start
               building your power profile.
             </EmptyState>
           ) : (

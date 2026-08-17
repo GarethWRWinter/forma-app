@@ -17,6 +17,8 @@ import { BRAIN } from "@/lib/palette";
  * card with the memory's story + hide-not-delete.
  */
 
+// The reference space the layout was tuned in. The sim itself runs in CSS
+// pixels; every tuned distance rides on a scale derived from the measured box.
 const W = 1240;
 const H = 1320;
 
@@ -34,11 +36,13 @@ const TYPE_STYLE: Record<string, { c: string; r: number; label: string }> = {
   procedural: { c: BRAIN.procedural.c, r: 6, label: "Coaching rule" },
 };
 
+// Cluster anchors as shares of the measured canvas, so the quadrants hold
+// their shape on any box.
 const AREAS: Record<string, { label: string; ax: number; ay: number }> = {
-  training: { label: "TRAINING & PERFORMANCE", ax: 340, ay: 400 },
-  body: { label: "BODY & HEALTH", ax: 900, ay: 400 },
-  mind: { label: "MIND", ax: 340, ay: 960 },
-  life: { label: "LIFE & PEOPLE", ax: 900, ay: 960 },
+  training: { label: "TRAINING & PERFORMANCE", ax: 0.27, ay: 0.3 },
+  body: { label: "BODY & HEALTH", ax: 0.73, ay: 0.3 },
+  mind: { label: "MIND", ax: 0.27, ay: 0.73 },
+  life: { label: "LIFE & PEOPLE", ax: 0.73, ay: 0.73 },
 };
 
 const FILTERS: { key: string; label: string; color?: string }[] = [
@@ -119,6 +123,8 @@ export default function BrainPage() {
   const nodesRef = useRef<SimNode[]>([]);
   const linksRef = useRef<[number, number][]>([]);
   const spanRef = useRef(1);
+  // Measured box in CSS pixels, plus the scale the tuned distances ride on.
+  const sizeRef = useRef({ w: 900, h: 640, sc: Math.min(900 / W, 640 / H) });
 
   useEffect(() => {
     filterRef.current = filter;
@@ -130,6 +136,37 @@ export default function BrainPage() {
   // Days since epoch for a date string.
   const dayOf = (iso: string | null) =>
     iso ? Math.floor(new Date(iso).getTime() / 86400000) : 0;
+
+  // Size the buffer from the measured box. A fixed buffer stretched to a
+  // different display aspect drew every node as an egg on a phone.
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const fit = () => {
+      const w = cv.clientWidth;
+      const h = cv.clientHeight;
+      if (!w || !h) return;
+      const dpr = window.devicePixelRatio || 1;
+      cv.width = Math.round(w * dpr);
+      cv.height = Math.round(h * dpr);
+      // Resizing the buffer wipes the transform, so re-apply it: the device
+      // ratio lives here and everything else draws in CSS pixels.
+      cv.getContext("2d")?.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const was = sizeRef.current;
+      sizeRef.current = { w, h, sc: Math.min(w / W, h / H) };
+      // Carry positions across the resize so nothing piles into a corner.
+      nodesRef.current.forEach((n) => {
+        n.x *= w / was.w;
+        n.y *= h / was.h;
+      });
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(cv);
+    return () => ro.disconnect();
+    // Keyed on graph like the sim below: the canvas only mounts once there is
+    // something to draw, so the observer has to attach then.
+  }, [graph]);
 
   // Rebuild sim nodes when data arrives (preserve positions where possible).
   useEffect(() => {
@@ -151,6 +188,7 @@ export default function BrainPage() {
     }
     if (tlabelRef.current) tlabelRef.current.textContent = "Today";
 
+    const { w: cw, h: ch, sc } = sizeRef.current;
     const nodes: SimNode[] = [
       prev.get("__you__") ?? {
         id: "__you__",
@@ -158,8 +196,8 @@ export default function BrainPage() {
         area: "",
         label: "You",
         birth: 0,
-        x: W / 2,
-        y: H / 2,
+        x: cw / 2,
+        y: ch / 2,
         vx: 0,
         vy: 0,
         ph: 0,
@@ -176,8 +214,8 @@ export default function BrainPage() {
               area: e.life_area,
               label: e.label,
               birth: bornOn(e) - d0,
-              x: W / 2 + (Math.random() - 0.5) * 320,
-              y: H / 2 + (Math.random() - 0.5) * 320,
+              x: cw / 2 + (Math.random() - 0.5) * 320 * sc,
+              y: ch / 2 + (Math.random() - 0.5) * 320 * sc,
               vx: 0,
               vy: 0,
               ph: Math.random() * 6.28,
@@ -228,29 +266,31 @@ export default function BrainPage() {
     function tick(time: number) {
       const N = nodesRef.current;
       const L = linksRef.current;
+      const { w: cw, h: ch, sc } = sizeRef.current;
+      const sc2 = sc * sc;
       for (let i = 0; i < N.length; i++) {
         const n = N[i];
         if (!alive(n)) continue;
         n.vx *= 0.6;
         n.vy *= 0.6;
-        let gx = W / 2;
-        let gy = H / 2;
+        let gx = cw / 2;
+        let gy = ch / 2;
         if (modeRef.current === "areas" && n.type !== "user" && AREAS[n.area]) {
-          gx = AREAS[n.area].ax;
-          gy = AREAS[n.area].ay;
+          gx = AREAS[n.area].ax * cw;
+          gy = AREAS[n.area].ay * ch;
         }
         n.vx += (gx - n.x) * 0.012;
         n.vy += (gy - n.y) * 0.012;
-        n.vx += Math.sin(time * 0.0006 + n.ph) * 0.05;
-        n.vy += Math.cos(time * 0.0005 + n.ph * 1.3) * 0.05;
+        n.vx += Math.sin(time * 0.0006 + n.ph) * 0.05 * sc;
+        n.vy += Math.cos(time * 0.0005 + n.ph * 1.3) * 0.05 * sc;
         for (let j = i + 1; j < N.length; j++) {
           const m = N[j];
           if (!alive(m)) continue;
           const dx = n.x - m.x;
           const dy = n.y - m.y;
-          const d2 = dx * dx + dy * dy + 60;
-          if (d2 < 36000) {
-            const f = 440 / d2;
+          const d2 = dx * dx + dy * dy + 60 * sc2;
+          if (d2 < 36000 * sc2) {
+            const f = (440 * sc2) / d2;
             n.vx += dx * f;
             n.vy += dy * f;
             m.vx -= dx * f;
@@ -265,7 +305,7 @@ export default function BrainPage() {
         const dx = m.x - n.x;
         const dy = m.y - n.y;
         const d = Math.sqrt(dx * dx + dy * dy) || 1;
-        const want = n.type === "user" || m.type === "user" ? 170 : 90;
+        const want = (n.type === "user" || m.type === "user" ? 170 : 90) * sc;
         const f = (d - want) * 0.012;
         const ux = (dx / d) * f;
         const uy = (dy / d) * f;
@@ -276,28 +316,33 @@ export default function BrainPage() {
       });
       N.forEach((n) => {
         if (!alive(n)) return;
-        n.x = Math.max(56, Math.min(W - 56, n.x + n.vx));
-        n.y = Math.max(70, Math.min(H - 90, n.y + n.vy));
+        // Margins are shares of the box: they exist to keep nodes off the
+        // chips and the scrubber, which sit at fixed insets.
+        n.x = Math.max(cw * 0.045, Math.min(cw * 0.955, n.x + n.vx));
+        n.y = Math.max(ch * 0.053, Math.min(ch * 0.932, n.y + n.vy));
       });
     }
 
     function draw(time: number) {
       const N = nodesRef.current;
       const L = linksRef.current;
-      ctx!.clearRect(0, 0, W, H);
+      const { w: cw, h: ch, sc } = sizeRef.current;
+      ctx!.clearRect(0, 0, cw, ch);
       const hv = hoverRef.current;
       const hoverSet = hv >= 0 && N[hv] && alive(N[hv]) ? neighbors(hv) : null;
 
       if (modeRef.current === "areas") {
-        ctx!.font = "600 15px Schibsted Grotesk, sans-serif";
+        ctx!.font = "600 11px Schibsted Grotesk, sans-serif";
         ctx!.textAlign = "center";
         ctx!.fillStyle = "rgba(148,141,128,.45)";
         for (const k in AREAS) {
           const a = AREAS[k];
+          // Headings ride with their cluster but never run off a narrow box.
+          const half = ctx!.measureText(a.label).width / 2 + 6;
           ctx!.fillText(
             a.label,
-            a.ax,
-            k === "training" || k === "body" ? a.ay - 230 : a.ay + 250
+            Math.max(half, Math.min(cw - half, a.ax * cw)),
+            a.ay * ch + (k === "training" || k === "body" ? -230 : 250) * sc
           );
         }
       }
@@ -317,7 +362,7 @@ export default function BrainPage() {
         const d = Math.sqrt(dx * dx + dy * dy) || 1;
         const bow =
           (idx2 % 2 ? 1 : -1) *
-          Math.min(24, d * 0.14) *
+          Math.min(24 * sc, d * 0.14) *
           (1 + 0.1 * Math.sin(time * 0.001 + idx2));
         const cxp = midx - (dy / d) * bow;
         const cyp = midy + (dx / d) * bow;
@@ -361,7 +406,7 @@ export default function BrainPage() {
         const n = N[hv];
         ctx!.font = "500 13px Schibsted Grotesk, sans-serif";
         const w = ctx!.measureText(n.label).width + 22;
-        const lx = Math.min(W - 56 - w, Math.max(56, n.x - w / 2));
+        const lx = Math.min(cw - 8 - w, Math.max(8, n.x - w / 2));
         const ly = n.y - 34;
         ctx!.fillStyle = "#0B0B0C";
         ctx!.beginPath();
@@ -404,12 +449,10 @@ export default function BrainPage() {
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv) return;
+    // Nodes live in CSS pixels now, so pointer offsets map straight across.
     const toWorld = (e: MouseEvent) => {
       const r = cv.getBoundingClientRect();
-      return [
-        ((e.clientX - r.left) * W) / r.width,
-        ((e.clientY - r.top) * H) / r.height,
-      ];
+      return [e.clientX - r.left, e.clientY - r.top];
     };
     const move = (e: MouseEvent) => {
       const [x, y] = toWorld(e);
@@ -538,13 +581,15 @@ export default function BrainPage() {
       ) : (
         <div className="grid gap-5 lg:grid-cols-[1fr_320px]">
           <div className="relative overflow-hidden rounded-md border border-vb-border-subtle bg-vb-surface">
-            <div className="absolute left-3 top-3 z-10 flex max-w-[78%] flex-wrap gap-1.5">
+            {/* Below md the controls sit in flow: absolutely positioned they
+                overlapped, and the last chip sat under the toggle, untappable. */}
+            <div className="flex flex-wrap gap-1.5 px-3 pt-3 md:absolute md:left-3 md:top-3 md:z-10 md:max-w-[78%] md:px-0 md:pt-0">
               {FILTERS.map((f) => (
                 <button
                   key={f.key}
                   onClick={() => setFilter(f.key)}
                   className={cn(
-                    "flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11.5px] font-medium transition-colors",
+                    "flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11.5px] font-medium transition-colors pointer-coarse:min-h-11",
                     filter === f.key
                       ? "border-vb-text bg-vb-text text-white"
                       : "border-vb-border-subtle bg-vb-bg text-vb-text-dim hover:text-vb-text"
@@ -560,7 +605,7 @@ export default function BrainPage() {
                 </button>
               ))}
             </div>
-            <div className="absolute right-3 top-3 z-10 flex overflow-hidden rounded-md border border-vb-border-subtle">
+            <div className="ml-auto mr-3 mt-2 flex w-fit overflow-hidden rounded-md border border-vb-border-subtle md:absolute md:right-3 md:top-3 md:z-10 md:ml-0 md:mr-0 md:mt-0">
               {(["organic", "areas"] as const).map((m) => (
                 <button
                   key={m}
@@ -579,9 +624,7 @@ export default function BrainPage() {
 
             <canvas
               ref={canvasRef}
-              width={W}
-              height={H}
-              className="block h-[72vh] min-h-[560px] w-full cursor-crosshair"
+              className="mt-3 block h-[72vh] min-h-[560px] w-full cursor-crosshair md:mt-0"
             />
 
             <div className="absolute bottom-3 left-3 right-3 z-10 flex items-center gap-3 rounded-sm border border-vb-border-subtle bg-vb-bg/95 px-3.5 py-2">
