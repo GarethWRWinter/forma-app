@@ -366,7 +366,9 @@ def generate_plan(
             else:
                 name = f"Plan for {primary_goal.event_name}"
         else:
-            name = f"Training Plan - {today.strftime('%b %Y')}"
+            # No dashes in customer-visible copy, and this is the plan name
+            # every rider without a goal reads on their first dashboard.
+            name = f"Training Plan, {today.strftime('%b %Y')}"
 
     # ── 6. Create plan ──
     # Link to primary goal for backward compat
