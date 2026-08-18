@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # instead of sent, so flows stay testable before the account exists.
     postmark_server_token: str = ""
     email_from: str = "Forma <coach@ridewithforma.com>"
+    # The letters are a person writing to a rider, not the system talking, and
+    # they ask for a reply. Sending them from the shared transactional address
+    # would put those replies in the wrong inbox and make a personal letter
+    # arrive from a role account.
+    email_from_founder: str = "Gareth at Forma <gareth@ridewithforma.com>"
 
     # Stripe subscriptions. Dormant until the keys exist; the paywall itself
     # only bites when require_subscription flips true (launch day switch).

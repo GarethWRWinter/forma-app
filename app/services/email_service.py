@@ -22,13 +22,19 @@ def is_configured() -> bool:
     return bool(settings.postmark_server_token)
 
 
-async def send(to: str, subject: str, text_body: str) -> bool:
-    """Send one transactional email. Returns True when handed to the
-    provider (or logged in dev mode); False on provider failure."""
+async def send(
+    to: str, subject: str, text_body: str, from_address: str | None = None
+) -> bool:
+    """Send one email. Returns True when handed to the provider (or logged in
+    dev mode); False on provider failure.
+
+    from_address defaults to the transactional sender. The waitlist letters
+    pass the founder's address instead, because they ask for a reply and a
+    reply has to reach a person."""
     if not is_configured():
         logger.info(
-            "EMAIL (no provider configured)\nTo: %s\nSubject: %s\n\n%s",
-            to, subject, text_body,
+            "EMAIL (no provider configured)\nFrom: %s\nTo: %s\nSubject: %s\n\n%s",
+            from_address or settings.email_from, to, subject, text_body,
         )
         return True
 
@@ -41,7 +47,7 @@ async def send(to: str, subject: str, text_body: str) -> bool:
                     "Accept": "application/json",
                 },
                 json={
-                    "From": settings.email_from,
+                    "From": from_address or settings.email_from,
                     "To": to,
                     "Subject": subject,
                     "TextBody": text_body,
@@ -127,6 +133,7 @@ G
 PS. You joined a list of one hundred, not one hundred thousand. When I write
 that I read every reply, it's because the maths allows it.
 """,
+        from_address=settings.email_from_founder,
     )
 
 
