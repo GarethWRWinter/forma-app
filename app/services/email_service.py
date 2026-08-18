@@ -28,9 +28,9 @@ async def send(
     """Send one email. Returns True when handed to the provider (or logged in
     dev mode); False on provider failure.
 
-    from_address defaults to the transactional sender. The waitlist letters
-    pass the founder's address instead, because they ask for a reply and a
-    reply has to reach a person."""
+    Everything sends from one address before launch, so from_address is a hook
+    rather than something in use: the day there is a second sender, it is
+    already here."""
     if not is_configured():
         logger.info(
             "EMAIL (no provider configured)\nFrom: %s\nTo: %s\nSubject: %s\n\n%s",
@@ -133,7 +133,6 @@ G
 PS. You joined a list of one hundred, not one hundred thousand. When I write
 that I read every reply, it's because the maths allows it.
 """,
-        from_address=settings.email_from_founder,
     )
 
 

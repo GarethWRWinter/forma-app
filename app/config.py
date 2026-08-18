@@ -43,12 +43,11 @@ class Settings(BaseSettings):
     # Transactional email (Postmark). Without the token, emails are logged
     # instead of sent, so flows stay testable before the account exists.
     postmark_server_token: str = ""
-    email_from: str = "Forma <coach@ridewithforma.com>"
-    # The letters are a person writing to a rider, not the system talking, and
-    # they ask for a reply. Sending them from the shared transactional address
-    # would put those replies in the wrong inbox and make a personal letter
-    # arrive from a role account.
-    email_from_founder: str = "Gareth at Forma <gareth@ridewithforma.com>"
+    # One sender for everything until launch. Deliberately not split into a
+    # transactional address and a founder address: a solo founder reading every
+    # reply needs one inbox, not two to keep track of. The letters ask people to
+    # hit reply, so that inbox has to be a person's.
+    email_from: str = "Gareth at Forma <gareth@ridewithforma.com>"
 
     # Stripe subscriptions. Dormant until the keys exist; the paywall itself
     # only bites when require_subscription flips true (launch day switch).
