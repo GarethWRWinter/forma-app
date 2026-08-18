@@ -31,7 +31,6 @@ def get_wahoo_auth_url(current_user: User = Depends(get_current_user)):
     return {"auth_url": wahoo_service.get_auth_url(state=state)}
 
 
-@router.get("/callback")
 async def _catch_up_after_reauth(user_id: str) -> None:
     """Pull whatever arrived while the connection was dead.
 
@@ -60,6 +59,7 @@ async def _catch_up_after_reauth(user_id: str) -> None:
         db.close()
 
 
+@router.get("/callback")
 async def wahoo_callback(
     code: str = Query(""),
     state: str = Query(""),
