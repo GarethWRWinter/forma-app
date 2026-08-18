@@ -11,12 +11,16 @@ total lets the demand make that argument instead of the marketing.
 
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from datetime import datetime
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.api.v1.admin import require_admin
+from app.config import settings
+from app.core.exceptions import BadRequestException
 from app.core.ratelimit import rate_limit
 from app.database import get_db
 from app.models.user import User
@@ -56,6 +60,12 @@ class GoalBody(BaseModel):
 async def _send_letter0(
     entry_id: str, email: str, name: str | None = None, position: int | None = None
 ) -> None:
+    """Only runs when waitlist_autosend is on, which it is not.
+
+    Letter 0 goes out by hand: it asks for a reply and promises that a person
+    reads every one, and that promise is easiest to keep by writing them
+    yourself. Joining just records who is owed a letter.
+    """
     from app.database import SessionLocal
 
     ok = await email_service.send_waitlist_welcome(email, name=name, position=position)
@@ -156,9 +166,16 @@ async def join_waitlist(
         db.add(entry)
         db.commit()
         db.refresh(entry)
-        background_tasks.add_task(
-            _send_letter0, str(entry.id), email, name, _position(db, entry)
-        )
+        pos = _position(db, entry)
+        if settings.waitlist_autosend:
+            background_tasks.add_task(_send_letter0, str(entry.id), email, name, pos)
+        else:
+            # Nothing sends. letter0_sent stays False, which is what puts them
+            # on the list of people owed a letter in the admin CSV.
+            logger.info(
+                "WAITLIST JOIN: %s (%s) is number %s and is owed Letter 0",
+                email, name or "no name", pos,
+            )
     elif name and not entry.name:
         # Someone who joined before the form asked for a name, coming back with
         # one. Take it: it costs nothing and it makes their next letter better.
@@ -251,14 +268,46 @@ def list_waitlist(db: Session = Depends(get_db)):
 
 @router.post("/admin/send-pending", dependencies=[Depends(require_admin)])
 async def send_pending_letter0(
-    background_tasks: BackgroundTasks,
+    since: str = Query(
+        ...,
+        description="Only joiners from this date onwards (YYYY-MM-DD). Required.",
+    ),
+    confirm: bool = Query(False, description="Must be true before anything sends."),
+    background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
 ):
-    """Retry Letter 0 for joiners it never reached (e.g. sends attempted
-    while Postmark approval was still pending)."""
+    """Retry Letter 0 for joiners a send never reached.
+
+    Both guards exist because of who is on this list. The riders who joined
+    before autosend was switched on are written to personally, by hand, and
+    they all sit at letter0_sent False until that happens. An unscoped backfill
+    would mail every one of them a machine-written letter, which is precisely
+    the promise this waitlist is built on not breaking. So `since` is required
+    and `confirm` defaults to false: getting it wrong takes two mistakes.
+    """
+    try:
+        cutoff = datetime.strptime(since, "%Y-%m-%d")
+    except ValueError:
+        raise BadRequestException(detail="since must be YYYY-MM-DD")
+
     pending = (
-        db.query(WaitlistEntry).filter(WaitlistEntry.letter0_sent.is_(False)).all()
+        db.query(WaitlistEntry)
+        .filter(
+            WaitlistEntry.letter0_sent.is_(False),
+            WaitlistEntry.created_at >= cutoff,
+        )
+        .order_by(WaitlistEntry.created_at.asc())
+        .all()
     )
+
+    if not confirm:
+        return {
+            "would_send": len(pending),
+            "emails": [e.email for e in pending],
+            "sent": 0,
+            "note": "Dry run. Re-send with confirm=true once this list looks right.",
+        }
+
     for entry in pending:
         background_tasks.add_task(
             _send_letter0, str(entry.id), entry.email, entry.name, _position(db, entry)

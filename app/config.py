@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     # hit reply, so that inbox has to be a person's.
     email_from: str = "Gareth at Forma <gareth@ridewithforma.com>"
 
+    # New joiners get Letter 0 automatically: a signup at 11pm should not wait
+    # until someone is awake. The riders already on the list when this was
+    # switched on are a separate case. They are written to personally, by hand,
+    # and recorded with scripts/mark_letters_sent.py, which is why nothing here
+    # ever sends to an existing row. Only a brand new join triggers a send.
+    waitlist_autosend: bool = True
+
     # Stripe subscriptions. Dormant until the keys exist; the paywall itself
     # only bites when require_subscription flips true (launch day switch).
     stripe_secret_key: str = ""

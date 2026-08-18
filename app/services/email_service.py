@@ -108,7 +108,7 @@ async def send_waitlist_welcome(
     Deliberately a reply, never a form. A form is a company collecting; a reply
     is a person listening, and reading every one is the entire promise.
     """
-    greeting = f"{name.strip().split()[0]},\n\n" if name and name.strip() else ""
+    greeting = f"Hey, {name.strip().split()[0]}\n\n" if name and name.strip() else ""
     place = (
         f"Your place is held. You're number {position} of a hundred.\n"
         if position
@@ -121,10 +121,9 @@ async def send_waitlist_welcome(
 The doors open on 15 September. Between now and then you'll get one letter a
 week from me, and each will have something in it you can use on that week's
 rides. Real numbers from my own testing, the marginal gains that cost nothing,
-the fuelling maths most riders get wrong. If you're not a little faster by
-launch day, I'll have failed at the easy half of this. The first lands this
-week, and it's about the day I nearly put a bottle through Bradley Wiggins's
-front wheel.
+and what most riders get wrong. If you're not a little faster by launch day,
+I'll have failed at the easy half of this. The first lands this week, and it's
+about the day I nearly put a bottle through Sir Bradley Wiggins's front wheel.
 
 That's my end of it. Now the favour, and it's a real one.
 
@@ -132,7 +131,8 @@ Here's my guess about you, and do tell me if I've got it wrong. You're not lazy
 and you're not short of information. You probably carry more data about your own
 riding than anyone had access to twenty years ago. And somewhere behind you
 there's a plan you stopped following, a block that came apart around week three,
-and a quiet suspicion that the weak link was you.
+and a little voice in your head telling you that the weak link was you (that
+voice is lying to you, but we'll get to that another time).
 
 It wasn't. It was almost certainly a plan written for a rider with no job, no
 family and no February.
@@ -148,7 +148,7 @@ Not the tidy version. The real one. If it helps, the things I'm trying to
 understand are:
 
   Where does it come apart? The week that goes sideways, the session that keeps
-  moving down the calendar, the plan you quietly stopped opening.
+  moving down the calendar, the plan you stopped opening and started avoiding.
 
   What actually stands between you and the thing you're aiming at? Time,
   knowledge, motivation, an old injury, a life that refuses to cooperate.
