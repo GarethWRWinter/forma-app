@@ -56,6 +56,16 @@ async def exchange_code(db: Session, user_id: str, code: str) -> WahooToken:
             "grant_type": "authorization_code",
             "redirect_uri": settings.wahoo_redirect_uri,
         })
+        if response.status_code >= 400:
+            # Wahoo's own words. Without this the log says only "400 Bad
+            # Request", which is indistinguishable between a wrong client
+            # secret, a redirect_uri mismatch and a spent code, and the fix
+            # for each is completely different.
+            logger.error(
+                "Wahoo token exchange rejected (%s): %s | redirect_uri sent: %s",
+                response.status_code, response.text[:400],
+                settings.wahoo_redirect_uri,
+            )
         response.raise_for_status()
         data = response.json()
 
@@ -107,6 +117,11 @@ async def _access_token(db: Session, token: WahooToken) -> str:
             "grant_type": "refresh_token",
             "refresh_token": token.refresh_token,
         })
+        if response.status_code >= 400:
+            logger.error(
+                "Wahoo refresh rejected (%s): %s",
+                response.status_code, response.text[:400],
+            )
         if response.status_code in (400, 401):
             # The refresh token is dead (Wahoo rotates them on every use, so
             # a deploy landing between refresh and commit kills the chain).
