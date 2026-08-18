@@ -392,6 +392,41 @@ def get_connection_status(db: Session, user_id: str) -> dict:
     return status
 
 
-def disconnect(db: Session, user_id: str) -> None:
+async def disconnect(db: Session, user_id: str) -> None:
+    """Revoke at Wahoo first, then forget the token locally.
+
+    Deleting only our own row leaves the grant alive on Wahoo's side. Wahoo
+    allows ten unrevoked tokens per user per app, so each disconnect and
+    reconnect quietly burned one, and on the tenth every exchange started
+    failing with "Too many unrevoked access tokens exist for this app and
+    user". The rider sees a Reconnect button that returns them to Settings
+    having achieved nothing.
+
+    Best effort: if Wahoo cannot be reached we still drop our row, because a
+    rider clicking Disconnect must always end up disconnected. Losing a
+    revocation costs one of ten; refusing to disconnect costs their trust.
+    """
+    token = db.query(WahooToken).filter(WahooToken.user_id == user_id).first()
+    if token is not None:
+        try:
+            access = await _access_token(db, token)
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.delete(
+                    f"{WAHOO_BASE}/v1/permissions",
+                    headers={"Authorization": f"Bearer {access}"},
+                )
+            logger.info(
+                "Wahoo deauthorize for %s returned %s", user_id, resp.status_code
+            )
+        except WahooReauthRequired:
+            # The token was already dead, so there is nothing we can revoke
+            # with it. The rider has to clear this one from their Wahoo
+            # account; get_connection_status says so.
+            logger.warning(
+                "Wahoo deauthorize skipped for %s: token already rejected", user_id
+            )
+        except Exception:
+            logger.exception("Wahoo deauthorize failed for %s", user_id)
+
     db.query(WahooToken).filter(WahooToken.user_id == user_id).delete()
     db.commit()

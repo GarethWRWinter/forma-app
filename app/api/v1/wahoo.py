@@ -153,11 +153,11 @@ async def start_wahoo_backfill(
 
 
 @router.delete("")
-def disconnect_wahoo(
+async def disconnect_wahoo(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    wahoo_service.disconnect(db, current_user.id)
+    await wahoo_service.disconnect(db, current_user.id)
     return {"status": "disconnected"}
 
 
