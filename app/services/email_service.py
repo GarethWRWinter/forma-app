@@ -88,17 +88,25 @@ Forma
 async def send_waitlist_welcome(
     to: str, name: str | None = None, position: int | None = None
 ) -> bool:
-    """Letter 0. Fires on joining, and its real job is to start a conversation.
+    """Letter 0. Fires on joining, and its real job is to earn a reply.
 
-    Built on Compassionate Curiosity: acknowledge the frustration before asking
-    about it, ask one open question rather than setting homework, then make it
-    explicit that the answer changes what gets built. A rider who tells you what
-    to build is invested in what you build, which is worth more than the data.
+    Built on Compassionate Curiosity, in order and without skipping the first
+    step, which is the one that is usually skipped:
 
-    Deliberately a reply, not a form. A form is a company collecting; a reply is
-    a person listening, and "I read every one" is the whole promise. The prompts
-    under the question give permission rather than demand a checklist: one line
-    is a complete answer, and the letter says so.
+    1. Acknowledge and validate. Before asking anything, name the thing the
+       rider probably feels and has not said: that the last plan fell apart and
+       they suspect the fault was theirs. Tell them it was not. Nobody answers
+       an honest question while they are still braced to be judged.
+       "Tell me if I have that wrong" keeps it an invitation, not a diagnosis,
+       and a rider who corrects the guess has still replied.
+    2. Get curious. One open question. The prompts under it are scaffolding,
+       not homework, and the letter says out loud that one line will do.
+    3. Joint problem solving. Not "tell me what to build for you" but the two
+       of us against the same thing: plans written for a rider with no job and
+       no February. They hold knowledge this cannot be built without.
+
+    Deliberately a reply, never a form. A form is a company collecting; a reply
+    is a person listening, and reading every one is the entire promise.
     """
     greeting = f"{name.strip().split()[0]},\n\n" if name and name.strip() else ""
     place = (
@@ -114,24 +122,33 @@ The doors open on 15 September. Between now and then you'll get one letter a
 week from me, and each will have something in it you can use on that week's
 rides. Real numbers from my own testing, the marginal gains that cost nothing,
 the fuelling maths most riders get wrong. If you're not a little faster by
-launch day, I'll have failed at the easy half of this. The first one lands this
-week, and it's about the test that showed me my own body was lying to me by 11%.
+launch day, I'll have failed at the easy half of this. The first lands this
+week, and it's about the day I nearly put a bottle through Bradley Wiggins's
+front wheel.
 
-That's my end of it. Now the favour.
+That's my end of it. Now the favour, and it's a real one.
 
-Forma isn't finished, which means what it becomes is still open. I'd rather
-build the thing you actually need than the thing I assumed you needed, and I've
-been wrong about that before at the cost of most of a season.
+Here's my guess about you, and do tell me if I've got it wrong. You're not lazy
+and you're not short of information. You probably carry more data about your own
+riding than anyone had access to twenty years ago. And somewhere behind you
+there's a plan you stopped following, a block that came apart around week three,
+and a quiet suspicion that the weak link was you.
 
-So, one question, and I do read every reply.
+It wasn't. It was almost certainly a plan written for a rider with no job, no
+family and no February.
+
+That's the thing I'm actually up against, and it's why I need you. I know what
+went wrong in my own training. I can only guess at what goes wrong in yours.
+
+So, one question, and I read every reply.
 
 What frustrates you most about your training right now?
 
-Not the tidy version. The real one. If it helps, here's what I'm genuinely
-trying to understand:
+Not the tidy version. The real one. If it helps, the things I'm trying to
+understand are:
 
-  Where does it fall apart? The week that goes sideways, the session you keep
-  moving, the plan you quietly abandoned in March.
+  Where does it come apart? The week that goes sideways, the session that keeps
+  moving down the calendar, the plan you quietly stopped opening.
 
   What actually stands between you and the thing you're aiming at? Time,
   knowledge, motivation, an old injury, a life that refuses to cooperate.
@@ -140,15 +157,16 @@ trying to understand:
   hated the way it worked.
 
 One line is a complete answer. So is five paragraphs. There's no wrong thing to
-say here, and you don't have to be diplomatic about anything you've paid for.
+say here, and you needn't be diplomatic about anything you've paid for.
 
-Whatever you tell me goes into what I build between now and September. That isn't
-a polite thing to say: it is genuinely how I decide what to work on next.
+What you tell me is what gets built between now and September. That isn't a
+polite thing to say. It's genuinely how I decide what to work on next, and it's
+the reason the list is a hundred people rather than a hundred thousand.
 
 G
 
-PS. You joined a list of one hundred, not one hundred thousand. When I say I
-read every reply, it's because the maths allows it.
+PS. When I say I read every reply, it's because the maths allows it. That won't
+always be true, which is rather the point of going first.
 """,
     )
 
