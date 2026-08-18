@@ -12,6 +12,7 @@ from app.config import settings
 from app.core.exceptions import BadRequestException
 from app.core.security import create_oauth_state_token, verify_oauth_state_token
 from app.database import get_db
+from app.models.integration import WahooToken
 from app.models.user import User
 from app.services import wahoo_service
 from app.services.metrics_service import recalculate_from_date
@@ -31,6 +32,34 @@ def get_wahoo_auth_url(current_user: User = Depends(get_current_user)):
 
 
 @router.get("/callback")
+async def _catch_up_after_reauth(user_id: str) -> None:
+    """Pull whatever arrived while the connection was dead.
+
+    Wahoo webhooks are fire and forget: anything pushed while the token was
+    broken is gone, not queued. Reconnecting only fixes the future, so the gap
+    has to be closed by asking Wahoo for the recent workouts directly.
+    """
+    from app.database import SessionLocal
+    from app.models.user import User as UserModel
+
+    db = SessionLocal()
+    try:
+        user = db.get(UserModel, user_id)
+        if user is None:
+            return
+        imported = await wahoo_service.sync_workouts(db, user)
+        logger.info(
+            "Wahoo catch-up for %s recovered %d ride(s)", user_id, len(imported)
+        )
+        for ride in imported:
+            if ride.tss and ride.ride_date:
+                recalculate_from_date(db, user_id, ride.ride_date.date())
+    except Exception:
+        logger.exception("Wahoo catch-up failed for %s", user_id)
+    finally:
+        db.close()
+
+
 async def wahoo_callback(
     code: str = Query(""),
     state: str = Query(""),
@@ -48,12 +77,25 @@ async def wahoo_callback(
     if not user_id:
         return RedirectResponse(f"{frontend_url}?wahoo=error&reason=invalid_state")
 
+    # Read this BEFORE the exchange, which clears it. A rider arriving here
+    # with the flag set has been disconnected for a while, and every webhook
+    # Wahoo sent in the meantime was dropped rather than queued.
+    prior = db.query(WahooToken).filter(WahooToken.user_id == user_id).first()
+    was_broken = bool(prior and prior.needs_reauth)
+
     try:
         token = await wahoo_service.exchange_code(db, user_id, code)
         # First link: pull the rider's history in the background.
         if not token.backfill_status or token.backfill_status == "failed":
             asyncio.create_task(wahoo_service.run_backfill_background(user_id))
             logger.info("Started Wahoo backfill for user %s", user_id)
+        elif was_broken:
+            # Reconnecting after a dead token. The backfill will not run again
+            # (it already completed), so without this the rider lands back on
+            # Settings reading "connected" with a hole where their last rides
+            # should be, and no reason to suspect anything is missing.
+            asyncio.create_task(_catch_up_after_reauth(user_id))
+            logger.info("Wahoo reconnected after reauth, catching up: %s", user_id)
         return RedirectResponse(f"{frontend_url}?wahoo=connected")
     except Exception as e:
         logger.error("Wahoo callback failed: %s", e)
