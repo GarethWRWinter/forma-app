@@ -79,15 +79,30 @@ Forma
     )
 
 
-async def send_waitlist_welcome(to: str) -> bool:
-    """Letter 0 of the Founding Hundred letters. Fires on waitlist join."""
+async def send_waitlist_welcome(
+    to: str, name: str | None = None, position: int | None = None
+) -> bool:
+    """Letter 0 of the Founding Hundred letters. Fires on waitlist join.
+
+    The question here is deliberately about the problem, not about features.
+    Ask a rider which features they want and you get a faster horse. Ask what
+    their current setup gets wrong and you get the truth, in their own words,
+    which is what actually shapes the roadmap. The page has already asked them
+    which ride they are aiming at, so this letter must not ask twice: a second
+    question halves the reply rate.
+    """
+    greeting = f"{name.strip().split()[0]},\n\n" if name and name.strip() else ""
+    place = (
+        f"Your place is held. You're number {position} in the queue.\n"
+        if position
+        else "Your place is held.\n"
+    )
     return await send(
         to,
         "your place is held",
-        """Your place is held.
-
-Here's the deal I owe you now that you're on the list: one letter a week until
-the doors open. Each one contains something you can use on this week's rides.
+        f"""{greeting}{place}
+Here's the deal I owe you now. One letter a week until the doors open on 15
+September, and each one contains something you can use on this week's rides.
 Real numbers from my own testing, the marginal gains that cost nothing, the
 fuelling maths most riders get wrong. If you're not a little faster by launch
 day, I'll have failed at the easy half of this.
@@ -95,10 +110,17 @@ day, I'll have failed at the easy half of this.
 The first letter lands this week. It's about the test that showed me my own
 body was lying to me by 11%.
 
-Until then, one question, and I read every reply: what's the ride you're
-training for? A race, a sportive, a climb, or just the club run where you want
-to be the one setting the pace. Hit reply and tell me. It genuinely shapes
-what I build.
+Before that, one question, and I do read every reply.
+
+What does your current setup get wrong?
+
+Not the feature you'd like added. The thing that actually annoys you. The plan
+that assumed Tuesday evening was free when it never is. The app full of numbers
+that never once told you what to do with any of them. Or the block that fell
+apart in week three and somehow left you feeling like the problem was you.
+
+Whatever it is, hit reply and tell me in a line. I'm still building this, and
+what riders tell me at this stage is what ends up getting built.
 
 G
 
