@@ -102,6 +102,23 @@ class WahooReauthRequired(Exception):
     """The stored Wahoo credentials are dead: only a fresh OAuth fixes it."""
 
 
+async def _tell_rider_the_link_broke(db: Session, user_id: str) -> None:
+    """Say so immediately. A badge in Settings is not a notification: nobody
+    visits Settings to check whether something they rely on has quietly
+    stopped. Failing to send must never break the caller, which is only
+    trying to read a ride."""
+    try:
+        from app.services import email_service
+
+        rider = db.get(User, user_id)
+        if rider is None:
+            return
+        await email_service.send_wahoo_disconnected(rider.email, rider.full_name)
+        logger.info("Told %s their Wahoo link needs reconnecting", user_id)
+    except Exception:
+        logger.exception("Could not warn %s about the Wahoo link", user_id)
+
+
 async def _access_token(db: Session, token: WahooToken) -> str:
     """Current access token, refreshed when within 5 minutes of expiry."""
     expires_at = token.expires_at
@@ -123,12 +140,18 @@ async def _access_token(db: Session, token: WahooToken) -> str:
                 response.status_code, response.text[:400],
             )
         if response.status_code in (400, 401):
-            # The refresh token is dead (Wahoo rotates them on every use, so
-            # a deploy landing between refresh and commit kills the chain).
-            # Record it so the settings card can say "reconnect" instead of
-            # rides silently stopping, which is how it failed on 14 Aug.
+            # The refresh token is dead (Wahoo rotates them on every use, so a
+            # restart landing between their issuing one and our commit kills
+            # the chain). That window is milliseconds but it cannot be closed,
+            # so the thing to fix is the silence, not the failure: on 14 Aug
+            # this went unnoticed for four days.
+            was_ok = not token.needs_reauth
             token.needs_reauth = True
             db.commit()
+            if was_ok:
+                # Only on the transition, so a rider who has not reconnected
+                # yet is not emailed again on every dropped webhook.
+                await _tell_rider_the_link_broke(db, token.user_id)
             raise WahooReauthRequired(
                 "Wahoo rejected the refresh token; the rider must reconnect."
             )

@@ -230,6 +230,35 @@ that I read every reply, it's because the maths allows it.
     )
 
 
+async def send_wahoo_disconnected(to: str, name: str | None = None) -> bool:
+    """Sent the moment a Wahoo connection dies, not days later.
+
+    Rotating refresh tokens die occasionally and no amount of care fully
+    prevents it. What is preventable is silence: the first time this happened
+    it went unnoticed for four days, and the only signal was a badge in
+    Settings nobody had a reason to look at.
+    """
+    greeting = f"{name.strip().split()[0]},\n\n" if name and name.strip() else ""
+    return await send(
+        to,
+        "Wahoo has stopped talking to Forma",
+        f"""{greeting}Your Wahoo connection just stopped working, so your rides are not
+reaching me at the moment.
+
+Nothing is lost. Wahoo still has every ride, and I will pull back anything I
+missed the moment we are reconnected. It takes about twenty seconds:
+
+Settings, then Data in, then Reconnect on the Wahoo card.
+
+This happens occasionally because Wahoo issues a new key each time we talk and
+very rarely one goes astray. It is not something you did, and it is not
+something your head unit did.
+
+Forma
+""",
+    )
+
+
 async def send_password_reset(to: str, full_name: str | None, link: str) -> bool:
     name = _first_name(full_name, to)
     return await send(

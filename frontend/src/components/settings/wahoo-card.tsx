@@ -140,12 +140,20 @@ export function WahooCard() {
             </p>
           )}
 
+          {/* Two buttons with one explanation between them is a guess, and the
+              founder guessed wrong on his own product. Say what each does. */}
+          <p className="text-sm text-vb-text-dim">
+            You should never need this. Rides arrive on their own. It is here
+            for the day one looks missing: it fetches your last few rides
+            straight from Wahoo, and skips anything already here.
+          </p>
+
           <div className="flex gap-2">
             <Button size="sm" onClick={() => sync.mutate()} disabled={sync.isPending}>
               <RefreshCw
                 className={`h-3.5 w-3.5 ${sync.isPending ? "animate-spin" : ""}`}
               />
-              {sync.isPending ? "Syncing…" : "Sync recent"}
+              {sync.isPending ? "Fetching…" : "Fetch missing rides"}
             </Button>
             <Button
               size="sm"
