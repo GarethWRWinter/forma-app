@@ -23,6 +23,7 @@ dependencies = [
     "fastembed>=0.4.0",
     "reverse_geocoder>=1.5.1",
     "stripe>=11.0.0",
+    "sentry-sdk[fastapi]>=2.0.0",
 ]
 
 [project.optional-dependencies]

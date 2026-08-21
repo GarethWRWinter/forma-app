@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # ever sends to an existing row. Only a brand new join triggers a send.
     waitlist_autosend: bool = True
 
+    # Error reporting. Empty means off, so local dev and tests never phone
+    # home; setting SENTRY_DSN on Railway is the whole rollout.
+    sentry_dsn: str = ""
+
     # Stripe subscriptions. Dormant until the keys exist; the paywall itself
     # only bites when require_subscription flips true (launch day switch).
     stripe_secret_key: str = ""

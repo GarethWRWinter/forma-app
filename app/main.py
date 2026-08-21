@@ -7,6 +7,21 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.config import settings
+
+# Error reporting, on only when a DSN is configured. Until today the first
+# report of any production failure came from a human: a dead Wahoo token sat
+# for four days because the only symptom was a badge in Settings.
+if settings.sentry_dsn:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment="production",
+        # Errors are the point; traces are a cost decision for another day.
+        traces_sample_rate=0,
+        # Coach conversations and rider data must not ride along in events.
+        send_default_pii=False,
+    )
 from app.services.auto_sync import (
     start_auto_sync,
     stop_auto_sync,
@@ -160,3 +175,22 @@ def health_check():
     except Exception as e:
         result["database"] = f"unavailable: {e}"
     return result
+
+
+@app.get("/health/deep")
+def health_check_deep():
+    """The probe an uptime monitor should hit. Unlike /health, which always
+    returns 200 so deploys can come up before the database does, this one
+    tells the truth: a dead database is a dead product, and a monitor
+    watching a permanently green endpoint watches nothing."""
+    from fastapi.responses import JSONResponse
+    from sqlalchemy import text
+
+    from app.database import engine
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "degraded", "database": "unavailable"})
+    return {"status": "healthy", "database": "connected"}
