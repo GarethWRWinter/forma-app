@@ -161,7 +161,11 @@ async def security_headers(request, call_next):
 app.include_router(api_router, prefix="/api/v1")
 
 
-@app.get("/health")
+# GET and HEAD both: uptime monitors probe with HEAD to save bandwidth, and
+# FastAPI's @app.get does not answer it. The 405 that comes back reads as an
+# outage to the monitor, which turns the thing watching for false alarms into
+# a generator of them.
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health_check():
     """Health check — always returns 200 so Railway deploys succeed.
     DB status is informational only."""
@@ -177,7 +181,7 @@ def health_check():
     return result
 
 
-@app.get("/health/deep")
+@app.api_route("/health/deep", methods=["GET", "HEAD"])
 def health_check_deep():
     """The probe an uptime monitor should hit. Unlike /health, which always
     returns 200 so deploys can come up before the database does, this one
