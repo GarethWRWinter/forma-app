@@ -3,7 +3,7 @@
 import secrets
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, generate_uuid
@@ -48,6 +48,38 @@ class WaitlistEntry(Base):
     )
     # The answer to the one question the page asks: which ride is this for.
     goal: Mapped[str | None] = mapped_column(String(280), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+
+class WaitlistReply(Base):
+    """What a rider wrote back when Letter 0 asked what frustrates them.
+
+    These replies are the research the letters exist to gather, and they are
+    personal (riders were asked for the untidy version and some send it, drink
+    and all), so they live here in the same database as the queue itself and
+    nowhere else: not a spreadsheet, not the repo. Verbatim text plus a few
+    hand-applied theme tags, so that at any point the question "what do these
+    riders actually need" is a query rather than an archaeology dig.
+    """
+
+    __tablename__ = "waitlist_replies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    waitlist_entry_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("waitlist.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Where it arrived: today always "email"; a form or call gets its own value.
+    channel: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="email", server_default="email"
+    )
+    # The rider's words exactly as sent. Tags summarise; this is the source.
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Short kebab-case theme tags ("holiday-planning", "alcohol-moderation"),
+    # applied when logging, so themes can be counted across the hundred.
+    themes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )
