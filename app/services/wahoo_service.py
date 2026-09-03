@@ -56,6 +56,25 @@ async def exchange_code(db: Session, user_id: str, code: str) -> WahooToken:
             "grant_type": "authorization_code",
             "redirect_uri": settings.wahoo_redirect_uri,
         })
+        if response.status_code == 400 and _is_token_cap_error(response.text):
+            # The rider just did what the Reconnect button asked and it
+            # achieved nothing. Record why on their existing row so Settings
+            # can tell them the one thing that will work. A warning, not an
+            # error: this is a handled state the rider can clear themselves,
+            # and it fired three times in one morning (3 Sep 2026) as Sentry
+            # alerts for a condition the app was already explaining.
+            logger.warning(
+                "Wahoo token exchange refused for %s: token cap reached", user_id
+            )
+            prior = db.query(WahooToken).filter(WahooToken.user_id == user_id).first()
+            if prior is not None:
+                prior.needs_reauth = True
+                prior.reauth_reason = REAUTH_TOKEN_CAP
+                db.commit()
+            raise WahooTokenCapReached(
+                "Wahoo will not mint another token for this rider until they "
+                "remove the app from their Wahoo account."
+            )
         if response.status_code >= 400:
             # Wahoo's own words. Without this the log says only "400 Bad
             # Request", which is indistinguishable between a wrong client
@@ -65,19 +84,6 @@ async def exchange_code(db: Session, user_id: str, code: str) -> WahooToken:
                 "Wahoo token exchange rejected (%s): %s | redirect_uri sent: %s",
                 response.status_code, response.text[:400],
                 settings.wahoo_redirect_uri,
-            )
-        if response.status_code == 400 and _is_token_cap_error(response.text):
-            # The rider just did what the Reconnect button asked and it
-            # achieved nothing. Record why on their existing row so Settings
-            # can tell them the one thing that will work.
-            prior = db.query(WahooToken).filter(WahooToken.user_id == user_id).first()
-            if prior is not None:
-                prior.needs_reauth = True
-                prior.reauth_reason = REAUTH_TOKEN_CAP
-                db.commit()
-            raise WahooTokenCapReached(
-                "Wahoo will not mint another token for this rider until they "
-                "remove the app from their Wahoo account."
             )
         response.raise_for_status()
         data = response.json()
@@ -209,6 +215,10 @@ async def _access_token(db: Session, token: WahooToken) -> str:
             "refresh_token": token.refresh_token,
         })
         if response.status_code >= 400:
+            # Deliberately an error even for the token cap. On the reconnect
+            # path the cap is a handled state; here it means the prevention
+            # (every refresh followed by an API call) has failed somehow, and
+            # that must reach Sentry.
             logger.error(
                 "Wahoo refresh rejected (%s): %s",
                 response.status_code, response.text[:400],

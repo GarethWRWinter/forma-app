@@ -211,3 +211,35 @@ def test_cap_email_tells_the_rider_to_deauthorise_first(monkeypatch):
     assert "Authorized Apps" not in sent[1] and "Reconnect on the Wahoo card" in sent[1]
     for body in sent:
         assert "—" not in body and "–" not in body
+
+
+def test_reconnect_refusal_is_a_warning_not_an_error(db_session, monkeypatch, caplog):
+    """A rider hitting the cap on Reconnect is a handled state with its own
+    instructions in Settings. It must not page anyone."""
+    FakeWahoo(400, CAP_BODY).install(monkeypatch)
+    user = _rider(db_session)
+    _token(db_session, user, needs_reauth=True, reason="refresh_rejected")
+
+    with caplog.at_level("WARNING", logger="app.services.wahoo_service"):
+        with pytest.raises(wahoo_service.WahooTokenCapReached):
+            asyncio.run(wahoo_service.exchange_code(db_session, user.id, "auth-code"))
+
+    levels = {r.levelname for r in caplog.records if r.name == "app.services.wahoo_service"}
+    assert "WARNING" in levels
+    assert "ERROR" not in levels
+
+
+def test_cap_during_refresh_stays_an_error(db_session, monkeypatch, caplog, notified):
+    """On the refresh path the cap means our prevention failed. That one must
+    reach Sentry."""
+    FakeWahoo(400, CAP_BODY).install(monkeypatch)
+    token = _token(db_session, _rider(db_session))
+
+    with caplog.at_level("WARNING", logger="app.services.wahoo_service"):
+        with pytest.raises(wahoo_service.WahooReauthRequired):
+            asyncio.run(wahoo_service._access_token(db_session, token))
+
+    assert any(
+        r.levelname == "ERROR" and "refresh rejected" in r.getMessage()
+        for r in caplog.records
+    )

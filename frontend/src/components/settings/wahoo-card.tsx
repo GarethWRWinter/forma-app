@@ -1,17 +1,117 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, X } from "lucide-react";
 import { wahoo, type WahooStatus } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button, Arrow } from "@/components/ui/button";
 import { Kicker } from "@/components/ui/kicker";
 
+/** What Wahoo's OAuth round trip sends us back with: ?wahoo=connected, or
+    ?wahoo=error&reason=... The page used to ignore both, so a refused
+    reconnect looked like the button doing nothing, and the founder clicked it
+    three times before giving up. A customer gives up after one. */
+type ReturnNotice = {
+  tone: "ok" | "bad";
+  title: string;
+  body: React.ReactNode;
+};
+
+function readReturnNotice(search: string): ReturnNotice | null {
+  const params = new URLSearchParams(search);
+  const outcome = params.get("wahoo");
+  if (!outcome) return null;
+  if (outcome === "connected") {
+    return {
+      tone: "ok",
+      title: "Wahoo linked",
+      body: "Any rides from while it was disconnected are on their way. Give it a minute, then look in Rides.",
+    };
+  }
+  switch (params.get("reason")) {
+    case "token_cap":
+      return {
+        tone: "bad",
+        title: "Wahoo refused the reconnect",
+        body: (
+          <>
+            Forma still has ten keys in your Wahoo account, and Wahoo will not
+            issue another until they are cleared. In the Wahoo app: Settings,
+            then Authorized Apps, then Forma, then Deauthorize (or remove Forma
+            at{" "}
+            <a
+              href="https://www.wahooligan.com/profile"
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-2 hover:text-vb-text"
+            >
+              wahooligan.com/profile
+            </a>
+            ). Then reconnect below. Nothing is lost.
+          </>
+        ),
+      };
+    case "denied":
+      return {
+        tone: "bad",
+        title: "Nothing changed",
+        body: "You cancelled on Wahoo's side, so Forma has no access. Reconnect whenever you like.",
+      };
+    case "invalid_state":
+      return {
+        tone: "bad",
+        title: "That link had expired",
+        body: "Wahoo took too long to send you back. Try Reconnect once more.",
+      };
+    default:
+      return {
+        tone: "bad",
+        title: "Wahoo did not accept the connection",
+        body: (
+          <>
+            Try once more in a minute. If it keeps happening, email{" "}
+            <a
+              href="mailto:gareth@ridewithforma.com?subject=Wahoo%20connection"
+              className="underline underline-offset-2 hover:text-vb-text"
+            >
+              gareth@ridewithforma.com
+            </a>{" "}
+            and I will look at it the same day.
+          </>
+        ),
+      };
+  }
+}
+
 /** Wahoo Cloud link: ride ends, ELEMNT syncs, the ride is in Forma before
     the bike is racked. The premium door for ride data. */
 export function WahooCard() {
   const queryClient = useQueryClient();
+  const cardRef = useRef<HTMLElement>(null);
+  const [notice, setNotice] = useState<ReturnNotice | null>(null);
+
+  // Read the OAuth outcome on mount, then take it out of the URL so a reload
+  // does not repeat it. window.location rather than useSearchParams: this
+  // card is one client component among many on a page that prerenders, and
+  // a bare useSearchParams there fails the build for want of a Suspense
+  // boundary.
+  useEffect(() => {
+    const found = readReturnNotice(window.location.search);
+    if (!found) return;
+    setNotice(found);
+    // The status the card is showing may predate the round trip.
+    queryClient.invalidateQueries({ queryKey: ["wahoo-status"] });
+    queryClient.invalidateQueries({ queryKey: ["rides"] });
+    const url = new URL(window.location.href);
+    url.searchParams.delete("wahoo");
+    url.searchParams.delete("reason");
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+    // The card sits below Membership; a rider bounced back to the top of
+    // Settings otherwise sees nothing change.
+    cardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [queryClient]);
 
   const { data: status } = useQuery({
     queryKey: ["wahoo-status"],
@@ -46,7 +146,35 @@ export function WahooCard() {
   if (status && !status.configured && !status.connected) return null;
 
   return (
-    <section className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6">
+    <section
+      ref={cardRef}
+      className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6"
+    >
+      {notice && (
+        <div
+          role="status"
+          className={`mb-5 flex items-start justify-between gap-4 border p-4 ${
+            notice.tone === "bad"
+              ? "border-vb-red/40 bg-vb-surface"
+              : "border-vb-border-subtle bg-vb-sunken"
+          }`}
+        >
+          <div>
+            <Kicker flamme={notice.tone === "bad"} dot={notice.tone === "ok"}>
+              {notice.title}
+            </Kicker>
+            <p className="mt-2 text-sm leading-relaxed text-vb-text-dim">{notice.body}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            aria-label="Dismiss"
+            className="-m-1 flex-none p-1 text-vb-text-muted hover:text-vb-text"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-3">
         <h2 className="f-display text-2xl text-vb-text">Wahoo</h2>
         {status?.connected &&
