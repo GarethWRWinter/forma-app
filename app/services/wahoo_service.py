@@ -66,6 +66,19 @@ async def exchange_code(db: Session, user_id: str, code: str) -> WahooToken:
                 response.status_code, response.text[:400],
                 settings.wahoo_redirect_uri,
             )
+        if response.status_code == 400 and _is_token_cap_error(response.text):
+            # The rider just did what the Reconnect button asked and it
+            # achieved nothing. Record why on their existing row so Settings
+            # can tell them the one thing that will work.
+            prior = db.query(WahooToken).filter(WahooToken.user_id == user_id).first()
+            if prior is not None:
+                prior.needs_reauth = True
+                prior.reauth_reason = REAUTH_TOKEN_CAP
+                db.commit()
+            raise WahooTokenCapReached(
+                "Wahoo will not mint another token for this rider until they "
+                "remove the app from their Wahoo account."
+            )
         response.raise_for_status()
         data = response.json()
 
@@ -93,6 +106,7 @@ async def exchange_code(db: Session, user_id: str, code: str) -> WahooToken:
     if wahoo_user_id is not None:
         token.wahoo_user_id = wahoo_user_id
     token.needs_reauth = False
+    token.reauth_reason = None
     db.commit()
     db.refresh(token)
     return token
@@ -102,7 +116,24 @@ class WahooReauthRequired(Exception):
     """The stored Wahoo credentials are dead: only a fresh OAuth fixes it."""
 
 
-async def _tell_rider_the_link_broke(db: Session, user_id: str) -> None:
+class WahooTokenCapReached(Exception):
+    """Wahoo holds ten unrevoked tokens for this rider and will not mint an
+    eleventh, not for a refresh and not for a fresh OAuth exchange either.
+    Reconnect cannot fix this; only the rider removing the app from their
+    Wahoo account can."""
+
+
+REAUTH_REFRESH_REJECTED = "refresh_rejected"
+REAUTH_TOKEN_CAP = "token_cap"
+
+
+def _is_token_cap_error(body: str) -> bool:
+    return "unrevoked" in (body or "").lower()
+
+
+async def _tell_rider_the_link_broke(
+    db: Session, user_id: str, reason: str = REAUTH_REFRESH_REJECTED
+) -> None:
     """Say so immediately. A badge in Settings is not a notification: nobody
     visits Settings to check whether something they rely on has quietly
     stopped. Failing to send must never break the caller, which is only
@@ -113,18 +144,61 @@ async def _tell_rider_the_link_broke(db: Session, user_id: str) -> None:
         rider = db.get(User, user_id)
         if rider is None:
             return
-        await email_service.send_wahoo_disconnected(rider.email, rider.full_name)
-        logger.info("Told %s their Wahoo link needs reconnecting", user_id)
+        await email_service.send_wahoo_disconnected(
+            rider.email, rider.full_name, reason=reason
+        )
+        logger.info("Told %s their Wahoo link needs reconnecting (%s)", user_id, reason)
     except Exception:
         logger.exception("Could not warn %s about the Wahoo link", user_id)
 
 
-async def _access_token(db: Session, token: WahooToken) -> str:
-    """Current access token, refreshed when within 5 minutes of expiry."""
+def _is_fresh(token: WahooToken) -> bool:
     expires_at = token.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at > datetime.now(timezone.utc) + timedelta(minutes=5):
+    return expires_at > datetime.now(timezone.utc) + timedelta(minutes=5)
+
+
+async def _prove_use(client: httpx.AsyncClient, access_token: str) -> None:
+    """One API call with a freshly minted token, straight away.
+
+    Wahoo does not revoke the previous token when a refresh is issued. It
+    revokes it when the NEW token is first used for an API call, and a FIT
+    download from their CDN does not count as one. The webhook path used to
+    refresh and then only download, so every ride left one orphan behind,
+    and on the tenth Wahoo refused to mint at all (18 Aug, then 31 Aug 2026).
+    This call is the guarantee, whatever the caller does next. Failure is
+    logged, never raised: the token is good even if the proof did not land."""
+    try:
+        resp = await client.get(
+            f"{WAHOO_BASE}/v1/user",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if resp.status_code >= 400:
+            logger.warning("Wahoo proof-of-use call returned %s", resp.status_code)
+    except httpx.HTTPError:
+        logger.warning("Wahoo proof-of-use call failed", exc_info=True)
+
+
+async def _access_token(db: Session, token: WahooToken) -> str:
+    """Current access token, refreshed when within 5 minutes of expiry."""
+    if _is_fresh(token):
+        return token.access_token
+
+    # Serialise the refresh. A webhook and a manual sync, or Wahoo's two
+    # events for one ride, can land together and both find the token expired;
+    # without this both spend the same rotating refresh token and the loser
+    # declares the credential dead when it is not. FOR UPDATE holds the second
+    # caller until the first commits, and the re-read hands it the token the
+    # first one minted. (SQLite, in tests, ignores the lock, which is fine.)
+    (
+        db.query(WahooToken)
+        .filter(WahooToken.id == token.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if _is_fresh(token):
         return token.access_token
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -140,30 +214,44 @@ async def _access_token(db: Session, token: WahooToken) -> str:
                 response.status_code, response.text[:400],
             )
         if response.status_code in (400, 401):
-            # The refresh token is dead (Wahoo rotates them on every use, so a
-            # restart landing between their issuing one and our commit kills
-            # the chain). That window is milliseconds but it cannot be closed,
-            # so the thing to fix is the silence, not the failure: on 14 Aug
-            # this went unnoticed for four days.
+            # Two very different failures share this status. A dead refresh
+            # token (a restart between Wahoo rotating it and our commit) is
+            # repaired by Reconnect. The token cap is not: Reconnect mints
+            # too, and gets the same refusal. The rider needs different
+            # instructions for each, so record which it was.
+            reason = (
+                REAUTH_TOKEN_CAP
+                if _is_token_cap_error(response.text)
+                else REAUTH_REFRESH_REJECTED
+            )
             was_ok = not token.needs_reauth
             token.needs_reauth = True
+            token.reauth_reason = reason
             db.commit()
             if was_ok:
                 # Only on the transition, so a rider who has not reconnected
                 # yet is not emailed again on every dropped webhook.
-                await _tell_rider_the_link_broke(db, token.user_id)
+                await _tell_rider_the_link_broke(db, token.user_id, reason)
             raise WahooReauthRequired(
-                "Wahoo rejected the refresh token; the rider must reconnect."
+                f"Wahoo rejected the refresh ({reason}); the rider must act."
             )
         response.raise_for_status()
         data = response.json()
 
-    token.access_token = data["access_token"]
-    token.refresh_token = data.get("refresh_token") or token.refresh_token
-    token.expires_at = (
-        datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 7200))
-    ).replace(tzinfo=None)
-    db.commit()
+        token.access_token = data["access_token"]
+        token.refresh_token = data.get("refresh_token") or token.refresh_token
+        token.expires_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 7200))
+        ).replace(tzinfo=None)
+        # A refresh that worked is proof the credential is alive, whatever a
+        # lost race or a dropped webhook recorded earlier.
+        token.needs_reauth = False
+        token.reauth_reason = None
+        # Commit before anything else: Wahoo has already rotated the refresh
+        # token, and every millisecond before this lands is a window in which
+        # a restart leaves us holding a dead one.
+        db.commit()
+        await _prove_use(client, token.access_token)
     return token.access_token
 
 
@@ -279,13 +367,15 @@ async def backfill_history(db: Session, user: User) -> int:
     token.backfill_progress = 0
     db.commit()
 
-    access = await _access_token(db, token)
     imported = 0
     page = 1
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             while True:
+                # Re-checked every page: a large history outlives a two-hour
+                # token, and this returns the stored one unchanged until then.
+                access = await _access_token(db, token)
                 response = await client.get(
                     f"{WAHOO_BASE}/v1/workouts",
                     params={"page": page, "per_page": 50},
@@ -403,6 +493,7 @@ def get_connection_status(db: Session, user_id: str) -> dict:
         "connected": True,
         "configured": is_configured(),
         "needs_reauth": bool(token.needs_reauth),
+        "reauth_reason": token.reauth_reason,
         "wahoo_user_id": token.wahoo_user_id,
         "last_sync_at": token.last_sync_at.isoformat() if token.last_sync_at else None,
     }

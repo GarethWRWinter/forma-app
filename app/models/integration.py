@@ -50,6 +50,12 @@ class WahooToken(Base):
     needs_reauth: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default="false"
     )
+    # Why it needs reauth, because the fix differs. "refresh_rejected": the
+    # refresh token is dead and Reconnect repairs it. "token_cap": Wahoo has
+    # ten unrevoked tokens for this rider and refuses to mint another, so
+    # Reconnect fails too, and the rider must first clear the app from their
+    # Wahoo account. Telling them to Reconnect in that state is a loop.
+    reauth_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     # Historical import tracking (mirrors StravaToken)
     backfill_status: Mapped[str | None] = mapped_column(

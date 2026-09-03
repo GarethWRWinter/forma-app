@@ -1370,6 +1370,7 @@ export interface WahooStatus {
   connected: boolean;
   configured: boolean;
   needs_reauth?: boolean;
+  reauth_reason?: "refresh_rejected" | "token_cap" | null;
   wahoo_user_id?: number | null;
   last_sync_at?: string | null;
   backfill?: {

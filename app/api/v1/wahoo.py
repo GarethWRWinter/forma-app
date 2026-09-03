@@ -97,6 +97,12 @@ async def wahoo_callback(
             asyncio.create_task(_catch_up_after_reauth(user_id))
             logger.info("Wahoo reconnected after reauth, catching up: %s", user_id)
         return RedirectResponse(f"{frontend_url}?wahoo=connected")
+    except wahoo_service.WahooTokenCapReached:
+        # Expected, not an outage: the rider's Wahoo account is full of our
+        # tokens and Settings now tells them how to clear it. A warning keeps
+        # it out of the Sentry error stream that woke the founder at 17:09.
+        logger.warning("Wahoo callback refused for %s: token cap reached", user_id)
+        return RedirectResponse(f"{frontend_url}?wahoo=error&reason=token_cap")
     except Exception as e:
         logger.error("Wahoo callback failed: %s", e)
         return RedirectResponse(f"{frontend_url}?wahoo=error&reason=exchange_failed")

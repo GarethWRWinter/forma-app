@@ -59,14 +59,46 @@ export function WahooCard() {
 
       {status?.connected && status.needs_reauth ? (
         <div className="mt-4 space-y-3">
-          <div className="border border-vb-red/40 bg-vb-surface p-4">
-            <p className="text-sm text-vb-text-dim">
-              Wahoo stopped accepting our connection, which happens from time
-              to time with their tokens, so new rides have not been arriving.
-              Reconnect and everything picks up where it left off, including
-              the rides you did in the meantime.
-            </p>
-          </div>
+          {status.reauth_reason === "token_cap" ? (
+            /* Wahoo allows an app ten keys per rider. Reconnect asks for an
+               eleventh and is refused, so the rider has to clear the old ones
+               first; sending them straight to Reconnect is a loop. */
+            <div className="border border-vb-red/40 bg-vb-surface p-4 space-y-3">
+              <p className="text-sm text-vb-text-dim">
+                Wahoo allows an app ten keys per rider and Forma has used them
+                all, which is our fault, not yours. Reconnect on its own
+                won&apos;t clear it, so one step first:
+              </p>
+              <ol className="list-decimal space-y-2 pl-5 text-sm text-vb-text-dim">
+                <li>
+                  In the Wahoo app: Settings, then Authorized Apps, then Forma,
+                  then Deauthorize. Or remove Forma at{" "}
+                  <a
+                    href="https://www.wahooligan.com/profile"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline underline-offset-2 hover:text-vb-text"
+                  >
+                    wahooligan.com/profile
+                  </a>
+                  .
+                </li>
+                <li>
+                  Then reconnect below. Every ride you did in the meantime comes
+                  back with it.
+                </li>
+              </ol>
+            </div>
+          ) : (
+            <div className="border border-vb-red/40 bg-vb-surface p-4">
+              <p className="text-sm text-vb-text-dim">
+                Wahoo stopped accepting our connection, which happens from time
+                to time with their tokens, so new rides have not been arriving.
+                Reconnect and everything picks up where it left off, including
+                the rides you did in the meantime.
+              </p>
+            </div>
+          )}
           <Button size="sm" onClick={connect}>
             Reconnect Wahoo
           </Button>

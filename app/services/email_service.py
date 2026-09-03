@@ -230,15 +230,44 @@ that I read every reply, it's because the maths allows it.
     )
 
 
-async def send_wahoo_disconnected(to: str, name: str | None = None) -> bool:
+async def send_wahoo_disconnected(
+    to: str, name: str | None = None, reason: str | None = None
+) -> bool:
     """Sent the moment a Wahoo connection dies, not days later.
 
     Rotating refresh tokens die occasionally and no amount of care fully
     prevents it. What is preventable is silence: the first time this happened
     it went unnoticed for four days, and the only signal was a badge in
     Settings nobody had a reason to look at.
+
+    Two variants, because the fix differs. A dead refresh token is repaired by
+    Reconnect. The token cap ("token_cap") is not: Wahoo allows an app ten
+    keys per rider, Reconnect would ask for an eleventh and be refused, and
+    the only way through is the rider removing Forma from their Wahoo account
+    first. Sending them to Reconnect in that state is a loop with no exit.
     """
     greeting = f"{name.strip().split()[0]},\n\n" if name and name.strip() else ""
+    if reason == "token_cap":
+        return await send(
+            to,
+            "Wahoo has stopped talking to Forma",
+            f"""{greeting}Your Wahoo connection has stopped working, and this time Reconnect on its
+own won't fix it. Wahoo allows an app ten keys per rider and Forma has used
+them all, which is a fault on my side, not yours.
+
+Clearing it takes about a minute, in this order:
+
+1. In the Wahoo app: Settings, then Authorized Apps, then Forma, then
+   Deauthorize. (Or sign in at wahooligan.com/profile and remove Forma there.)
+
+2. Back in Forma: Settings, then Data in, then Reconnect on the Wahoo card.
+
+Nothing is lost. Wahoo still has every ride, and I'll pull back anything I
+missed the moment we're reconnected.
+
+Forma
+""",
+        )
     return await send(
         to,
         "Wahoo has stopped talking to Forma",
