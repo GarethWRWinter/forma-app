@@ -54,3 +54,4 @@ mockups/
 
 # Personal rider correspondence: names and honest replies, never in git
 letters/
+.vercel
