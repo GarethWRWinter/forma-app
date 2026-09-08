@@ -423,12 +423,19 @@ export default function DashboardPage() {
           has already been written and is waiting on a yes. Silence is the
           correct state most days, so nothing pending means no card, no
           placeholder, no empty state. */}
+      {/* While the rider is still setting up, the setup IS the one thing:
+          the onboarding card above carries it, and a weekly check-in about
+          "no rides this week" to someone with no data door is noise. Once
+          onboarding is done but the plan does not exist yet, the next step
+          outranks initiatives. Proposals always win: they are waiting on a yes. */}
       {pendingProposal ? (
         <PlanProposalCard proposal={pendingProposal} coachName={coach} />
+      ) : setupUnfinished ? null : activation &&
+        activation.stage_index < 4 &&
+        activation.next_action ? (
+        <ActivationCard activation={activation} coachName={coach} />
       ) : initiative ? (
         <CoachInitiativeCard initiative={initiative} coachName={coach} />
-      ) : activation && activation.stage !== "established" && activation.next_action ? (
-        <ActivationCard activation={activation} coachName={coach} />
       ) : null}
 
       {/* ============ GOAL BAND (carbon) ============ */}
