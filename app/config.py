@@ -68,7 +68,10 @@ class Settings(BaseSettings):
     require_subscription: bool = False
 
     # Closed beta: when true, registration needs a valid invite code.
-    require_invite: bool = False
+    # Default CLOSED. On 2 Sep 2026 a waitlist rider found the sign-up page
+    # while this was False and the Railway variable had never been set. The
+    # door now stays shut unless someone deliberately opens it.
+    require_invite: bool = True
 
     # OpenWeatherMap One Call 3.0 (ride conditions + briefing forecasts).
     openweather_api_key: str = ""
