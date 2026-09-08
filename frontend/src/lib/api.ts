@@ -1548,8 +1548,17 @@ async function readInitiative(
   return res.id ? res : null;
 }
 
+export interface Activation {
+  stage: "account" | "goal" | "data" | "first_ride" | "plan" | "first_week" | "established";
+  stage_index: number;
+  next_action: { title: string; instruction: string; link: string } | null;
+  quiet_days: number;
+  last_activity: string;
+}
+
 export const coachInsights = {
   getNudge: () => request<CoachNudge>("/coach/nudge"),
+  getActivation: () => request<Activation>("/coach/activation"),
   getBriefing: () => request<CoachBriefing>("/coach/briefing"),
 
   getRideDebrief: (rideId: string, force = false) =>

@@ -70,6 +70,14 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Strava auto-sync disabled (interval=0)")
 
+    if settings.outreach_enabled:
+        from app.services.outreach_service import start_outreach
+
+        start_outreach(settings.outreach_interval)
+        logger.info("Outreach engine enabled (every %ds)", settings.outreach_interval)
+    else:
+        logger.info("Outreach engine disabled")
+
     # Resume any Strava backfills that were interrupted by a previous restart.
     # Runs in background so we don't block startup.
     asyncio.create_task(resume_incomplete_backfills())

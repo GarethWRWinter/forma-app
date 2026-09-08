@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     # door now stays shut unless someone deliberately opens it.
     require_invite: bool = True
 
+    # The coach writing first. Hourly check; emails at 1, 3 and 7 quiet days
+    # per activation stage, each once. Set OUTREACH_ENABLED=false to silence.
+    outreach_enabled: bool = True
+    outreach_interval: int = 3600
+
     # OpenWeatherMap One Call 3.0 (ride conditions + briefing forecasts).
     openweather_api_key: str = ""
 

@@ -102,6 +102,9 @@ TASKS: dict[str, TaskConfig] = {
     "memory_reading": TaskConfig(HAIKU, 220),  # Brain page narration
     "ride_story": TaskConfig(HAIKU, 160),      # ride title + one-line story
     "chat_title": TaskConfig(HAIKU, 40),       # auto-name a conversation thread
+    # The coach writing first to a rider who went quiet. Sonnet: this email is
+    # the retention product, and it has to sound like the coach they met.
+    "outreach_email": TaskConfig(SONNET, 700),
 }
 
 # USD per million tokens, matched by model-id prefix. Cache reads bill at

@@ -140,6 +140,18 @@ def get_daily_nudge(
     return generate_daily_nudge(db, current_user)
 
 
+@router.get("/activation")
+def get_activation(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Where the rider is on the road from account to habit, and the one next
+    step. The dashboard shows it; the coach already knows it."""
+    from app.services.activation_service import activation_state
+
+    return activation_state(db, current_user)
+
+
 @router.get("/ride-debrief/{ride_id}", response_model=DebriefResponse)
 def get_ride_debrief(
     ride_id: str,

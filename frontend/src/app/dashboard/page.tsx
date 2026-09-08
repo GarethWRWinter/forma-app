@@ -10,6 +10,7 @@ import { formatDuration, formatDate, cn, localISODate } from "@/lib/utils";
 import { RiderProfileRadar } from "@/components/charts/rider-profile-radar";
 import { BriefingCard } from "@/components/dashboard/briefing-card";
 import { CoachInvite } from "@/components/dashboard/coach-invite";
+import { ActivationCard } from "@/components/dashboard/activation-card";
 import { Kicker } from "@/components/ui/kicker";
 import { SectionHeader } from "@/components/ui/section-header";
 import { DataTile } from "@/components/ui/data-tile";
@@ -203,6 +204,11 @@ export default function DashboardPage() {
     queryKey: ["daily-inspiration"],
     queryFn: () => inspiration.today(),
     staleTime: 60 * 60 * 1000, // it only changes at midnight
+  });
+
+  const { data: activation } = useQuery({
+    queryKey: ["coach-activation"],
+    queryFn: () => coachInsights.getActivation(),
   });
 
   const { data: nudge, isPending: nudgePending } = useQuery({
@@ -421,6 +427,8 @@ export default function DashboardPage() {
         <PlanProposalCard proposal={pendingProposal} coachName={coach} />
       ) : initiative ? (
         <CoachInitiativeCard initiative={initiative} coachName={coach} />
+      ) : activation && activation.stage !== "established" && activation.next_action ? (
+        <ActivationCard activation={activation} coachName={coach} />
       ) : null}
 
       {/* ============ GOAL BAND (carbon) ============ */}

@@ -31,6 +31,7 @@ from app.services.metrics_service import (
     get_weekly_training_load,
 )
 from app.services.onboarding_service import get_goals, get_onboarding_response
+from app.services.activation_service import activation_state
 from app.services.plan_service import get_plans, get_workouts_by_date
 from app.services.ride_service import get_rides
 from app.services.zone_service import get_zones
@@ -106,6 +107,36 @@ When a rider has recently completed a goal event, proactively offer to debrief:
 # Forma's full education (app/core/coach_skills.py) + the app playbook.
 COACH_SYSTEM_PROMPT = compose_education() + "\n\n" + COACH_APP_PLAYBOOK
 
+ACTIVATION_PLAYBOOK = """## The rider's next step (activation)
+
+The rider context carries `activation`: their stage on the road from account to
+habit (goal, data, first_ride, plan, first_week, established), the single
+`next_action` with exact navigation, and how many days they have been quiet.
+
+Rules:
+- While the stage is below `plan`, every reply ends with that one next step,
+  in plain words, with the exact navigation from `next_action.instruction`.
+  Never end with "next time we talk" or "when you're ready". Say what to do.
+- At stage `plan`, offer to build the plan now, in this conversation, and do
+  it when they say yes.
+- One step at a time. Never list the whole road.
+- If the rider asks how the product works, answer from the Product Knowledge
+  section below. If it is not there, say plainly that you don't know and give
+  gareth@ridewithforma.com. Never invent a feature, a screen or a button.
+"""
+
+
+def _product_knowledge() -> str:
+    """The product document, read once. Lives beside the code so it changes
+    with the app, not with anyone's memory of the app."""
+    from pathlib import Path
+
+    try:
+        text = (Path(__file__).resolve().parents[1] / "core" / "product_knowledge.md").read_text()
+    except OSError:
+        return ""
+    return "## Product Knowledge (Forma, as it is today)\n\n" + text
+
 
 def _system_blocks(user: User, dynamic: str, volatile: str | None = None) -> list:
     """System as [cached personalised education] + [per-turn dynamic context].
@@ -129,7 +160,8 @@ def _system_blocks(user: User, dynamic: str, volatile: str | None = None) -> lis
     blocks = [
         {
             "type": "text",
-            "text": identity + "\n\n" + education + "\n\n" + COACH_APP_PLAYBOOK,
+            "text": identity + "\n\n" + education + "\n\n" + COACH_APP_PLAYBOOK
+            + "\n\n" + ACTIVATION_PLAYBOOK + "\n\n" + _product_knowledge(),
             "cache_control": {"type": "ephemeral"},
         },
         # The rider context is stable WITHIN a conversation (fitness, plan,
@@ -277,6 +309,12 @@ def _build_rider_context(
             context["onboarding"] = ob
     except Exception:
         pass
+
+    # Where they are on the road from account to habit, and the one next step.
+    try:
+        context["activation"] = activation_state(db, user)
+    except Exception:
+        logger.exception("Activation state failed for %s", user.id)
 
     # ── 3-5. Fitness + Power Profile + Profile Scores ──
     # Combined to avoid calling the expensive get_all_time_power_profile() twice.
@@ -1590,6 +1628,11 @@ async def stream_response(
         # Agentic loop — keeps going while Claude wants to call tools
         max_iterations = 5
         for _ in range(max_iterations):
+            # After a tool round the model starts a fresh sentence. Without a
+            # break it glues on: "waiting for time to appear.Filed." (2 Sep).
+            if _needs_round_break(full_response):
+                full_response += "\n\n"
+                yield f'data: {json.dumps({"type": "text", "content": chr(10) * 2})}\n\n'
             with forma_core.stream(
                 user_id=user.id,
                 task="chat",
@@ -1734,6 +1777,24 @@ _SENTENCE_END = re.compile(r'[.!?]\s+|[.!?]$')
 _DEFAULT_TITLE_RE = re.compile(r"^Chat( - |$)")
 
 
+def _needs_round_break(so_far: str) -> bool:
+    return bool(so_far) and not so_far.endswith(("\n", " "))
+
+
+def _looks_like_title(text: str) -> bool:
+    """A sidebar label, not a sentence: short, one line, no first person,
+    not ending like prose."""
+    if not text or "\n" in text:
+        return False
+    words = text.split()
+    if len(words) > 7 or len(text) > 60:
+        return False
+    lowered = text.lower()
+    if lowered.startswith(("i ", "i'", "i’", "sorry", "unfortunately")):
+        return False
+    return not text.rstrip().endswith((".", "!", "?", ":"))
+
+
 def maybe_autotitle_session(db: Session, user: User, session: ChatSession) -> None:
     """Name the thread from its content — only while it wears the default name.
 
@@ -1760,9 +1821,14 @@ def maybe_autotitle_session(db: Session, user: User, session: ChatSession) -> No
             messages=[{"role": "user", "content": sample}],
         )
         title = response_text(resp).strip().strip('"').strip()
-        if title:
-            session.title = title[:255]
+        if _looks_like_title(title):
+            session.title = title[:80]
             db.commit()
+        else:
+            # The model answered the conversation instead of naming it (2 Sep
+            # 2026: a rider's sidebar read "I can't actually save goals..."
+            # moments after the coach had). Keep the default name.
+            logger.warning("Auto-title rejected for session %s: %r", session.id, title[:80])
     except Exception:
         logger.exception("Auto-title failed for session %s", session.id)
 
