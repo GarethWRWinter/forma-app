@@ -107,6 +107,31 @@ When a rider has recently completed a goal event, proactively offer to debrief:
 # Forma's full education (app/core/coach_skills.py) + the app playbook.
 COACH_SYSTEM_PROMPT = compose_education() + "\n\n" + COACH_APP_PLAYBOOK
 
+EVIDENCE_PLAYBOOK = """## Evidence beats memory
+
+Long-term memory lines carry their age. A memory about where the rider is,
+what they are doing this week or how they are sleeping is a note from that
+date, not a fact about today. The recent rides (dates, locations, intensity)
+are the evidence about today.
+- If a memory says one thing and the last week's rides say another, the rides
+  win. Do not state the memory as current.
+- If you are unsure whether a situation still holds, ask in one short
+  question before building advice on it. Never assume.
+
+## Reading compliance
+
+`compliance` is three-way and counts every ride wherever it was done: on the
+road, on the turbo, uploaded or synced.
+- as_prescribed: matched to the planned session and close to it.
+- deviated: matched, but a different type, intensity or length. `how` says
+  exactly what differed. Call it out plainly, with the numbers.
+- off_plan: ridden on a day with nothing planned, or as an extra ride.
+  `on_rest_day` means it landed on a prescribed rest day. Name it.
+- missed: a planned session with no ride against it.
+Never say the rider has done nothing when off_plan rides exist. Say what they
+did instead, and what it cost the plan.
+"""
+
 ACTIVATION_PLAYBOOK = """## The rider's next step (activation)
 
 The rider context carries `activation`: their stage on the road from account to
@@ -161,7 +186,7 @@ def _system_blocks(user: User, dynamic: str, volatile: str | None = None) -> lis
         {
             "type": "text",
             "text": identity + "\n\n" + education + "\n\n" + COACH_APP_PLAYBOOK
-            + "\n\n" + ACTIVATION_PLAYBOOK + "\n\n" + _product_knowledge(),
+            + "\n\n" + EVIDENCE_PLAYBOOK + "\n\n" + ACTIVATION_PLAYBOOK + "\n\n" + _product_knowledge(),
             "cache_control": {"type": "ephemeral"},
         },
         # The rider context is stable WITHIN a conversation (fitness, plan,
@@ -447,49 +472,15 @@ def _build_rider_context(
     except Exception:
         pass
 
-    # ── 9. Training Compliance ──
+    # ── 9. Training Compliance (active plan only, three-way) ──
     try:
-        past_workouts = (
-            db.query(Workout)
-            .filter(
-                Workout.user_id == user.id,
-                Workout.scheduled_date <= today,
-            )
-            .all()
-        )
-        if past_workouts:
-            total = len(past_workouts)
-            status_counts = Counter(str(w.status) for w in past_workouts)
-            completed = status_counts.get(WorkoutStatus.completed, 0) + status_counts.get("completed", 0)
-            skipped = status_counts.get(WorkoutStatus.skipped, 0) + status_counts.get("skipped", 0)
+        from app.services.plan_compliance_service import compliance_summary
 
-            compliance_rate = round(completed / total * 100) if total > 0 else 0
-
-            # Per-type compliance
-            type_stats: dict = {}
-            for w in past_workouts:
-                wtype = str(w.workout_type)
-                if wtype not in type_stats:
-                    type_stats[wtype] = {"total": 0, "completed": 0}
-                type_stats[wtype]["total"] += 1
-                if str(w.status) in ("completed", "WorkoutStatus.completed"):
-                    type_stats[wtype]["completed"] += 1
-
-            type_compliance = {
-                t: round(s["completed"] / s["total"] * 100)
-                for t, s in type_stats.items()
-                if s["total"] >= 2  # Only types with enough data
-            }
-
-            context["compliance"] = {
-                "overall_pct": compliance_rate,
-                "completed": completed,
-                "skipped": skipped,
-                "total_planned": total,
-                "by_type": type_compliance,
-            }
+        summary = compliance_summary(db, user.id, today - timedelta(days=28), today)
+        if summary:
+            context["compliance"] = {**summary, "window_note": "last 28 days of the active plan"}
     except Exception:
-        pass
+        logger.exception("Compliance summary failed for %s", user.id)
 
     # ── 10. Training Plan + Current Phase ──
     try:
@@ -596,10 +587,22 @@ def _build_rider_context(
                         "elevation_m": round(r.elevation_gain_meters) if r.elevation_gain_meters else None,
                         "avg_hr": r.average_hr,
                         "workout_id": r.workout_id,
+                        "location": r.location_name,
+                        "plan": ("matched to a planned session" if r.workout_id else "off-plan"),
                     }.items() if v is not None
                 }
                 for r in rides
             ]
+            # Where the rider has actually been riding. Memory can be weeks
+            # old; the ride files are from this week. When they disagree,
+            # this wins (17 Sep 2026: six-week-old Tallinn notes read as now).
+            places = Counter(r.location_name for r in rides[:10] if r.location_name)
+            if places:
+                place, n = places.most_common(1)[0]
+                context["riding_from"] = {
+                    "most_recent_rides": f"{n} of the last {sum(places.values())} located rides from {place}",
+                    "latest_ride": str(rides[0].ride_date.date()) if rides else None,
+                }
     except Exception:
         pass
 

@@ -172,8 +172,33 @@ def _days_since(value) -> int | None:
 # ── The gate ─────────────────────────────────────────────────────────────────
 
 
+# A thought the coach raised and the rider never answered goes stale. On 17 Sep
+# 2026 the dashboard still carried "Training stopped at the end of May" from
+# 17 Aug, a month and 38 rides later. Past this age it expires on read.
+INITIATIVE_TTL_DAYS = 7
+
+
 def pending_initiative(db: Session, user_id: str) -> CoachInitiative | None:
-    """The one thought the coach is currently holding, if there is one."""
+    """The one thought the coach is currently holding, if there is one.
+
+    Expires anything older than INITIATIVE_TTL_DAYS on the way past, so a
+    stale claim is never shown, and the coach is free to raise something
+    that is true today."""
+    cutoff = datetime.utcnow() - timedelta(days=INITIATIVE_TTL_DAYS)
+    stale = (
+        db.query(CoachInitiative)
+        .filter(
+            CoachInitiative.user_id == user_id,
+            CoachInitiative.status == "pending",
+            CoachInitiative.created_at < cutoff,
+        )
+        .all()
+    )
+    if stale:
+        for i in stale:
+            i.status = "expired"
+            i.decided_at = datetime.utcnow()
+        db.commit()
     return (
         db.query(CoachInitiative)
         .filter(

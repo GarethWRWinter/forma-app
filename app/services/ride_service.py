@@ -18,6 +18,10 @@ from app.models.ride import Ride, RideData, RideSource
 from app.models.training import Workout, WorkoutStatus
 from app.models.user import User
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def parse_fit_file(file_bytes: bytes) -> dict:
     """
@@ -457,6 +461,18 @@ def create_ride_from_recording(
 
     db.commit()
     db.refresh(ride)
+
+    # Every door leads here (Wahoo, upload, archive), so this is the one
+    # place a ride meets the plan. Until 17 Sep 2026 only the Strava path
+    # matched rides to sessions, and a rider on Wahoo read as never training.
+    if not workout_id:
+        try:
+            from app.services.plan_compliance_service import link_ride
+
+            link_ride(db, ride)
+        except Exception:
+            db.rollback()
+            logger.exception("Plan matching failed for ride %s", ride.id)
     return ride
 
 

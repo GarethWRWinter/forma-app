@@ -283,10 +283,17 @@ def get_context(
 
     now = datetime.utcnow()
 
+    def _age_days(e: MemoryEntity) -> float:
+        return max(1.0, (now - (e.updated_at or e.created_at)).total_seconds() / 86400)
+
     def base_score(e: MemoryEntity) -> float:
-        age_days = max(1.0, (now - (e.updated_at or e.created_at)).total_seconds() / 86400)
+        age_days = _age_days(e)
         type_boost = {"goal": 3, "gap": 2.5, "procedural": 2.5, "value": 2, "habit": 1.5}.get(e.type, 1)
-        return (degree.get(e.id, 0) + 1) * type_boost / (age_days ** 0.4)
+        # A life event or a health signal is about a moment; it should fade
+        # far faster than a goal or a value. Six-week-old "two-week stay in
+        # Tallinn" notes were still top-fifteen on 17 Sep 2026.
+        decay = 1.2 if e.type in TIME_BOUND_TYPES else 0.4
+        return (degree.get(e.id, 0) + 1) * type_boost / (age_days ** decay)
 
     semantic: dict[str, float] = {}
     if query:
@@ -318,8 +325,32 @@ def get_context(
     for e in top:
         flag = " [HIDDEN — use for judgement, never mention]" if e.hidden_at else ""
         kind = f"/{e.kind}" if e.kind else ""
-        lines.append(f"- ({e.type}{kind}) {e.label}{': ' + e.summary if e.summary else ''}{flag}")
+        age = _age_label(_age_days(e))
+        past = (
+            " [from that date; treat as past unless the rider says otherwise]"
+            if e.type in TIME_BOUND_TYPES and _age_days(e) > PAST_AFTER_DAYS
+            else ""
+        )
+        lines.append(
+            f"- ({e.type}{kind}, {age}) {e.label}{': ' + e.summary if e.summary else ''}{past}{flag}"
+        )
     return "\n".join(lines)
+
+
+# Memories about a moment rather than the rider: they date quickly.
+TIME_BOUND_TYPES = {"life_event", "health_signal", "insight"}
+PAST_AFTER_DAYS = 14
+
+
+def _age_label(days: float) -> str:
+    d = int(days)
+    if d <= 1:
+        return "today"
+    if d < 7:
+        return f"{d} days ago"
+    if d < 60:
+        return f"{d // 7} weeks ago"
+    return f"{d // 30} months ago"
 
 
 def embed_missing_entities(db: Session, batch: int = 64) -> int:

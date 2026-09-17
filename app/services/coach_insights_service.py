@@ -130,6 +130,21 @@ def _build_nudge_context(
     )
     completed = sum(1 for w in week_workouts if w.status == WorkoutStatus.completed)
     total = len(week_workouts)
+    # The three-way read, so "zero sessions done" can never be said to a
+    # rider who rode four times off-plan (17 Sep 2026).
+    week_read = None
+    try:
+        from app.services.plan_compliance_service import compliance_summary
+
+        cs = compliance_summary(db, user.id, week_start, today, include_rides=False)
+        if cs:
+            week_read = (
+                f"{cs['as_prescribed']} as prescribed, {cs['deviated']} deviated, "
+                f"{cs['off_plan_rides']} off-plan ride(s), {cs['missed']} missed, "
+                f"of {cs['planned_sessions']} planned so far this week"
+            )
+    except Exception:
+        logger.exception("Week compliance read failed for %s", user.id)
 
     context = {
         "rider_name": rider_name,
@@ -142,7 +157,7 @@ def _build_nudge_context(
             "ramp_rate": fitness.get("ramp_rate"),
         },
         "ftp": user.ftp,
-        "this_week_compliance": f"{completed}/{total} sessions completed",
+        "this_week_compliance": week_read or f"{completed}/{total} sessions completed",
     }
 
     if today_workout:
