@@ -381,7 +381,14 @@ Sequenced by dependency and user impact. The architecture below uses `forma-core
 
 ### Epic G — Growth & Billing (pre-public-launch)
 
-**Status:** pre-launch blocker. *(PRD to follow.)*
+**Status (17 Sep 2026):** pre-launch blocker, and the only one left on the
+product side that the founder must unblock personally. Stripe integration is
+built and dormant (checkout, portal, webhook, status; three env vars wake it).
+Blocked on: company formation (FORMA CYCLING LTD, Tide) then a Stripe account
+under it. Growth side shipped: waitlist with derived queue + referrals, Letter 0
+automation, research replies store, activation state, outreach engine (off until
+legal copy), shared invite code mechanism. Churn detection = outreach thresholds
+at 1/3/7 quiet days per activation stage.
 
 **Outcome:** Stripe subscriptions, pricing page, trial, usage analytics with per-user AI cost tracking, referral mechanism, churn detection with Forma re-engagement.
 

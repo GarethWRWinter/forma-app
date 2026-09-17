@@ -123,12 +123,37 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
 
 ## Immediate checklist (order matters)
 
-1. [ ] Deploy rebuilt landing page (this session)
-2. [ ] Wire Letter 0 to fire on waitlist join (Postmark; manual for now is fine)
+1. [x] Deploy rebuilt landing page (live at ridewithforma.com; media kit at /garethwinter/)
+2. [x] Letter 0 fires on waitlist join (Postmark, from gareth@; SPF/DKIM/DMARC live 3 Sep)
 3. [x] Founding price DECIDED (11 Aug 2026): £14.99/mo locked for as long as
        they stay; £19.99 list. Stripe: create the £14.99 recurring price and
        point STRIPE_PRICE_ID at it for the founding cohort.
-4. [ ] Gareth: Stripe account; then checkout goes live (integration already built)
-5. [ ] Legal pages + ICO + monitoring (launch step 4, build next)
+4. [ ] **Gareth: company (FORMA CYCLING LTD via Tide), then Stripe account under it;
+       then checkout goes live (integration already built, three env vars).**
+       THE BLOCKER, 17 Sep 2026: nothing can be sold until this exists.
+5. [ ] Legal pages (privacy incl. "founder reviews conversations", "coach emails you";
+       terms) + ICO registration. Monitoring is done (Sentry + UptimeRobot).
 6. [ ] Announcement post (the spine story) on IG + LinkedIn + blog
-7. [ ] At 100 signals: cohort 1 invites go out
+7. [ ] At 100 signals: cohort 1 invites go out. Mechanism decided 8 Sep: ONE shared
+       word (e.g. HUNDRED), capped at 100 uses, pre-filled by link
+       (`scripts/invite_codes.py mint HUNDRED --max-uses 100`).
+
+## Status, 17 September 2026
+
+The public date (15 September) has passed without doors opening. That is correct:
+Phase 1 is gated on Stripe and legal, not the calendar, and neither exists yet.
+Say so plainly in the next letter rather than going quiet.
+
+Signals: 29 on the list (target 200 before invite one; ~+3/week without the
+announcement post running). 2 replies to Letter 0 logged as research
+(`waitlist_replies`). 1 rider inside early (Nathan, #25, kept as beta tester).
+
+Product readiness shipped since 1 Sep: registration invite-only and fail-closed;
+Wahoo token cap fixed at the mechanism (proof-of-use after refresh) with rider
+self-service on refusal; coach activation state + next-step card; outreach engine
+(built, reviewed, switched OFF until legal copy allows emailing); three-way plan
+compliance across every ride source; dated memory with evidence-beats-memory rule;
+stale initiatives expire; product-knowledge in the coach's context.
+
+Not yet built: legal pages, invite console (script suffices), Stripe wiring
+(waiting on account), announcement post.
