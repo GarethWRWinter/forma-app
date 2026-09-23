@@ -245,7 +245,7 @@ function GoalsPageInner() {
             Goals.
           </h1>
           <p className="mt-3 max-w-md text-sm text-vb-text-dim">
-            The target attracts the arrow. Craft the goal you actually want
+            Craft the goal you actually want
             with Forma, then the season builds itself backwards from it.
           </p>
         </div>

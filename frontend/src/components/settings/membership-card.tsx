@@ -47,7 +47,7 @@ export function MembershipCard() {
             <div className="border border-vb-red/40 bg-vb-surface p-4">
               <p className="text-sm text-vb-text-dim">
                 Your last payment didn&apos;t go through. Update the card and
-                nothing is interrupted, Stripe retries for a few days.
+                nothing is interrupted. Stripe retries for a few days.
               </p>
             </div>
           )}
@@ -65,7 +65,7 @@ export function MembershipCard() {
           <p className="text-sm leading-relaxed text-vb-text-dim">
             Everything, without limits: the coach and its memory, the plan
             that bends around your life, the pre-ride briefings, the words
-            in your ear on the turbo. A human coach runs £150 a month
+            in your ear on the turbo. A human coach runs about £150 a month
             before the bike fit. Forma is £19.99. The founding hundred
             ride at £14.99, locked for as long as you stay.
           </p>

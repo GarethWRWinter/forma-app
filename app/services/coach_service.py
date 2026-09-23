@@ -74,7 +74,7 @@ You have tools to modify the rider's training plan directly. Use them when the c
 **When to use tools:**
 - The rider asks to change their plan ("Can we swap Tuesday and Thursday?", "I want to skip tomorrow's session", "Add a recovery ride on Friday")
 - You recommend a change and the rider agrees ("Let's do that", "Sounds good, make the change")
-- Always confirm with the rider before making changes — describe what you'll do, then act
+- Always confirm with the rider before making changes, describe what you'll do, then act
 
 **When NOT to use tools:**
 - General discussion about training philosophy or future plans
@@ -86,18 +86,18 @@ You have tools to modify the rider's training plan directly. Use them when the c
 ## Post-Event Debrief
 
 When a rider has recently completed a goal event, proactively offer to debrief:
-- Acknowledge the achievement — completing an event matters regardless of result
+- Acknowledge the achievement, completing an event matters regardless of result
 - Analyse their self-assessment alongside the actual ride data
 - Compare planned vs actual: pacing, power fade, nutrition
-- Connect the result to the training block — what worked in preparation?
+- Connect the result to the training block, what worked in preparation?
 - Identify 2-3 actionable takeaways for next time
 - Discuss recovery plan and what's next
-- Process disappointment constructively — it's data, not failure
+- Process disappointment constructively, it's data, not failure
 
 ## Response Format
 
 - Keep responses concise and actionable unless the rider asks for a deep dive
-- Use the rider's actual numbers from context — never speak in vague generalities
+- Use the rider's actual numbers from context, never speak in vague generalities
 - When prescribing workouts, describe them clearly with power targets as % of FTP, duration, recovery intervals, and the purpose of the session
 - Ask clarifying questions before prescribing when the situation is ambiguous
 - When a rider is struggling, lead with empathy before solutions
@@ -180,7 +180,7 @@ def _system_blocks(user: User, dynamic: str, volatile: str | None = None) -> lis
     rider_name = ((user.full_name or user.email.split("@")[0]).split() or ["Rider"])[0]
     identity = (
         f"THE RIDER'S NAME IS {rider_name}. Address them as {rider_name} and "
-        f"nothing else — never invent, substitute or vary their name."
+        f"nothing else, never invent, substitute or vary their name."
     )
     blocks = [
         {
@@ -191,7 +191,7 @@ def _system_blocks(user: User, dynamic: str, volatile: str | None = None) -> lis
         },
         # The rider context is stable WITHIN a conversation (fitness, plan,
         # dossier only move when data moves), so cache this block too:
-        # turn 2+ reads the whole system from cache — faster first token,
+        # turn 2+ reads the whole system from cache, faster first token,
         # ~90% cheaper. A mid-conversation data change just re-caches once.
         {
             "type": "text",
@@ -368,7 +368,7 @@ def _build_rider_context(
     try:
         fitness = get_current_fitness(db, user.id)
 
-        # Power profile (expensive query — call once, reuse everywhere)
+        # Power profile (expensive query, call once, reuse everywhere)
         power_profile_raw: dict = {}
         try:
             power_profile_raw = get_all_time_power_profile(db, user.id)
@@ -664,7 +664,7 @@ def _build_rider_context(
                     goal_info["route_url"] = g.route_url
                 if g.route_data:
                     # Include route summary but exclude the full elevation profile
-                    # (too large for coach context — hundreds of trackpoints)
+                    # (too large for coach context, hundreds of trackpoints)
                     rd = g.route_data if isinstance(g.route_data, dict) else {}
                     goal_info["route_data"] = {
                         k: v for k, v in rd.items()
@@ -688,7 +688,7 @@ def _build_rider_context(
             "in which case call save_attachment_as_ride."
         )
 
-    # ── 9. Long-term memory (the brain — Pillar 2) ──
+    # ── 9. Long-term memory (the brain. Pillar 2) ──
     # Injected inside the context dict so the result stays valid JSON
     # (stream_response round-trips this via json.loads for the snapshot).
     try:
@@ -710,7 +710,7 @@ def _build_rider_context(
 COACH_TOOLS = [
     {
         "name": "update_workout",
-        "description": "Update an existing workout's title, description, type, date, duration, or TSS. Use this when the rider and coach agree to modify a planned workout — e.g. changing a threshold session to an endurance ride, adjusting duration, or rewriting the description.",
+        "description": "Update an existing workout's title, description, type, date, duration, or TSS. Use this when the rider and coach agree to modify a planned workout, e.g. changing a threshold session to an endurance ride, adjusting duration, or rewriting the description.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -734,7 +734,7 @@ COACH_TOOLS = [
     },
     {
         "name": "swap_workout_date",
-        "description": "Swap the scheduled dates of two workouts. Use when the rider wants to rearrange their week — e.g. moving Tuesday's intervals to Thursday.",
+        "description": "Swap the scheduled dates of two workouts. Use when the rider wants to rearrange their week, e.g. moving Tuesday's intervals to Thursday.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -746,7 +746,7 @@ COACH_TOOLS = [
     },
     {
         "name": "add_workout",
-        "description": "Add a new workout to the rider's plan. Use when the coach prescribes an additional session — e.g. adding a recovery ride or an extra interval session.",
+        "description": "Add a new workout to the rider's plan. Use when the coach prescribes an additional session, e.g. adding a recovery ride or an extra interval session.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -765,7 +765,7 @@ COACH_TOOLS = [
     },
     {
         "name": "skip_workout",
-        "description": "Mark a workout as skipped. Use when the rider and coach agree to drop a session — due to fatigue, time constraints, or plan adjustment.",
+        "description": "Mark a workout as skipped. Use when the rider and coach agree to drop a session, due to fatigue, time constraints, or plan adjustment.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -776,7 +776,7 @@ COACH_TOOLS = [
     },
     {
         "name": "create_goal",
-        "description": "File a goal the rider and coach have just crafted together in conversation. Use ONLY at the end of a goalcraft conversation once the event, date, why, and becoming are agreed — the paperwork is the coach's job, so the rider never fills a form. Tell the rider what you filed.",
+        "description": "File a goal the rider and coach have just crafted together in conversation. Use ONLY at the end of a goalcraft conversation once the event, date, why, and becoming are agreed, the paperwork is the coach's job, so the rider never fills a form. Tell the rider what you filed.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1621,14 +1621,14 @@ async def stream_response(
     # Build message history
     messages = _build_messages(session)
 
-    # Stream from Claude with agentic tool loop — via the forma-core funnel
+    # Stream from Claude with agentic tool loop, via the forma-core funnel
     full_response = ""
     tokens_used = 0
     plan_was_updated = False
     scrub = StreamHumanizer()
 
     try:
-        # Agentic loop — keeps going while Claude wants to call tools
+        # Agentic loop, keeps going while Claude wants to call tools
         max_iterations = 5
         for _ in range(max_iterations):
             # After a tool round the model starts a fresh sentence. Without a
@@ -1665,7 +1665,7 @@ async def stream_response(
             ]
 
             if not tool_use_blocks or final.stop_reason != "tool_use":
-                # No tool calls — we're done
+                # No tool calls, we're done
                 break
 
             # Execute tool calls and build tool_result messages
@@ -1698,7 +1698,7 @@ async def stream_response(
             if plan_was_updated:
                 yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
 
-            # Loop continues — Claude will respond to the tool results
+            # Loop continues. Claude will respond to the tool results
 
         tail = scrub.flush()
         if tail:
@@ -1709,7 +1709,7 @@ async def stream_response(
         full_response = forma_core.QUOTA_MESSAGE
         yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
     except Exception as e:
-        # ANY failure — provider error, timeout, tool bug — must never leave
+        # ANY failure, provider error, timeout, tool bug, must never leave
         # the rider staring at an empty bubble. Log the real cause; the rider
         # gets something honest and human.
         logger.exception("Coach chat stream failed: %s", e)
@@ -1738,7 +1738,7 @@ async def stream_response(
 
     yield f'data: {json.dumps({"type": "done"})}\n\n'
 
-    # Memory extraction — write this exchange into the brain (Pillar 2).
+    # Memory extraction, write this exchange into the brain (Pillar 2).
     # Runs after the client has received `done`, so it never delays the stream.
     try:
         from app.services.memory_service import extract_memories
@@ -1764,13 +1764,13 @@ async def stream_response(
 VOICE_MODE_ADDENDUM = """
 ## Voice Mode Instructions
 You are speaking out loud to the rider. Adjust your style:
-- Keep responses conversational and concise — aim for 3-5 sentences unless they ask for detail
+- Keep responses conversational and concise, aim for 3-5 sentences unless they ask for detail
 - Avoid markdown formatting, bullet points, numbered lists, and code blocks
 - Use natural spoken language with contractions ("you're", "don't", "let's")
-- Keep sentences short and clear — they will be read aloud
+- Keep sentences short and clear, they will be read aloud
 - Don't use special characters like asterisks, hashtags, or brackets
 - Use "about" instead of precise decimals when speaking numbers
-- It's fine to be warm and casual — you're having a conversation, not writing an essay
+- It's fine to be warm and casual, you're having a conversation, not writing an essay
 """
 
 # Regex for detecting sentence boundaries in streamed text
@@ -1799,7 +1799,7 @@ def _looks_like_title(text: str) -> bool:
 
 
 def maybe_autotitle_session(db: Session, user: User, session: ChatSession) -> None:
-    """Name the thread from its content — only while it wears the default name.
+    """Name the thread from its content, only while it wears the default name.
 
     A title the rider typed (or previously auto-generated) is never touched.
     Cheap Haiku call, runs after the reply has already streamed.
@@ -1855,7 +1855,7 @@ async def stream_voice_response(
         data: {"type": "plan_updated"}
         data: {"type": "done"}
 
-    Gracefully degrades — if ElevenLabs fails, text still streams normally.
+    Gracefully degrades, if ElevenLabs fails, text still streams normally.
 
     `attachment_ids` behaves exactly as in stream_response: the files are
     readable context, never an instruction to import them.
@@ -1882,7 +1882,7 @@ async def stream_voice_response(
     # Build message history
     messages = _build_messages(session)
 
-    # Stream from Claude — via the forma-core funnel
+    # Stream from Claude, via the forma-core funnel
     full_response = ""
     sentence_buffer = ""
     sentence_index = 0
@@ -1892,12 +1892,12 @@ async def stream_voice_response(
     scrub = StreamHumanizer()
 
     try:
-        # Agentic loop — keeps going while Claude wants to call tools
+        # Agentic loop, keeps going while Claude wants to call tools
         max_iterations = 5
         for _ in range(max_iterations):
             with forma_core.stream(
                 user_id=user.id,
-                task="chat_voice",  # shorter max_tokens — conciseness matters
+                task="chat_voice",  # shorter max_tokens, conciseness matters
                 surface="coach_voice",
                 system=system,
                 messages=messages,
@@ -1995,7 +1995,7 @@ async def stream_voice_response(
                 audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
                 yield f'data: {json.dumps({"type": "audio", "content": audio_b64, "sentence_index": sentence_index})}\n\n'
             except Exception as tts_err:
-                # Degrade to text-only but say so in the logs — a dead
+                # Degrade to text-only but say so in the logs, a dead
                 # ElevenLabs key should never be an invisible failure.
                 logger.warning("TTS failed (text continues): %s", tts_err)
 
@@ -2027,7 +2027,7 @@ async def stream_voice_response(
 
     yield f'data: {json.dumps({"type": "done"})}\n\n'
 
-    # Memory extraction — voice conversations feed the brain too (Pillar 2).
+    # Memory extraction, voice conversations feed the brain too (Pillar 2).
     try:
         from app.services.memory_service import extract_memories
 
@@ -2087,7 +2087,7 @@ def get_non_streaming_response(
     context_snapshot = json.loads(rider_context) if rider_context else None
     add_assistant_message(db, session, content, context_snapshot, tokens_used)
 
-    # Memory extraction — every conversational surface writes to the brain.
+    # Memory extraction, every conversational surface writes to the brain.
     try:
         from app.services.memory_service import extract_memories
 

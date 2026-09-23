@@ -172,7 +172,7 @@ export default function PerformancePage() {
           Performance
         </h1>
         <p className="mt-3 text-sm text-vb-text-dim">
-          Track your fitness trends and training load
+          Fitness, fatigue and form, and where each is heading.
         </p>
       </div>
 
@@ -390,7 +390,7 @@ export default function PerformancePage() {
               </p>
               {fitness.ramp_rate > 7 && (
                 <p className="mt-0.5 text-xs text-vb-clay">
-                  High ramp rate - monitor recovery
+                  High ramp rate. Watch your recovery.
                 </p>
               )}
             </div>

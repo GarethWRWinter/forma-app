@@ -37,7 +37,7 @@ export function CoachInvite({
   };
 
   const invitation =
-    "I am here whenever you want to think out loud. Tell me how the legs feel, what went well this week, or what you are quietly worried about.";
+    "I'm here whenever you want to think out loud. Tell me how the legs feel, what went well this week, or what you're quietly worried about.";
 
   return (
     <section className="f-rise border border-vb-border-subtle border-l-[3px] border-l-vb-red bg-vb-surface p-5 md:p-8">

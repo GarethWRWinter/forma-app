@@ -667,7 +667,7 @@ export default function OnboardingPage() {
                   placeholder="e.g. 75"
                 />
                 <p className="mt-1.5 text-xs text-vb-text-muted">
-                  Watts per kilo is the sport&apos;s honest currency.
+                  Watts per kilo is the number the sport really judges you on.
                 </p>
               </div>
             </div>
@@ -695,8 +695,8 @@ export default function OnboardingPage() {
               Meet Forma.
             </h2>
             <p className="mt-2 text-sm text-vb-text-dim">
-              Forma is your coach, and adapts to you. Shape how Forma shows up,
-              the coaching is world-class either way. You can fine-tune this
+              Forma is your coach, and adapts to you. Shape how Forma shows up.
+              The coaching is the same either way. You can fine-tune this
               any time.
             </p>
 

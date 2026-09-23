@@ -78,7 +78,7 @@ function readReturnNotice(search: string): ReturnNotice | null {
             >
               gareth@ridewithforma.com
             </a>{" "}
-            and I will look at it the same day.
+            and I'll look at it the same day.
           </>
         ),
       };
@@ -332,7 +332,7 @@ export function WahooCard() {
           <p className="text-sm leading-relaxed text-vb-text-dim">
             Link your Wahoo account and every ride arrives on its own, straight
             off the head unit, the moment your ELEMNT syncs. Your history
-            imports overnight.
+            imports in the background as soon as you connect.
           </p>
           <Button variant="flamme" className="mt-4" onClick={connect}>
             Connect Wahoo

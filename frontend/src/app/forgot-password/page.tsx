@@ -51,7 +51,7 @@ export default function ForgotPasswordPage() {
               <p className="text-sm leading-relaxed text-vb-text">
                 If that address has a Forma account, the reset link is on its
                 way. It works for one hour, so check your inbox now, and the
-                spam folder if it plays hard to get.
+                spam folder if it isn't there.
               </p>
             </div>
             <Link href="/login" className="f-kicker text-vb-red hover:text-vb-red-dim">

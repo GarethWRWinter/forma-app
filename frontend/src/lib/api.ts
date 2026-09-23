@@ -95,7 +95,7 @@ async function request<T>(
     if (typeof window !== "undefined") {
       window.location.href = "/login";
     }
-    throw new ApiError("Unauthorized", 401);
+    throw new ApiError("Unauthorised", 401);
   }
 
   if (!response.ok) {
@@ -171,7 +171,7 @@ async function authedFetch(
     if (!refreshed) {
       clearTokens();
       if (typeof window !== "undefined") window.location.href = "/login";
-      throw new ApiError("Unauthorized", 401);
+      throw new ApiError("Unauthorised", 401);
     }
     response = await fetch(`${API_BASE}${path}`, {
       ...init,
@@ -1442,7 +1442,7 @@ async function downloadFile(path: string, filename: string): Promise<void> {
     } else {
       clearTokens();
       if (typeof window !== "undefined") window.location.href = "/login";
-      throw new ApiError("Unauthorized", 401);
+      throw new ApiError("Unauthorised", 401);
     }
   }
 

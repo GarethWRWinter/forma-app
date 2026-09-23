@@ -150,7 +150,7 @@ async def start_wahoo_backfill(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Import full Wahoo history. Idempotent — existing rides are skipped."""
+    """Import full Wahoo history. Idempotent, existing rides are skipped."""
     status = wahoo_service.get_connection_status(db, current_user.id)
     if not status.get("connected"):
         raise BadRequestException(detail="Wahoo is not connected")
@@ -168,7 +168,7 @@ async def disconnect_wahoo(
 
 
 # ---------------------------------------------------------------------------
-# Webhook (no auth — called by Wahoo's servers; verified by shared token)
+# Webhook (no auth, called by Wahoo's servers; verified by shared token)
 # ---------------------------------------------------------------------------
 
 @router.post("/webhook")

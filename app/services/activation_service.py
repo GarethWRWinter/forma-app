@@ -30,8 +30,8 @@ NEXT_ACTION: dict[str, dict] = {
     "goal": {
         "title": "Set the goal",
         "instruction": (
-            "Tell me the event you're aiming at, or add it yourself in Settings "
-            "under your goals. Everything I build hangs off it."
+            "Tell me the event you're aiming at, or add it yourself from Goal, then "
+            "All goals, then Create goal. Everything I build depends on it."
         ),
         "link": "/dashboard/settings",
     },
@@ -48,7 +48,7 @@ NEXT_ACTION: dict[str, dict] = {
     "first_ride": {
         "title": "Get one ride in",
         "instruction": (
-            "Your data door is open. The first ride that lands shows me how you "
+            "You're connected. The first ride that lands shows me how you "
             "actually ride, and I build from that rather than from a form. Go and "
             "ride, or upload a recent file from the Rides page."
         ),
@@ -66,7 +66,7 @@ NEXT_ACTION: dict[str, dict] = {
         "title": "Finish the first week",
         "instruction": (
             "The plan is live. Ride this week's sessions and tell me how each one "
-            "felt. That is what lets me adjust next week rather than guess."
+            "felt. That's what lets me adjust next week rather than guess."
         ),
         "link": "/dashboard/training",
     },

@@ -1,22 +1,22 @@
-"""Memory taxonomy — the canonical entity types of Forma's brain.
+"""Memory taxonomy, the canonical entity types of Forma's brain.
 
 The definitions below are LOAD-BEARING: they are rendered directly into the
 extraction LLM's prompt (docstrings-are-prompts, per TIE Memory v2). The
 "distinct from" prose is what makes classification accurate. Change these and
-extraction behaviour changes — treat edits like prompt changes and eval them.
+extraction behaviour changes, treat edits like prompt changes and eval them.
 
 Rules of the taxonomy:
 - Tags, not types: a subtype goes in `kind`, a new type only exists when it is
   extracted differently AND holds different data.
 - Every entity carries `life_area` (training|body|mind|life) and `visibility`
   (private by default; health is never auto-surfaced).
-- Plans are wiring, not a type — a plan is a traversal of a Goal's edges.
+- Plans are wiring, not a type, a plan is a traversal of a Goal's edges.
 """
 
 ENTITY_TYPES: dict[str, dict] = {
     "value": {
         "prompt": (
-            "A belief, identity statement, or principle the user holds — WHY they "
+            "A belief, identity statement, or principle the user holds. WHY they "
             "ride and how they see themselves. 'Prove something to myself', 'family "
             "comes first', 'never DNF'. Distinct from Goal: a value has no finish "
             "line. Distinct from Insight: a value is held, not learned."
@@ -34,7 +34,7 @@ ENTITY_TYPES: dict[str, dict] = {
     },
     "gap": {
         "prompt": (
-            "A weakness, avoidance, fear, or blind spot inferred about the rider — "
+            "A weakness, avoidance, fear, or blind spot inferred about the rider. "
             "the engine of coaching. 'Fades in the final hour', 'avoids intervals', "
             "'nervous on fast descents', 'guilty about rest weeks'. Distinct from "
             "HealthSignal: a gap is a performance/behaviour pattern, not a medical "
@@ -88,7 +88,7 @@ ENTITY_TYPES: dict[str, dict] = {
     },
     "procedural": {
         "prompt": (
-            "How the user wants Forma to behave — preferences and rules about the "
+            "How the user wants Forma to behave, preferences and rules about the "
             "coaching itself. 'Be direct, no fluff', 'don't message on Sundays', "
             "'explain the why behind sessions'. strength=hard means always obey; "
             "soft means default."
@@ -97,7 +97,7 @@ ENTITY_TYPES: dict[str, dict] = {
     },
     "ride_memory": {
         "prompt": (
-            "A specific memorable ride referenced with meaning attached — an epic, "
+            "A specific memorable ride referenced with meaning attached, an epic, "
             "a disaster, a breakthrough. 'The Cornwall bonk', 'the day I dropped "
             "Dave on Winnats'. Link source_ref to the ride id when inferable. "
             "Distinct from life_event: it is a ride."
@@ -125,7 +125,7 @@ def extraction_prompt() -> str:
     lines = [
         "You extract memory entities from a cycling coaching conversation or ride debrief.",
         "You are building the athlete's long-term memory graph. Precision over recall:",
-        "extract only durable facts worth remembering for months — never small talk,",
+        "extract only durable facts worth remembering for months, never small talk,",
         "never one-off logistics, never the assistant's own filler.",
         "",
         "ENTITY TYPES (choose exactly one `type` per entity):",
@@ -142,7 +142,7 @@ def extraction_prompt() -> str:
         f"EDGE TYPES: {', '.join(EDGE_TYPES)}",
         f"LIFE AREAS (`life_area`, required): {', '.join(LIFE_AREAS)}",
         "",
-        "DOSSIER DIMENSIONS — separately, capture personal facts the RIDER reveals",
+        "DOSSIER DIMENSIONS, separately, capture personal facts the RIDER reveals",
         "about themselves on these dimensions (only when genuinely stated, never inferred",
         "from the assistant's words):",
     ]

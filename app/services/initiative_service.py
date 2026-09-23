@@ -1,4 +1,4 @@
-"""Initiative Service — the coach going first.
+"""Initiative Service, the coach going first.
 
 The founder's riders are not the founder. They will not arrive with a good
 question, they will not notice that their easy rides stopped being easy, and

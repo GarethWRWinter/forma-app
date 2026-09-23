@@ -195,7 +195,7 @@ export default function PalmaresPage() {
             }
           >
             Race a goal and it hangs here forever, hit or missed. The
-            attempt is the entry fee; the training is never wasted.
+            attempt alone earns the place; the training is never wasted.
           </EmptyState>
         ) : (
           years.map((year) => (

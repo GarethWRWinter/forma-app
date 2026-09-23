@@ -1,4 +1,4 @@
-"""Memory API — the Brain.
+"""Memory API, the Brain.
 
 GET  /memory/graph       → nodes + edges for the Brain page
 GET  /memory/reading     → Forma's narrated reading of the graph
@@ -46,7 +46,7 @@ def get_memory_reading(
             system=(
                 distilled_persona(current_user.coach_name, current_user.coach_tone)
                 + "\n\n## This surface: Forma's reading of the rider's brain\n"
-                "You are looking at their memory graph — everything you know about them. "
+                "You are looking at their memory graph, everything you know about them. "
                 "Write a 2-3 sentence reading: name the strongest cluster or thread, "
                 "point out one meaningful cross-life connection or one quiet corner "
                 "worth attention. Speak to the rider as 'you'. No preamble, no sign-off."

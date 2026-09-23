@@ -1,8 +1,8 @@
-"""forma-core — the single funnel for every Claude call Forma makes.
+"""forma-core, the single funnel for every Claude call Forma makes.
 
 The PRD's non-negotiable architecture: one place that owns model routing,
 prompt caching, cost logging, and the provider client. There is no other
-path to Claude — services never construct their own anthropic client.
+path to Claude, services never construct their own anthropic client.
 
 Every call:
   1. resolves its model + max_tokens from the TASKS routing table
@@ -75,15 +75,15 @@ class TaskConfig:
     max_tokens: int
 
 
-# The routing table — the ONLY place a model name is bound to a job.
+# The routing table, the ONLY place a model name is bound to a job.
 # Sonnet where Forma reasons as a coach, Haiku for extraction and
 # short interpretive lines (mirrors the PRD cost model).
 TASKS: dict[str, TaskConfig] = {
     # Chat caps must leave room for a tool call AND the prose after it. A
     # cap hit mid-tool-call streams zero text (the silent-coach incident,
-    # 2 Aug 2026) — headroom is cheap, ledger + monthly cap own the spend.
+    # 2 Aug 2026), headroom is cheap, ledger + monthly cap own the spend.
     "chat": TaskConfig(SONNET, 8192),          # streaming coach chat (tools)
-    "chat_voice": TaskConfig(SONNET, 4096),    # voice chat — brevity via prompt
+    "chat_voice": TaskConfig(SONNET, 4096),    # voice chat, brevity via prompt
     "chat_sync": TaskConfig(SONNET, 4096),     # non-streaming chat turn
     "debrief": TaskConfig(SONNET, 500),        # post-ride debrief
     "assessment": TaskConfig(SONNET, 1500),    # workout execution assessment
@@ -119,7 +119,7 @@ _client_instance: anthropic.Anthropic | None = None
 
 
 def _client() -> anthropic.Anthropic:
-    """One provider client for the whole app — swap providers here."""
+    """One provider client for the whole app, swap providers here."""
     global _client_instance
     if _client_instance is None:
         _client_instance = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -130,7 +130,7 @@ def _prices_for(model: str) -> tuple[float, float]:
     for prefix, prices in _PRICES_PER_MTOK.items():
         if model.startswith(prefix):
             return prices
-    logger.warning("forma-core: no price entry for model %s — logging zero cost", model)
+    logger.warning("forma-core: no price entry for model %s, logging zero cost", model)
     return (0.0, 0.0)
 
 
@@ -170,7 +170,7 @@ def _log(
     latency_ms: int,
     error: bool = False,
 ) -> None:
-    """Write a forma_calls row in its own session — never on the caller's
+    """Write a forma_calls row in its own session, never on the caller's
     transaction, so cost records survive caller rollbacks and vice versa."""
     try:
         from app.database import SessionLocal
@@ -195,7 +195,7 @@ def _log(
             db.commit()
         finally:
             db.close()
-    except Exception:  # noqa: BLE001 — cost logging must never break Forma
+    except Exception:  # noqa: BLE001, cost logging must never break Forma
         logger.exception("forma-core: failed to log call (task=%s user=%s)", task, user_id)
 
 
@@ -211,7 +211,7 @@ class BudgetStatus:
 
 
 def _month_start() -> datetime:
-    """First instant of the current calendar month, naive UTC — matches the
+    """First instant of the current calendar month, naive UTC, matches the
     naive `forma_calls.ts` default (datetime.utcnow)."""
     now = datetime.utcnow()
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)

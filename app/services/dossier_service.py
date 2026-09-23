@@ -3,7 +3,7 @@
 The dossier powers hyper-personalization two ways:
 1. `dossier_context()` puts what the coach KNOWS into every prompt.
 2. `gaps()` tells the coach what it DOESN'T know yet, feeding the
-   one-question-at-a-time drip — the coach earns the dossier through
+   one-question-at-a-time drip, the coach earns the dossier through
    natural curiosity, never a questionnaire.
 """
 
@@ -17,7 +17,7 @@ from app.models.dossier import DOSSIER_DIMENSIONS, DossierEntry
 logger = logging.getLogger(__name__)
 
 # An entry this similar to an existing one on the same dimension is a
-# restatement, not new knowledge — refresh instead of duplicating.
+# restatement, not new knowledge, refresh instead of duplicating.
 _DUP_THRESHOLD = 0.82
 
 # Cap per dimension so the prompt block stays lean; oldest inactive first.
@@ -113,7 +113,7 @@ def dossier_context(db: Session, user_id: str) -> str:
     entries = get_active_entries(db, user_id)
     lines: list[str] = []
     if entries:
-        lines.append("## The Rider's Dossier (learned over time — use it, naturally)")
+        lines.append("## The Rider's Dossier (learned over time, use it, naturally)")
         current = None
         for e in entries:
             if e.dimension != current:
@@ -126,7 +126,7 @@ def dossier_context(db: Session, user_id: str) -> str:
         for dim, desc in open_gaps:
             lines.append(f"- {dim}: {desc}")
         lines.append(
-            "\nCuriosity rule: if — and only if — the conversation makes it natural, "
+            "\nCuriosity rule: if, and only if, the conversation makes it natural, "
             "end your reply with ONE short question drawn from these gaps. Never more "
             "than one. Never interrogate. If the moment doesn't invite it, ask nothing."
         )

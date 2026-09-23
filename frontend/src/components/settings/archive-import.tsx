@@ -144,7 +144,7 @@ export function ArchiveImport() {
             Bring your whole history with you. Download your archive from
             Strava (Settings, My Account, Download Request) or Garmin, drop
             the zip here, and every ride you&apos;ve ever recorded starts
-            working for you. The zip never leaves your machine, Forma reads
+            working for you. The zip never leaves your machine: Forma reads
             the ride files out of it right here.
           </p>
           <Button className="mt-4" onClick={() => fileRef.current?.click()}>
@@ -160,7 +160,7 @@ export function ArchiveImport() {
             Reading the archive
           </Kicker>
           <p className="mt-2 text-xs text-vb-text-dim">
-            Nothing is uploading yet, Forma is finding your rides first.
+            Nothing is uploading yet. Forma is finding your rides first.
           </p>
         </div>
       )}
@@ -207,7 +207,7 @@ export function ArchiveImport() {
 
           <div className="flex items-center gap-3">
             <Button variant="flamme" onClick={runImport} disabled={selectedCount === 0}>
-              Import {selectedCount} rides
+              Import {selectedCount} {selectedCount === 1 ? "ride" : "rides"}
               <Arrow />
             </Button>
             <Button variant="quiet" onClick={reset}>

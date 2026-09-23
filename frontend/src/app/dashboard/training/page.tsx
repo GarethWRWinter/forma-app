@@ -405,7 +405,7 @@ export default function TrainingPage() {
             <div className="flex flex-wrap items-center gap-x-5 gap-y-3 border-t border-white/10 pt-4">
               <p className="max-w-md text-sm text-white/60">
                 {coachName} has not read this goal yet. The right size, the
-                missing piece, the one change that would make it sing.
+                missing piece, the one change that would matter most.
               </p>
               <Button
                 variant="carbon"
@@ -419,7 +419,7 @@ export default function TrainingPage() {
               </Button>
               {coachReadMutation.isError && (
                 <p className="f-kicker w-full text-white/50">
-                  That one did not land. Try again in a moment.
+                  That one didn't go through. Try again in a moment.
                 </p>
               )}
             </div>
@@ -525,7 +525,7 @@ export default function TrainingPage() {
           )}
           {reviewMutation.isError && !reviewMutation.isPending && (
             <p className="f-kicker text-vb-text-muted">
-              That did not land. Try again in a moment.
+              That didn't go through. Try again in a moment.
             </p>
           )}
         </div>
@@ -631,7 +631,7 @@ export default function TrainingPage() {
                 className="h-11 w-full rounded-sm border border-vb-border bg-vb-surface px-3 py-2 text-sm text-vb-text focus-visible:border-vb-red focus-visible:outline-none"
               >
                 <option value="traditional">Traditional</option>
-                <option value="polarized">Polarized</option>
+                <option value="polarized">Polarised</option>
                 <option value="sweet_spot">Sweet Spot</option>
               </select>
             </div>

@@ -23,7 +23,7 @@ function ResetPasswordForm() {
     e.preventDefault();
     setError("");
     if (password !== confirm) {
-      setError("Those two don't match. Type them again, slowly.");
+      setError("Those two don't match. Type them again.");
       return;
     }
     setLoading(true);

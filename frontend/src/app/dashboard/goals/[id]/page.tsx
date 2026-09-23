@@ -423,7 +423,7 @@ export default function GoalDetailPage() {
         <div className="border border-dashed border-vb-border px-5 py-4">
           <p className="text-sm text-vb-text-dim">
             This goal has a date and a route, but no why yet. The why is the
-            fuel that survives February.{" "}
+            thing that gets you out of the door in February.{" "}
             <Link
               href={`/dashboard/coach?ask=${encodeURIComponent(
                 `Let's talk about my goal "${goal.event_name}". Ask me one question at a time and help me find why this one matters to me and who it's turning me into. Then save it to the goal.`
@@ -468,7 +468,7 @@ export default function GoalDetailPage() {
             <div className="flex flex-wrap items-center justify-between gap-3 border border-vb-border-subtle bg-vb-surface px-5 py-4">
               <p className="text-sm text-vb-text-dim">
                 Want Forma&apos;s honest read on this goal? The right size, the
-                missing soul, the one change that would make it sing.
+                missing piece, the one change that would matter most.
               </p>
               <Button
                 variant="ghost"

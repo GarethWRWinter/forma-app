@@ -174,7 +174,7 @@ export default function RidesPage() {
           }
         >
           Upload a ride file, link your Wahoo in Settings, or import your
-          Strava archive and every ride you have ever logged starts working
+          Strava archive and every ride you've ever logged starts working
           for you. Each one sharpens your power profile.
         </EmptyState>
       ) : (

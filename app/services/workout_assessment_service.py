@@ -1,5 +1,5 @@
 """
-Workout execution assessment — compares a planned workout to the actual
+Workout execution assessment, compares a planned workout to the actual
 ride that was ridden, produces a numeric quality score out of 10, and asks
 Coach Forma for supportive feedback and adjustments to the next few days.
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # --- Expected IF band per planned workout type --------------------------------
 
-# Centre IF + half-width — used both to award "workout type match" points and
+# Centre IF + half-width, used both to award "workout type match" points and
 # to tell Claude what the target intensity looked like.
 WORKOUT_TYPE_IF_BAND: dict[str, tuple[float, float]] = {
     WorkoutType.recovery.value: (0.55, 0.10),
@@ -129,7 +129,7 @@ def score_execution(workout: Workout, ride: Ride) -> dict:
         }
 
     if not components:
-        # No comparable metrics at all — give a neutral "ride was completed" score.
+        # No comparable metrics at all, give a neutral "ride was completed" score.
         return {
             "score": 5.0,
             "components": {},
@@ -266,7 +266,7 @@ def _parse_claude_json(text: str) -> dict:
     t = text.strip()
     if t.startswith("```"):
         t = t.split("```", 2)
-        # t == ["", "json\n{...}", "..."] after split — take the middle piece
+        # t == ["", "json\n{...}", "..."] after split, take the middle piece
         if len(t) >= 2:
             inner = t[1]
             if inner.startswith("json"):
@@ -305,7 +305,7 @@ def generate_assessment(
     if not workout.actual_ride_id:
         raise ValueError("Workout has no linked ride to assess")
 
-    # user-scope the ride read — a linked ride must belong to the same user
+    # user-scope the ride read, a linked ride must belong to the same user
     ride = (
         db.query(Ride)
         .filter(Ride.id == workout.actual_ride_id, Ride.user_id == user.id)
@@ -362,7 +362,7 @@ def generate_assessment(
             # something to show instead of an empty card.
             score = score_result["score"]
             workout.execution_feedback = (
-                f"Nice work getting that session done — you scored {score}/10 on "
+                f"Nice work getting that session done, you scored {score}/10 on "
                 "execution vs the plan. I'll write a proper debrief as soon as "
                 "I'm back online; in the meantime, stay consistent and the "
                 "numbers will take care of themselves."
@@ -380,7 +380,7 @@ def generate_assessment(
 def backfill_auto_links(db: Session, user_id: str, days: int = 14) -> int:
     """
     Retroactively link any rides from the past `days` days that don't yet
-    have an associated workout. Idempotent — skips rides already linked.
+    have an associated workout. Idempotent, skips rides already linked.
 
     Returns the number of newly-linked rides.
     """

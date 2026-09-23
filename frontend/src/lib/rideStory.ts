@@ -76,7 +76,7 @@ export function rideStory(ride: Ride): string | null {
     const z = ZONE_STORY[dom];
     const load =
       tss && tss >= 60
-        ? ` ${tss} TSS banked, a real deposit in the fitness account.`
+        ? ` ${tss} TSS banked, enough to move your fitness on.`
         : tss
           ? ` ${tss} TSS banked.`
           : "";
@@ -87,7 +87,7 @@ export function rideStory(ride: Ride): string | null {
   if (km && mins) {
     const easy = ride.intensity_factor && ride.intensity_factor < 0.6;
     return easy
-      ? `${km.toFixed(0)}km of easy miles. Gentle days like this are where the hard days get paid for.`
+      ? `${km.toFixed(0)}km of easy miles. Gentle days like this are what make the hard days possible.`
       : `${km.toFixed(0)}km in ${mins} minutes. Every ride Forma sees makes the next plan sharper.`;
   }
   return null;

@@ -1,8 +1,8 @@
-"""Memory service — writes to and reads from Forma's brain.
+"""Memory service, writes to and reads from Forma's brain.
 
 Write path: extract_memories() runs a Haiku pass over a conversation exchange
 or ride debrief, returning typed entities + edges (taxonomy prompt is a stable,
-cacheable prefix). Dedup is by (type, normalized label) similarity — existing
+cacheable prefix). Dedup is by (type, normalized label) similarity, existing
 entities are enriched, never duplicated.
 
 Read paths:
@@ -10,7 +10,7 @@ Read paths:
 - get_context(): a compact text block for Forma's prompts (recent + connected
   + goal-adjacent), hidden facts included but flagged never-quote.
 
-Extraction failures are logged loudly. Never swallowed silently — a memory
+Extraction failures are logged loudly. Never swallowed silently, a memory
 that silently fails to write is a relationship that silently decays.
 """
 
@@ -147,7 +147,7 @@ def extract_memories(
             source=source,
             source_ref=source_ref,
         )
-        # Semantic fingerprint at write time — the RAG layer's index.
+        # Semantic fingerprint at write time, the RAG layer's index.
         try:
             from app.core import embeddings as emb
 
@@ -260,7 +260,7 @@ def get_context(
     """Compact memory block for Forma's prompts.
 
     Without a query: recency + connectedness weighted (the stable digest).
-    With a query: semantic retrieval — cosine similarity to the rider's
+    With a query: semantic retrieval, cosine similarity to the rider's
     message leads the score, so asking about saddle pain surfaces the
     saddle memories from months ago, not just whatever's recent. Falls
     back to the recency scorer when embeddings are unavailable.
@@ -315,15 +315,15 @@ def get_context(
         )[:limit]
         header = (
             "WHAT YOU REMEMBER, MOST RELEVANT TO THIS MESSAGE "
-            "(long-term memory — weave in naturally):"
+            "(long-term memory, weave in naturally):"
         )
     else:
         top = sorted(entities, key=base_score, reverse=True)[:limit]
-        header = "WHAT YOU KNOW ABOUT THIS RIDER (long-term memory — weave in naturally):"
+        header = "WHAT YOU KNOW ABOUT THIS RIDER (long-term memory, weave in naturally):"
 
     lines = [header]
     for e in top:
-        flag = " [HIDDEN — use for judgement, never mention]" if e.hidden_at else ""
+        flag = " [HIDDEN, use for judgement, never mention]" if e.hidden_at else ""
         kind = f"/{e.kind}" if e.kind else ""
         age = _age_label(_age_days(e))
         past = (

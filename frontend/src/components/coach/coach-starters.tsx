@@ -153,7 +153,7 @@ export function useCoachStarters(recentText = ""): Starter[] {
     if (upcoming.length === 0) {
       starters.push({
         label: "Craft my next goal",
-        ask: "I want to craft a new goal with you. Ask me one question at a time and help me find the goal I would actually love: what it is, why it matters to me, and who it makes me. When we have it, file it for me.",
+        ask: "I want to craft a new goal with you. Ask me one question at a time and help me find the goal I'd actually love: what it is, why it matters to me, and who it makes me. When we have it, file it for me.",
         keywords: ["goal", "target", "event", "season", "next"],
         priority: 5,
       });

@@ -1,10 +1,10 @@
 """
-Coach Insights Service — Forma's proactive presence across the app.
+Coach Insights Service. Forma's proactive presence across the app.
 
 Three types of insight:
-1. Daily nudge — contextual coaching card on the dashboard
-2. Ride debrief — auto-generated post-ride feedback (standalone, not tied to a workout)
-3. Metric explanation — tap-to-explain any metric in YOUR context
+1. Daily nudge, contextual coaching card on the dashboard
+2. Ride debrief, auto-generated post-ride feedback (standalone, not tied to a workout)
+3. Metric explanation, tap-to-explain any metric in YOUR context
 
 Uses Claude Haiku for nudges and explanations (fast, cheap),
 Claude Sonnet for debriefs (deeper analysis).
@@ -191,7 +191,7 @@ def _build_nudge_context(
             for w in weekly_load[:4]
         ]
 
-    # Long-term memory — the nudge must come from a coach who KNOWS this rider.
+    # Long-term memory, the nudge must come from a coach who KNOWS this rider.
     try:
         from app.services.memory_service import get_context as get_memory_context
 
@@ -201,7 +201,7 @@ def _build_nudge_context(
     except Exception:
         logger.exception("Memory context for nudge failed (user=%s)", user.id)
 
-    # Rider Dossier — the personal layer (heartset, time reality, fuel...)
+    # Rider Dossier, the personal layer (heartset, time reality, fuel...)
     # so the morning note speaks to this rider's life, not just their PMC.
     try:
         from app.services.dossier_service import dossier_context
@@ -303,7 +303,7 @@ Rules:
 6. End with a forward-looking statement (what's next, how this builds toward their goal).
 7. Use the rider's long-term memory: does this ride confirm or contradict a known gap \
    (e.g. "fades in the final hour")? Did they apply an insight you gave them (e.g. fueling)? \
-   If advice you gave is visibly working, SAY SO with the evidence — closing that loop is \
+   If advice you gave is visibly working, SAY SO with the evidence, closing that loop is \
    the most valuable thing you can do. Respect [HIDDEN] items: use, never mention.
 8. Return ONLY the debrief text as plain paragraphs (markdown OK for bold/italic). No JSON."""
 
@@ -385,7 +385,7 @@ def _build_debrief_context(
             "priority": str(upcoming_goal.priority),
         }
 
-    # Long-term memory — the debrief should close loops: known gaps, applied
+    # Long-term memory, the debrief should close loops: known gaps, applied
     # insights, patterns across rides. This is the coach's signature move.
     try:
         from app.services.memory_service import get_context as get_memory_context
@@ -402,7 +402,7 @@ def _build_debrief_context(
 RIDE_STORY_SYSTEM = """You write two tiny pieces for one ride in a cycling
 training log, in the coach Forma's voice: warm, specific, a fan of the sport.
 
-1. "title": a name for the ride, 2-6 words, evocative but honest — from the
+1. "title": a name for the ride, 2-6 words, evocative but honest, from the
    ride's actual character (its zones, duration, structure). Examples of the
    register: "Tempo blocks, three deep", "The long steady one", "Forty hard
    minutes". Never generic ("Morning Ride"), never cheesy, no exclamation marks.
@@ -474,7 +474,7 @@ def generate_ride_debrief(
     context = _build_debrief_context(db, user, ride)
 
     # The Rider Dossier: known facts + curiosity gaps. Post-ride is the most
-    # natural drip moment — a bonk invites a fuelling question, a missed
+    # natural drip moment, a bonk invites a fuelling question, a missed
     # session invites a time-reality one.
     try:
         from app.services.dossier_service import dossier_context
@@ -531,7 +531,7 @@ Explain this metric in THE RIDER'S specific context. Personal and actionable.
 
 Rules:
 1. Address the rider by first name.
-2. Explain what this metric means FOR THEM — not a generic definition.
+2. Explain what this metric means FOR THEM, not a generic definition.
 3. Compare to benchmarks or their own history where relevant.
 4. Suggest what to do about it (if applicable).
 5. 2-4 sentences max. Be concise and conversational.
@@ -543,7 +543,7 @@ def explain_metric(
 ) -> dict:
     """
     Generate a personalised explanation of a metric.
-    No caching — these are cheap Haiku calls.
+    No caching, these are cheap Haiku calls.
     """
     rider_name = (user.full_name or user.email.split("@")[0]).split()[0]
     fitness = get_current_fitness(db, user.id)
@@ -562,7 +562,7 @@ def explain_metric(
         },
     }
 
-    # Long-term memory — explain the number in the context of THEIR journey.
+    # Long-term memory, explain the number in the context of THEIR journey.
     try:
         from app.services.memory_service import get_context as get_memory_context
 

@@ -67,7 +67,7 @@ After the date the goal shows Race report pending with File the report: The resu
 
 ## The plan
 
-Build or rebuild: Goal, then + Build my season, then Periodisation model (Traditional, Polarized, Sweet Spot), then Generate. Building cancels the current plan. It runs from today to the A race (12 weeks with no goal, never under 4) through base, build, peak and a race week. Every third week (beginner) or fourth (otherwise) is a recovery week at 60 percent. Rest days are never scheduled; hard days carry intensity.
+Build or rebuild: Goal, then + Build my season, then Periodisation model (Traditional, Polarised, Sweet Spot), then Generate. Building cancels the current plan. It runs from today to the A race (12 weeks with no goal, never under 4) through base, build, peak and a race week. Every third week (beginner) or fourth (otherwise) is a recovery week at 60 percent. Rest days are never scheduled; hard days carry intensity.
 
 Change hard and rest days: Goal, then Adjust availability, tap each day (Easy, Rest, Hard), Save schedule, then rebuild.
 

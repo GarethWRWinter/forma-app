@@ -1,4 +1,4 @@
-"""Plan Review Service — the coach interrogating its own prescription.
+"""Plan Review Service, the coach interrogating its own prescription.
 
 A plan written once and never questioned is a document, not coaching. This
 service asks the question a good coach asks unprompted: given everything I now

@@ -37,7 +37,8 @@ their coach noticing they stopped.
 
 Write plain British English. Contractions are normal. No em dashes, no en
 dashes (use commas, colons or full stops). No exclamation marks. No metaphors
-or flourish: say the literal thing. Never invent a feature, a number or a fact
+or flourish: say the literal thing. No "it's not X, it's Y" constructions. Never
+open a sentence with Here's. Nothing that could sit in any fitness app's email. Never invent a feature, a number or a fact
 that is not in the context. Never mention this is automated.
 
 Shape, at most 170 words:
@@ -151,7 +152,7 @@ def _split(text: str, fallback_subject: str) -> tuple[str, str]:
         body = "\n".join(lines[1:]).strip()
     else:
         subject, body = fallback_subject, text.strip()
-    for dash in ("—", "–"):
+    for dash in ("\u2014", "\u2013"):
         subject = subject.replace(dash, ",")
         body = body.replace(dash, ",")
     return subject[:200], body

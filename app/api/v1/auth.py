@@ -248,12 +248,12 @@ def reset_password(body: ResetPasswordBody, db: Session = Depends(get_db)):
              dependencies=[Depends(_login_limit)])
 def login(user_in: UserLogin, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == user_in.email).first()
-    # Always run a bcrypt verify — against a dummy hash when the email is
-    # unknown — so response time doesn't reveal whether an email is registered.
+    # Always run a bcrypt verify, against a dummy hash when the email is
+    # unknown, so response time doesn't reveal whether an email is registered.
     hashed = user.hashed_password if user else _DUMMY_HASH
     password_ok = verify_password(user_in.password, hashed)
     if not user or not password_ok:
-        raise UnauthorizedException(detail="Invalid email or password")
+        raise UnauthorizedException(detail="That email and password don't match. Try again.")
     # A suspended or GDPR-deleted account cannot obtain new tokens.
     if not user.is_active or user.deleted_at is not None:
         raise UnauthorizedException(detail="Account is inactive")

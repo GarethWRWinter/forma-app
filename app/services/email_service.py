@@ -118,7 +118,7 @@ async def send_waitlist_welcome(
         to,
         "your place is held",
         f"""{greeting}{place}
-The doors open on 15 September. Between now and then you'll get one letter a
+The doors open soon, and I'll write the day they do. Between now and then you'll get one letter a
 week from me, and each will have something in it you can use on that week's
 rides. Real numbers from my own testing, the marginal gains that cost nothing,
 and what most riders get wrong. If you're not a little faster by launch day,
@@ -144,7 +144,7 @@ So, one question, and I read every reply.
 
 What frustrates you most about your training right now?
 
-Not the tidy version. The real one. If it helps, the things I'm trying to
+The real one, however untidy. If it helps, the things I'm trying to
 understand are:
 
   Where does it come apart? The week that goes sideways, the session that keeps
@@ -159,8 +159,8 @@ understand are:
 One line is a complete answer. So is five paragraphs. There's no wrong thing to
 say here, and you needn't be diplomatic about anything you've paid for.
 
-What you tell me is what gets built between now and September. That isn't a
-polite thing to say. It's genuinely how I decide what to work on next, and it's
+What you tell me is what gets built between now and launch. I mean that
+literally. It's how I decide what to work on next, and it's
 the reason the list is a hundred people rather than a hundred thousand.
 
 G
@@ -201,7 +201,7 @@ now reads your rides against the conditions you actually rode in, remembers
 what you tell it, and rewrites next week when your life gets in the way. That
 last part took longer than everything else put together.
 
-So, the date. The doors open on 15 September.
+So, the date. I won't promise one yet; you'll get a letter from me the day the doors open.
 {place}
 
 From now until then you'll get one letter a week, and each one will have
@@ -214,9 +214,9 @@ One question before any of that, and I do read every reply.
 
 What does your current setup get wrong?
 
-Not the feature you'd like added. The thing that actually annoys you. The plan
-that assumed Tuesday evening was free when it never is. The app full of numbers
-that never once told you what to do with any of them. Or the block that fell
+Not the feature you'd like added. The thing that actually annoys you: the plan
+that assumed Tuesday evening was free when it never is, the app full of numbers
+that never once told you what to do with any of them, or the block that fell
 apart in week three and somehow left you feeling like the problem was you.
 
 Hit reply and tell me in a line. I'm still building this, and what riders tell
@@ -271,16 +271,16 @@ Forma
     return await send(
         to,
         "Wahoo has stopped talking to Forma",
-        f"""{greeting}Your Wahoo connection just stopped working, so your rides are not
+        f"""{greeting}Your Wahoo connection just stopped working, so your rides aren't
 reaching me at the moment.
 
-Nothing is lost. Wahoo still has every ride, and I will pull back anything I
-missed the moment we are reconnected. It takes about twenty seconds:
+Nothing is lost. Wahoo still has every ride, and I'll pull back anything I
+missed the moment we're reconnected. It takes about twenty seconds:
 
 Settings, then Data in, then Reconnect on the Wahoo card.
 
 This happens occasionally because Wahoo issues a new key each time we talk and
-very rarely one goes astray. It is not something you did, and it is not
+very rarely one goes astray. It isn't something you did, and it isn't
 something your head unit did.
 
 Forma

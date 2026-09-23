@@ -98,7 +98,7 @@ export const COACH_TONES: CoachTone[] = [
     key: "analytical",
     label: "Analytical & data-deep",
     description: "Numbers first, mechanisms explained, depth welcome.",
-    sample: "Decoupling was 8.4% after 2,100kJ, fueling, not fitness. At 80g/hr I'd expect under 5%.",
+    sample: "Decoupling was 8.4% after 2,100kJ, fuelling, not fitness. At 80g/hr I'd expect under 5%.",
   },
   {
     key: "playful",

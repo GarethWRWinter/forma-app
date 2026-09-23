@@ -378,7 +378,7 @@ export default function RideDetailPage() {
             </div>
             <p className="mt-3 max-w-xl text-sm text-vb-text-dim">
               {t.head > t.tail
-                ? "More of this ride was paid for into the wind than given back by it. Worth remembering before you read anything into the average speed."
+                ? "More of this ride was into a headwind than helped along by a tailwind. Worth remembering before you read anything into the average speed."
                 : t.tail > t.head
                   ? "The wind was on your side for more of this than it was against you, which flatters the average a little."
                   : "Wind roughly balanced out across the ride."}
@@ -625,7 +625,7 @@ function SegmentRow({ effort }: { effort: SegmentEffort }) {
         <div className="flex gap-1.5">
           {hasKOM && (
             <Badge variant="flamme">
-              {effort.kom_rank === 1 ? "KOM" : `${effort.kom_rank}nd`}
+              {effort.kom_rank === 1 ? "KOM" : `${effort.kom_rank}${effort.kom_rank === 2 ? "nd" : effort.kom_rank === 3 ? "rd" : "th"}`}
             </Badge>
           )}
           {hasPR && (

@@ -54,7 +54,7 @@ const RIDER_TYPE_VERDICT: Record<string, string> = {
   pursuiter:
     "Big engine in the three-to-eight-minute range. Track DNA on the road; break away and stay away.",
   rouleur:
-    "Strong everywhere the road is flat and hard. Wind, cobbles and long ranges are where you collect victims.",
+    "Strong everywhere the road is flat and hard. Wind, cobbles and long ranges are where you win.",
 };
 
 /** The planned session's fingerprint: each step as a zone-coloured block,
@@ -960,7 +960,7 @@ export default function DashboardPage() {
                     <CardBody>
                       <p className="f-display mb-2 text-xl leading-tight">{plan.name}</p>
                       <p className="f-data text-xs leading-relaxed text-vb-text-dim">
-                        {formatDate(plan.start_date)}, {formatDate(plan.end_date)}
+                        {formatDate(plan.start_date)} to {formatDate(plan.end_date)}
                         <br />
                         {plan.total_weeks} weeks · {plan.phase_count} phases
                       </p>

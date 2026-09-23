@@ -35,11 +35,11 @@ export default function GlobalError({
         }}
       >
         <h1 style={{ fontSize: 26, fontWeight: 800, margin: 0 }}>
-          Something slipped a gear.
+          Something broke on my side.
         </h1>
         <p style={{ maxWidth: 400, fontSize: 14, color: "#555", margin: 0 }}>
           Not your fault, and nothing of yours is lost. Reload the page, and
-          if it keeps happening it is already on my list to fix.
+          if it keeps happening it's already on my list to fix.
         </p>
         <button
           onClick={() => window.location.reload()}

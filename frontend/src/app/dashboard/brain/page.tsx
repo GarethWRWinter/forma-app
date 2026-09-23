@@ -568,7 +568,7 @@ export default function BrainPage() {
             Your brain starts with your first conversation.
           </p>
           <p className="mx-auto mt-2 max-w-sm text-sm text-vb-text-dim">
-            Talk to {coach} about your goals, your week, your life, every durable
+            Talk to {coach} about your goals, your week, your life. Every durable
             thing you share becomes part of a memory that grows with you.
           </p>
           <Link

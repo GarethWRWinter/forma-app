@@ -24,11 +24,11 @@ export default function Error({
         Mechanical
       </p>
       <h1 className="font-display text-3xl font-extrabold tracking-[-0.02em] text-vb-text">
-        Something slipped a gear.
+        Something broke on my side.
       </h1>
       <p className="max-w-sm text-sm text-vb-text-dim">
         Not your fault, and nothing of yours is lost. Try again, and if it
-        keeps happening it is already on my list to fix.
+        keeps happening it's already on my list to fix.
       </p>
       <button
         onClick={reset}

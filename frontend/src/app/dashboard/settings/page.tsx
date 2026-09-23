@@ -797,7 +797,7 @@ export default function SettingsPage() {
         Your rides are yours. Forma reads them straight from the source, your
         head unit, your files, your archive, so no platform can ever stand
         between you and your coach. Riding Garmin? Import your archive below,
-        then use Dropbox for new rides, a bridge like tapiriik moves each
+        then use Dropbox for new rides; a bridge like tapiriik moves each
         ride there automatically.
       </p>
 
@@ -924,8 +924,8 @@ export default function SettingsPage() {
                 </Kicker>
                 <p className="mt-2 text-xs text-vb-text-dim">
                   {stravaStatus.backfill.total
-                    ? `${stravaStatus.backfill.progress} of ${stravaStatus.backfill.total} in. Strava allows 1,000 requests a day, Forma resumes at midnight UTC.`
-                    : "Strava allows 1,000 requests a day, Forma resumes at midnight UTC."}
+                    ? `${stravaStatus.backfill.progress} of ${stravaStatus.backfill.total} in. Strava allows 1,000 requests a day, so Forma resumes at midnight UTC.`
+                    : "Strava allows 1,000 requests a day, so Forma resumes at midnight UTC."}
                 </p>
               </div>
             )}
@@ -1190,7 +1190,7 @@ function CoachSection() {
       <h2 className="f-display text-2xl text-vb-text">Your coach</h2>
       <p className="mt-1 text-sm text-vb-text-dim">
         Forma is your coach. Choose the manner, keep the standard. The
-        coaching is world-class either way.
+        coaching is the same either way.
       </p>
 
       {/* Tone, the primary personalisation */}

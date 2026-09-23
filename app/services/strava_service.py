@@ -816,7 +816,7 @@ async def backfill_history(
                         strava_token.backfill_status = "failed_no_activity_scope"
                         db.commit()
                         raise ValueError(
-                            "Strava activity access not granted — reconnect and tick "
+                            "Strava activity access not granted. Reconnect and tick "
                             "“View data about your activities”."
                         )
                     response.raise_for_status()

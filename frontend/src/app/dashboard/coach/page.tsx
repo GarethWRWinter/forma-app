@@ -253,7 +253,7 @@ function CoachPageInner() {
           const updated = [...prev];
           updated[updated.length - 1] = {
             role: "assistant",
-            content: "Sorry, I had trouble connecting. Please try again.",
+            content: "I lost the connection there. Send that again.",
           };
           return updated;
         });
@@ -601,7 +601,7 @@ function CoachPageInner() {
         updated[updated.length - 1] = {
           role: "assistant",
           content:
-            "Sorry, I had trouble connecting. Please try again.",
+            "I lost the connection there. Send that again.",
         };
         return updated;
       });
@@ -1071,7 +1071,7 @@ function CoachPageInner() {
                 onClick={toggleAudioOff}
                 title={
                   audioOff
-                    ? "Coach voice is off — click to hear Forma"
+                    ? "Coach voice is off. Click to hear Forma"
                     : "Mute coach voice (text only)"
                 }
                 aria-label={audioOff ? "Unmute coach voice" : "Mute coach voice"}

@@ -101,7 +101,7 @@ function changeColor(change: PlanProposalChange): string {
 /** The question the rider carries into the conversation, already loaded with
     the coach's own words so the chat opens mid thought rather than cold. */
 function talkItThroughAsk(proposal: PlanProposal, coachName: string): string {
-  return `You want to change my plan. You said: "${proposal.observation}" Talk me through it before I decide. What does it cost me, what does it buy me for my goal, and what happens if I leave the plan exactly as it is? I want ${coachName} being straight with me, not polite.`
+  return `You want to change my plan. You said: "${proposal.observation}" Talk me through it before I decide. What does it cost me, what does it buy me for my goal, and what happens if I leave the plan exactly as it is? ${coachName}, be straight with me, not polite.`
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -159,7 +159,7 @@ export function PlanProposalCard({
         </div>
         <p className="mt-3 max-w-2xl text-lg leading-[1.5] text-vb-text">
           {accept.data?.message ??
-            "Done. The sessions below have moved. Ride what is on the sheet and I will keep watching it against your goal."}
+            "Done. The sessions below have moved. Ride what's on the sheet and I'll keep watching it against your goal."}
         </p>
         <ul className="mt-5 border-t border-vb-border-subtle">
           {changes.map((change, i) => (
@@ -319,12 +319,12 @@ export function PlanProposalCard({
 
       {accept.isError && (
         <p className="f-kicker mt-3 text-vb-text-muted">
-          That did not land. Nothing has changed. Try again in a moment.
+          That didn't go through. Nothing has changed. Try again in a moment.
         </p>
       )}
       {decline.isError && (
         <p className="f-kicker mt-3 text-vb-text-muted">
-          I could not close that off. Try again in a moment.
+          I couldn't close that off. Try again in a moment.
         </p>
       )}
     </section>

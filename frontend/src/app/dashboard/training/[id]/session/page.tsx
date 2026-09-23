@@ -349,7 +349,7 @@ export default function TrainingSessionPage() {
         </p>
         <p className="mt-3 max-w-sm text-sm">
           Add it in settings, or ride the session on feel and upload the file
-          afterwards. Either way I will find your FTP from the road soon enough.
+          afterwards. Either way I'll find your FTP from the road soon enough.
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-4">
           <Link
@@ -737,7 +737,7 @@ export default function TrainingSessionPage() {
                           <strong>iPhone and iPad aren&apos;t supported</strong>:
                           every iOS browser (including Chrome) runs on Safari&apos;s
                           engine, which doesn&apos;t have Web Bluetooth. Native
-                          iOS app coming soon.
+                          iOS app to follow.
                         </p>
                       </div>
                     </div>
@@ -1212,7 +1212,7 @@ export default function TrainingSessionPage() {
                       <strong>iPhone and iPad aren&apos;t supported</strong>:
                       every iOS browser (including Chrome) runs on Safari&apos;s
                       engine, which doesn&apos;t have Web Bluetooth. Native iOS
-                      app coming soon.
+                      app to follow.
                     </p>
                   </div>
                 </div>
@@ -1322,7 +1322,7 @@ export default function TrainingSessionPage() {
             </p>
             {saveError && (
               <div className="mb-4 rounded-sm border border-vb-warning/40 bg-vb-warning/10 px-3 py-2 text-xs text-vb-warning">
-                Save failed: {saveError}. Your data is still buffered, try
+                Save failed: {saveError}. Your data is still buffered. Try
                 again.
               </div>
             )}

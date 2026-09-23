@@ -73,7 +73,7 @@ const MESSAGE_POOLS: Record<CoachTrigger, MessageTemplate[]> = {
 
   step_start: [
     {
-      text: "Go! Settle into {targetWatts} watts. Smooth and strong.",
+      text: "Go. Settle into {targetWatts} watts. Smooth and strong.",
       stepTypes: ["interval_on"],
     },
     {
@@ -81,15 +81,15 @@ const MESSAGE_POOLS: Record<CoachTrigger, MessageTemplate[]> = {
       stepTypes: ["interval_on"],
     },
     {
-      text: "Hit it! {targetWatts} watts. Don't spike, ramp in over 5 seconds.",
+      text: "Hit it. {targetWatts} watts. Don't spike, ramp in over 5 seconds.",
       stepTypes: ["interval_on"],
     },
     {
-      text: "This is your moment. {zoneName} effort, {targetWatts}W. Every second counts.",
+      text: "This is the one that matters. {zoneName} effort, {targetWatts}W. Hold every second of it.",
       stepTypes: ["interval_on"],
     },
     {
-      text: "Good work! Spin easy now, deep breaths. {stepDuration} seconds to recover.",
+      text: "Good work. Spin easy now, deep breaths. {stepDuration} seconds to recover.",
       stepTypes: ["interval_off"],
     },
     {
@@ -147,7 +147,7 @@ const MESSAGE_POOLS: Record<CoachTrigger, MessageTemplate[]> = {
 
   long_effort_check: [
     { text: "Check your form. Drop the shoulders, relax the grip, smooth circles." },
-    { text: "This {zoneName} work is building your engine. Every pedal stroke is a deposit." },
+    { text: "This {zoneName} work is building your engine. Every pedal stroke counts." },
     { text: "How's your breathing? Rhythmic and controlled. In through the nose if you can." },
     { text: "Stay present. Don't think about the finish, own this kilometre." },
     { text: "Relax your jaw, unclench your hands. Tension is watts you're not using." },
@@ -169,7 +169,7 @@ const MESSAGE_POOLS: Record<CoachTrigger, MessageTemplate[]> = {
   ],
 
   power_too_low: [
-    { text: "Power is slipping. Dig in, {stepRemaining} seconds. You've got this." },
+    { text: "Power is slipping. Dig in, {stepRemaining} seconds. Hold the number." },
     { text: "Bring it back to {targetWatts}W. Find the rhythm again." },
     { text: "Don't let it go. {targetWatts}W. Just the next 30 seconds, nothing else." },
     { text: "I need {targetWatts}W from you. Recommit. This bit is the whole point." },
@@ -180,7 +180,7 @@ const MESSAGE_POOLS: Record<CoachTrigger, MessageTemplate[]> = {
     { text: "Session banked. Stretch, refuel, feet up. I'm already writing the next one." },
     { text: "Done. Every file like that makes the plan smarter. Well ridden." },
     { text: "Good work. The gains happen while you rest, so go do that part properly." },
-    { text: "That's another brick in the wall. See you at the next one." },
+    { text: "That's another session in the legs. See you at the next one." },
   ],
 };
 
