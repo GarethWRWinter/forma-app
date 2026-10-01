@@ -390,6 +390,13 @@ automation, research replies store, activation state, outreach engine (off until
 legal copy), shared invite code mechanism. Churn detection = outreach thresholds
 at 1/3/7 quiet days per activation stage.
 
+**Launch gates (all must be true before the doors open):** Stripe live under
+FORMA CYCLING LTD; privacy policy and terms published (incl. founder review of
+conversations and coach emails); ICO registered; liability insurance in place;
+**outreach engine ON** (`OUTREACH_ENABLED=true`, dry-run read first). The engine is
+a promise the founder makes in person ("if you go quiet, it notices"), so shipping
+without it is shipping a false claim. Added 1 Oct 2026.
+
 **Outcome:** Stripe subscriptions, pricing page, trial, usage analytics with per-user AI cost tracking, referral mechanism, churn detection with Forma re-engagement.
 
 **Depends on:** Epics D + F.

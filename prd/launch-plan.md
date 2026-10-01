@@ -128,11 +128,21 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
 3. [x] Founding price DECIDED (11 Aug 2026): £14.99/mo locked for as long as
        they stay; £19.99 list. Stripe: create the £14.99 recurring price and
        point STRIPE_PRICE_ID at it for the founding cohort.
-4. [ ] **Gareth: company (FORMA CYCLING LTD via Tide), then Stripe account under it;
-       then checkout goes live (integration already built, three env vars).**
-       THE BLOCKER, 17 Sep 2026: nothing can be sold until this exists.
+4. [~] **Company, bank, Stripe.** FORMA CYCLING LTD is registered at Companies
+       House (formed via 1st Formations Privacy package, with registered office and
+       director's service address, Sep 2026). Next: Starling Business account, pay
+       in £100 share capital, then Stripe under the company; checkout goes live on
+       three env vars (integration already built).
 5. [ ] Legal pages (privacy incl. "founder reviews conversations", "coach emails you";
        terms) + ICO registration. Monitoring is done (Sentry + UptimeRobot).
+5b. [ ] **LAUNCH GATE: the outreach engine is switched ON before the doors open.**
+       `OUTREACH_ENABLED=true` on Railway, set the same day the privacy policy that
+       says "the coach may email you about your training" goes live (item 5), and
+       not before. The founder's own replies to the list already promise "if you go
+       quiet, it notices" (Paul, 1 Oct 2026); with the engine off that promise is
+       false. Before flipping it: dry-run `scripts/outreach.py` against the live
+       list and read every email it would send. After: confirm the first send in
+       `outreach_log`. Doors do not open with this unchecked.
 6. [ ] Announcement post (the spine story) on IG + LinkedIn + blog
 7. [ ] At 100 signals: cohort 1 invites go out. Mechanism decided 8 Sep: ONE shared
        word (e.g. HUNDRED), capped at 100 uses, pre-filled by link
