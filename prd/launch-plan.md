@@ -130,9 +130,10 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
        point STRIPE_PRICE_ID at it for the founding cohort.
 4. [~] **Company, bank, Stripe.** FORMA CYCLING LTD is registered at Companies
        House (formed via 1st Formations Privacy package, with registered office and
-       director's service address, Sep 2026). Next: Starling Business account, pay
-       in £100 share capital, then Stripe under the company; checkout goes live on
-       three env vars (integration already built).
+       director's service address, Sep 2026). Starling Business account open and
+       the £100 share capital paid in (Oct 2026). Next: Stripe under the company;
+       checkout goes live on three env vars (integration already built), tested
+       end to end in test mode before any live key is set.
 5. [ ] Legal pages (privacy incl. "founder reviews conversations", "coach emails you";
        terms) + ICO registration. Monitoring is done (Sentry + UptimeRobot).
 5b. [ ] **LAUNCH GATE: the outreach engine is switched ON before the doors open.**
