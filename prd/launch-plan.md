@@ -136,6 +136,16 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
        end to end in test mode before any live key is set.
 5. [ ] Legal pages (privacy incl. "founder reviews conversations", "coach emails you";
        terms) + ICO registration. Monitoring is done (Sentry + UptimeRobot).
+5c. [ ] **LAUNCH GATE: EU VAT registration (non-Union One Stop Shop) before the first
+       EU rider pays.** Decided 1 Oct 2026: Stripe in standard mode with Stripe Tax,
+       not Managed Payments. Managed Payments makes Stripe the seller, which puts UK
+       VAT on UK sales the company is below the threshold for (about £2.50 of every
+       £14.99) plus 3.5%, and it excludes products with human coaching. UK: no VAT
+       until £90,000 turnover. US: nothing until state thresholds (Stripe Tax
+       monitors). EU: VAT from the first sale, so register once via an EU state
+       (Ireland), add the registration in Stripe Tax, enable automatic tax at
+       Checkout (code change: automatic_tax + customer address capture), file the
+       quarterly OSS return from Stripe's report. Confirm with an accountant.
 5b. [ ] **LAUNCH GATE: the outreach engine is switched ON before the doors open.**
        `OUTREACH_ENABLED=true` on Railway, set the same day the privacy policy that
        says "the coach may email you about your training" goes live (item 5), and
