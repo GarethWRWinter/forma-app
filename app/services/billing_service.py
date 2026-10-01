@@ -6,6 +6,7 @@ Everything here is dormant until STRIPE_SECRET_KEY exists, and the paywall
 only bites when REQUIRE_SUBSCRIPTION flips true.
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -73,12 +74,16 @@ def handle_webhook(payload: bytes, signature: str) -> None:
     """Verify and apply a Stripe event. Raises ValueError on bad signature."""
     _client()
     try:
-        event = stripe.Webhook.construct_event(
-            payload, signature, settings.stripe_webhook_secret
-        )
+        # Verification only. The library's event objects stopped behaving like
+        # dicts (no .get) in recent versions, which made every handler below
+        # raise; caught in a signed-event test on 1 Oct 2026 before launch.
+        stripe.Webhook.construct_event(payload, signature, settings.stripe_webhook_secret)
     except (ValueError, stripe.error.SignatureVerificationError) as e:
         raise ValueError(f"Invalid webhook: {e}")
 
+    # The signature covers these exact bytes, so reading them as plain JSON is
+    # as trustworthy as the library's object, and it is ordinary dicts all the way down.
+    event = json.loads(payload)
     kind = event["type"]
     obj = event["data"]["object"]
 
@@ -96,6 +101,20 @@ def handle_webhook(payload: bytes, signature: str) -> None:
         logger.debug("Unhandled Stripe event: %s", kind)
 
 
+def _period_end_ts(sub) -> int | None:
+    """When the current paid period ends.
+
+    Stripe API versions from 2025-03-31 (basil) moved current_period_end off
+    the subscription and onto each subscription item, so read the item first
+    and fall back to the old top-level field for older payloads.
+    """
+    items = (sub.get("items") or {}).get("data") or []
+    ends = [i.get("current_period_end") for i in items if i.get("current_period_end")]
+    if ends:
+        return max(ends)
+    return sub.get("current_period_end")
+
+
 def _apply_subscription(sub: dict) -> None:
     from app.database import SessionLocal
 
@@ -105,7 +124,7 @@ def _apply_subscription(sub: dict) -> None:
         status = "canceled"
 
     period_end = None
-    ts = sub.get("current_period_end")
+    ts = _period_end_ts(sub)
     if ts:
         period_end = datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
 
