@@ -131,9 +131,13 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
 4. [~] **Company, bank, Stripe.** FORMA CYCLING LTD is registered at Companies
        House (formed via 1st Formations Privacy package, with registered office and
        director's service address, Sep 2026). Starling Business account open and
-       the £100 share capital paid in (Oct 2026). Next: Stripe under the company;
-       checkout goes live on three env vars (integration already built), tested
-       end to end in test mode before any live key is set.
+       the £100 share capital paid in (Oct 2026). Stripe sandbox wired and
+       VERIFIED 1 Oct 2026 end to end on a test rider: checkout session, customer
+       link, test-card subscription, webhook 200, account active with renewal date,
+       billing portal, cancellation recorded. Remaining: Gareth's own click-through
+       with the 4242 test card; then live mode (account verification, live product
+       and £14.99 price, live webhook to the same URL, live customer portal saved,
+       live keys on Railway). REQUIRE_SUBSCRIPTION=true only on the day doors open.
 5. [ ] Legal pages (privacy incl. "founder reviews conversations", "coach emails you";
        terms) + ICO registration. Monitoring is done (Sentry + UptimeRobot).
 5c. [ ] **LAUNCH GATE: EU VAT registration (non-Union One Stop Shop) before the first
