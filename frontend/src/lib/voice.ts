@@ -20,7 +20,7 @@ export const REST_LINES = [
   "Feet up. Even Coppi took rest weeks.",
   "Rest day. Resist the urge.",
   "Recover like you mean it.",
-  "The gains happen today, not Tuesday.",
+  "This is when the training sinks in.",
   "Do nothing, brilliantly.",
 ];
 

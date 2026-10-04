@@ -28,6 +28,13 @@ def wired(db_session, monkeypatch):
     monkeypatch.setattr(settings, "stripe_webhook_secret", SECRET)
     db_session.close = lambda: None  # handler closes its session; keep ours open
     monkeypatch.setattr("app.database.SessionLocal", lambda: db_session)
+
+    # Offline by default: the handler asks Stripe for the live subscription
+    # and falls back to the event's copy when it can't reach it.
+    def _offline(*a, **k):
+        raise RuntimeError("no network in tests")
+
+    monkeypatch.setattr(billing_service.stripe.Subscription, "retrieve", _offline)
     user = User(email="founder@example.com", hashed_password="x", stripe_customer_id="cus_123")
     db_session.add(user)
     db_session.commit()
@@ -90,3 +97,32 @@ def test_unknown_customer_found_by_metadata(db_session, wired):
 
     db_session.refresh(wired)
     assert wired.subscription_status == "active"
+
+
+class _Live:
+    def __init__(self, data):
+        self._data = data
+
+    def to_dict(self):
+        return self._data
+
+
+def test_late_active_event_cannot_revive_a_cancelled_subscription(db_session, wired, monkeypatch):
+    """Stripe doesn't promise order. A retried updated(active) arriving after
+    the cancellation must not hand back access: the live state wins."""
+    live = {"id": "sub_1", "object": "subscription", "customer": "cus_123", "status": "canceled",
+            "ended_at": 1_800_000_000, "items": {"object": "list", "data": []}}
+    monkeypatch.setattr(billing_service.stripe.Subscription, "retrieve", lambda *a, **k: _Live(live))
+    stale = {"id": "sub_1", "object": "subscription", "customer": "cus_123", "status": "active",
+             "items": {"object": "list", "data": []}}
+    body, sig = _signed(_event("customer.subscription.updated", stale))
+    billing_service.handle_webhook(body, sig)
+
+    db_session.refresh(wired)
+    assert wired.subscription_status == "canceled"
+
+
+def test_admin_email_passes_the_paywall_whatever_the_case(wired, monkeypatch):
+    monkeypatch.setattr(settings, "require_subscription", True)
+    monkeypatch.setattr(settings, "admin_emails", ["Founder@Example.com"])
+    assert billing_service.has_access(wired)

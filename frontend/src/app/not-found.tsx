@@ -13,8 +13,8 @@ export default function NotFound() {
         This road does not exist.
       </h1>
       <p className="max-w-sm text-sm text-vb-text-dim">
-        The page you are after has moved or never was. The dashboard knows the
-        way back.
+        The page you&apos;re after has moved, or never existed. The dashboard
+        is one click away.
       </p>
       <Link
         href="/dashboard"

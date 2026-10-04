@@ -86,7 +86,7 @@ export default function PerformancePage() {
   // "Fitness 0" cannot tell a loading state from a dead backend from a real
   // result. Same rule as the dashboard strip and the sidebar.
   const load = (v: number | null | undefined) =>
-    typeof v === "number" ? Math.round(v) : "—";
+    typeof v === "number" ? Math.round(v) : "-";
 
   const { data: zones } = useQuery({
     queryKey: ["zones"],
@@ -262,7 +262,7 @@ export default function PerformancePage() {
           </div>
         ) : (
           <div className="flex h-80 items-center justify-center text-sm text-vb-text-muted">
-            No PMC data yet. Upload rides with power data to see your chart.
+            No fitness chart yet. Upload rides with power and it fills in.
           </div>
         )}
       </div>
@@ -320,7 +320,7 @@ export default function PerformancePage() {
             />
           ) : (
             <div className="flex h-64 items-center justify-center text-sm text-vb-text-muted">
-              Complete rides with power data to see your profile
+              Ride with a power meter and your profile fills in
             </div>
           )}
         </div>
@@ -335,7 +335,7 @@ export default function PerformancePage() {
           <ZoneDistribution zones={zones.power_zones} />
         ) : (
           <div className="flex h-64 items-center justify-center text-sm text-vb-text-muted">
-            Set your FTP in settings to see zones
+            Add your FTP in Settings to see your zones
           </div>
         )}
       </div>
@@ -390,7 +390,7 @@ export default function PerformancePage() {
               </p>
               {fitness.ramp_rate > 7 && (
                 <p className="mt-0.5 text-xs text-vb-clay">
-                  High ramp rate. Watch your recovery.
+                  Fitness is climbing fast. Watch your recovery.
                 </p>
               )}
             </div>

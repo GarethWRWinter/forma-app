@@ -143,9 +143,9 @@ export default function AssessPage() {
             </Link>
           }
         >
-          Filed. This race just made the next one faster. Everything you told
-          me about {goal.event_name} is now part of how I build what comes
-          next. When you&apos;re ready, let&apos;s talk it through.
+          Filed. Everything you told me about {goal.event_name} now shapes
+          how I build what comes next. When you&apos;re ready, let&apos;s
+          talk it through.
         </CoachNote>
 
         {/* What's next, invite user to plan their next block */}
@@ -512,7 +512,7 @@ export default function AssessPage() {
             <textarea
               value={wentWell}
               onChange={(e) => setWentWell(e.target.value)}
-              placeholder="e.g. Held 250W on the final climb, fuelled every 20 minutes, never panicked..."
+              placeholder="e.g. Held 250W on the final climb, fuelled every 20 minutes, never panicked…"
               rows={2}
               className={textareaClasses}
             />
@@ -522,7 +522,7 @@ export default function AssessPage() {
             <textarea
               value={toImprove}
               onChange={(e) => setToImprove(e.target.value)}
-              placeholder="e.g. Went out too hot in the first hour, need more long climbs in training, forgot the gels..."
+              placeholder="e.g. Went out too hot in the first hour, need more long climbs in training, forgot the gels…"
               rows={2}
               className={textareaClasses}
             />

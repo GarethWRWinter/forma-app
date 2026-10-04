@@ -28,8 +28,9 @@ def _require_ftp(user: User) -> int:
     if not user.ftp:
         raise BadRequestException(
             detail=(
-                "Set your FTP before exporting. Workout files carry watts, not "
-                "percentages, so I need your real number to write them."
+                "Add your FTP before exporting (Settings, then Profile). Workout "
+                "files carry watts, not percentages, so I need your real number "
+                "to write them."
             )
         )
     return user.ftp
@@ -47,7 +48,7 @@ def export_workout_zwo(
         raise NotFoundException(detail="Workout not found")
 
     if not workout.steps:
-        raise BadRequestException(detail="Workout has no steps to export")
+        raise BadRequestException(detail="This session has no structured steps, so there's nothing to export.")
 
     zwo_content = workout_to_zwo(workout, ftp=_require_ftp(current_user))
 
@@ -70,7 +71,7 @@ def export_workout_erg(
     if not workout:
         raise NotFoundException(detail="Workout not found")
     if not workout.steps:
-        raise BadRequestException(detail="Workout has no steps to export")
+        raise BadRequestException(detail="This session has no structured steps, so there's nothing to export.")
 
     erg_content = workout_to_erg(workout, ftp=_require_ftp(current_user))
     filename = f"{workout.title.replace(' ', '_')}.erg"
@@ -92,7 +93,7 @@ def export_workout_mrc(
     if not workout:
         raise NotFoundException(detail="Workout not found")
     if not workout.steps:
-        raise BadRequestException(detail="Workout has no steps to export")
+        raise BadRequestException(detail="This session has no structured steps, so there's nothing to export.")
 
     mrc_content = workout_to_mrc(workout, ftp=_require_ftp(current_user))
     filename = f"{workout.title.replace(' ', '_')}.mrc"
@@ -114,7 +115,7 @@ def export_workout_fit(
     if not workout:
         raise NotFoundException(detail="Workout not found")
     if not workout.steps:
-        raise BadRequestException(detail="Workout has no steps to export")
+        raise BadRequestException(detail="This session has no structured steps, so there's nothing to export.")
 
     fit_content = workout_to_fit(workout, ftp=_require_ftp(current_user))
     filename = f"{workout.title.replace(' ', '_')}.fit"

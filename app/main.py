@@ -78,6 +78,13 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Outreach engine disabled")
 
+    # Deleted accounts are erased for good after 30 days, as Settings and the
+    # privacy policy promise; nobody has to remember to run a script.
+    from app.services.purge_service import start_purge
+
+    start_purge()
+    logger.info("Daily account purge scheduled")
+
     # Resume any Strava backfills that were interrupted by a previous restart.
     # Runs in background so we don't block startup.
     asyncio.create_task(resume_incomplete_backfills())

@@ -1,15 +1,25 @@
-from pydantic import BaseModel, EmailStr, ConfigDict, Field
+from typing import Annotated
+
+from pydantic import AfterValidator, BaseModel, EmailStr, ConfigDict, Field
+
+# Addresses are stored and looked up lower-case. Without this, a phone that
+# capitalised the first letter at login locked a rider out of the account
+# they had registered in lower case, and the same person could register
+# twice (launch audit, 4 Oct 2026).
+NormalisedEmail = Annotated[EmailStr, AfterValidator(lambda v: v.strip().lower())]
 
 
 class UserCreate(BaseModel):
-    email: EmailStr
+    email: NormalisedEmail
     password: str = Field(min_length=8, max_length=128)
     full_name: str | None = None
     invite_code: str | None = Field(None, max_length=24)
+    # Explicit consent to process health data (UK GDPR Article 9).
+    health_consent: bool = False
 
 
 class UserLogin(BaseModel):
-    email: EmailStr
+    email: NormalisedEmail
     password: str
     remember_me: bool = False
 

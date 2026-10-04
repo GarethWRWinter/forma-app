@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Response
 from pydantic import BaseModel, EmailStr, Field
@@ -17,7 +18,7 @@ from app.core.security import (
 from app.api.v1.deps import get_current_user
 from app.database import get_db
 from app.models.user import User
-from app.schemas.user import TokenRefresh, TokenResponse, UserCreate, UserLogin, UserResponse
+from app.schemas.user import NormalisedEmail, TokenRefresh, TokenResponse, UserCreate, UserLogin, UserResponse
 from app.services import email_service, token_service
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ def _redeem_invite(db: Session, code: str | None) -> str | None:
         return code.strip().upper() if code else None
     if not code or not code.strip():
         raise BadRequestException(
-            detail="Forma is invite-only right now. Join the list at ridewithforma.com and we'll call you up."
+            detail="Forma is invite-only for now, so you'll need the code from your invite email. No invite yet? Join the list at ridewithforma.com."
         )
     normalised = code.strip().upper()
     # Row-lock so two simultaneous signups can't share a single-use code.
@@ -76,7 +77,7 @@ def _redeem_invite(db: Session, code: str | None) -> str | None:
         invite.expires_at is not None and invite.expires_at < datetime.utcnow()
     ):
         raise BadRequestException(
-            detail="That invite code isn't valid any more. Reply to your invite email and we'll sort you out."
+            detail="That invite code doesn't work. Check it against your invite email, and if it still won't go through, reply to that email and Gareth will sort it out."
         )
     invite.uses += 1
     return normalised
@@ -127,7 +128,16 @@ async def register(
 ):
     existing = db.query(User).filter(User.email == user_in.email).first()
     if existing:
-        raise ConflictException(detail="Email already registered")
+        raise ConflictException(
+            detail="There's already a Forma account with that email. Log in instead; if you've forgotten the password, the login page has a reset link."
+        )
+
+    # Health details are the heart of the coaching, and special-category data
+    # under UK GDPR: no explicit consent, no account.
+    if not user_in.health_consent:
+        raise BadRequestException(
+            detail="Tick the box to say Forma can use the health details you share with it. The coaching can't work without them."
+        )
 
     invited_with = _redeem_invite(db, user_in.invite_code)
 
@@ -136,6 +146,7 @@ async def register(
         hashed_password=hash_password(user_in.password),
         full_name=user_in.full_name,
         invited_with=invited_with,
+        health_consent_at=datetime.utcnow(),
     )
     db.add(user)
     try:
@@ -144,7 +155,9 @@ async def register(
         # The only unique constraint in play here is the email (two
         # simultaneous signups): answer it honestly, not with a 500.
         db.rollback()
-        raise ConflictException(detail="Email already registered")
+        raise ConflictException(
+            detail="There's already a Forma account with that email. Log in instead; if you've forgotten the password, the login page has a reset link."
+        )
     db.refresh(user)
 
     # A validated invite is a founding rider: number them on the way in.
@@ -165,7 +178,7 @@ class EmailTokenBody(BaseModel):
 
 
 class ForgotPasswordBody(BaseModel):
-    email: EmailStr
+    email: NormalisedEmail
 
 
 class ResetPasswordBody(BaseModel):
@@ -179,11 +192,11 @@ def verify_email(body: EmailTokenBody, db: Session = Depends(get_db)):
     user_id = verify_email_token(body.token, "verify")
     if not user_id:
         raise BadRequestException(
-            detail="That link has expired or already been used. Request a fresh one from Settings."
+            detail="That link has expired. Log in and press Resend the link at the top of the page for a fresh one."
         )
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
-        raise BadRequestException(detail="Account not found")
+        raise BadRequestException(detail="That link belongs to an account that no longer exists.")
     if not user.email_verified:
         user.email_verified = True
         db.commit()
@@ -229,11 +242,11 @@ def reset_password(body: ResetPasswordBody, db: Session = Depends(get_db)):
     user_id = verify_email_token(body.token, "reset")
     if not user_id:
         raise BadRequestException(
-            detail="That link has expired. Request a new one and try again within the hour."
+            detail="That link has expired. Reset links last an hour, so request a new one and use it straight away."
         )
     user = db.query(User).filter(User.id == user_id).first()
     if user is None or not user.is_active or user.deleted_at is not None:
-        raise BadRequestException(detail="Account not found")
+        raise BadRequestException(detail="That link belongs to an account that no longer exists.")
 
     user.hashed_password = hash_password(body.new_password)
     # A password reset also proves the email is theirs.
@@ -256,7 +269,7 @@ def login(user_in: UserLogin, db: Session = Depends(get_db)):
         raise UnauthorizedException(detail="That email and password don't match. Try again.")
     # A suspended or GDPR-deleted account cannot obtain new tokens.
     if not user.is_active or user.deleted_at is not None:
-        raise UnauthorizedException(detail="Account is inactive")
+        raise UnauthorizedException(detail="This account has been closed. If that's a surprise, email gareth@ridewithforma.com.")
 
     access, refresh = token_service.issue_pair(db, user.id, remember_me=user_in.remember_me)
     return TokenResponse(access_token=access, refresh_token=refresh)

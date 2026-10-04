@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_current_user, require_paid_access
-from app.core.exceptions import BadRequestException, NotFoundException
+from app.core.exceptions import BadRequestException, ConflictException, NotFoundException
 from app.database import get_db
 from app.models.user import User
 from app.models.segment import SegmentEffort, StravaSegment
@@ -71,14 +71,36 @@ def upload_fit_file(
     """Upload a ride file (FIT, GPX or TCX), parse it, create ride with
     calculated metrics."""
     if not _is_supported_ride_file(file.filename):
-        raise BadRequestException(detail="File must be a .fit, .gpx or .tcx file")
+        raise BadRequestException(detail="Forma reads .fit, .gpx and .tcx ride files (and .gz versions of them), and that one isn't any of those.")
 
     file_bytes = file.file.read()
     if len(file_bytes) == 0:
-        raise BadRequestException(detail="File is empty")
+        raise BadRequestException(detail="That file is empty. Export the ride again and upload the new copy.")
 
     if len(file_bytes) > 50 * 1024 * 1024:  # 50MB limit
-        raise BadRequestException(detail="File too large (max 50MB)")
+        raise BadRequestException(detail="That file is over 50MB, which is too big to upload.")
+
+    # The same outing must never count twice: uploading a file again, or one
+    # Wahoo already delivered, doubled the ride's load in the fitness numbers
+    # (launch audit, 4 Oct 2026). The archive import and Wahoo already checked.
+    try:
+        parsed = ride_service.parse_ride_file(file_bytes, file.filename)
+    except Exception:
+        parsed = {}
+    start_time = parsed.get("start_time")
+    if start_time is not None:
+        elapsed = [
+            r.get("elapsed_seconds") for r in (parsed.get("records") or [])
+            if r.get("elapsed_seconds") is not None
+        ]
+        existing = ride_service.find_duplicate_ride(
+            db, current_user.id, start_time, max(elapsed) if elapsed else None
+        )
+        if existing:
+            when = existing.ride_date.strftime("%-d %B %Y") if existing.ride_date else "that day"
+            raise ConflictException(
+                detail=f"That ride is already in Forma: {existing.title or 'your ride'} on {when}."
+            )
 
     ride = ride_service.create_ride_from_fit(
         db, current_user, file_bytes, filename=file.filename

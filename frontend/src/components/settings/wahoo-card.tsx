@@ -27,7 +27,7 @@ function readReturnNotice(search: string): ReturnNotice | null {
     return {
       tone: "ok",
       title: "Wahoo linked",
-      body: "Any rides from while it was disconnected are on their way. Give it a minute, then look in Rides.",
+      body: "Your Wahoo rides are coming across now, including any from while it was disconnected. Give it a minute, then look in Rides.",
     };
   }
   switch (params.get("reason")) {
@@ -78,7 +78,7 @@ function readReturnNotice(search: string): ReturnNotice | null {
             >
               gareth@ridewithforma.com
             </a>{" "}
-            and I'll look at it the same day.
+            and Gareth will look at it the same day.
           </>
         ),
       };
@@ -129,7 +129,7 @@ export function WahooCard() {
       queryClient.invalidateQueries({ queryKey: ["rides"] });
       alert(
         data.synced > 0
-          ? `${data.synced} rides in from Wahoo`
+          ? `Rides in from Wahoo: ${data.synced}`
           : "Wahoo answered, but had nothing new since the last sync."
       );
     },
@@ -194,8 +194,8 @@ export function WahooCard() {
             <div className="border border-vb-red/40 bg-vb-surface p-4 space-y-3">
               <p className="text-sm text-vb-text-dim">
                 Wahoo allows an app ten keys per rider and Forma has used them
-                all, which is our fault, not yours. Reconnect on its own
-                won&apos;t clear it, so one step first:
+                all, which is a fault on Forma&apos;s side, not yours.
+                Reconnect on its own won&apos;t clear it, so one step first:
               </p>
               <ol className="list-decimal space-y-2 pl-5 text-sm text-vb-text-dim">
                 <li>
@@ -220,8 +220,9 @@ export function WahooCard() {
           ) : (
             <div className="border border-vb-red/40 bg-vb-surface p-4">
               <p className="text-sm text-vb-text-dim">
-                Wahoo stopped accepting our connection, which happens from time
-                to time with their tokens, so new rides have not been arriving.
+                Wahoo stopped accepting Forma&apos;s connection, which happens
+                from time to time with their keys, so new rides haven&apos;t
+                been arriving.
                 Reconnect and everything picks up where it left off, including
                 the rides you did in the meantime.
               </p>
@@ -303,9 +304,9 @@ export function WahooCard() {
           {/* Two buttons with one explanation between them is a guess, and the
               founder guessed wrong on his own product. Say what each does. */}
           <p className="text-sm text-vb-text-dim">
-            You should never need this. Rides arrive on their own. It is here
-            for the day one looks missing: it fetches your last few rides
-            straight from Wahoo, and skips anything already here.
+            You should never need this, because rides arrive on their own.
+            It&apos;s here for the day one looks missing: it fetches your
+            recent rides straight from Wahoo and skips anything already here.
           </p>
 
           <div className="flex gap-2">

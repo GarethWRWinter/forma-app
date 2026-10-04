@@ -36,10 +36,13 @@ class _SlidingWindow:
 
 
 def _client_key(request: Request) -> str:
-    # Behind Railway's proxy the real client is the first X-Forwarded-For hop.
+    # The LAST X-Forwarded-For hop is the address Railway's proxy saw. The
+    # first is whatever the client chose to send, so keying on it let anyone
+    # dodge every limit by sending a new fake address each time (launch
+    # audit, 4 Oct 2026).
     xff = request.headers.get("x-forwarded-for")
     if xff:
-        return xff.split(",")[0].strip()
+        return xff.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 

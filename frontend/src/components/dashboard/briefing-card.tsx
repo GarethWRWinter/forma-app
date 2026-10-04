@@ -27,7 +27,7 @@ export function BriefingCard() {
       <section className="f-rise border border-vb-border-subtle bg-vb-surface p-5 md:p-6">
         <Kicker dot flamme>Pre-ride briefing</Kicker>
         <p className="mt-3 text-sm text-vb-text-dim">
-          Forma is reading the sky and today&apos;s plan…
+          Forma is checking today&apos;s weather and your plan…
         </p>
       </section>
     );

@@ -404,7 +404,7 @@ export default function TrainingPage() {
           ) : (
             <div className="flex flex-wrap items-center gap-x-5 gap-y-3 border-t border-white/10 pt-4">
               <p className="max-w-md text-sm text-white/60">
-                {coachName} has not read this goal yet. The right size, the
+                {coachName} hasn&apos;t read this goal yet. The right size, the
                 missing piece, the one change that would matter most.
               </p>
               <Button
@@ -461,8 +461,8 @@ export default function TrainingPage() {
             What are we chasing?
           </p>
           <p className="mt-2 max-w-md text-sm text-white/60">
-            An event, a number, or simply the engine rebuilt. Give the plan its
-            why and every week bends towards it.
+            An event, a number, or just getting fitter. Tell me what it is and
+            why it matters, and every week of the plan is built towards it.
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
             <Link
@@ -619,12 +619,12 @@ export default function TrainingPage() {
           <Kicker>Build my season</Kicker>
           <p className="mt-2 text-sm text-vb-text-dim">
             {nextUpcomingGoal
-              ? `A periodised season peaking on ${nextUpcomingGoal.event_name}, ${formatDate(nextUpcomingGoal.event_date)}.`
-              : "A 12-week periodised block, built around your profile."}
+              ? `A season built in phases, peaking on ${nextUpcomingGoal.event_name}, ${formatDate(nextUpcomingGoal.event_date)}.`
+              : "A 12-week block built in phases around your profile."}
           </p>
           <div className="mt-4 flex flex-wrap items-end gap-3 sm:gap-4">
             <div className="min-w-[180px] flex-1">
-              <Kicker className="mb-1.5">Periodisation model</Kicker>
+              <Kicker className="mb-1.5">Periodisation model · Traditional suits most riders</Kicker>
               <select
                 value={genModel}
                 onChange={(e) => setGenModel(e.target.value)}
@@ -783,7 +783,7 @@ export default function TrainingPage() {
               decimals={1}
               unit="h"
             />
-            <DataTile label="TSS" value={weekTss} />
+            <DataTile label="Load · TSS" value={weekTss} />
           </div>
           {(() => {
             const segs = weekActive.map((w) => ({

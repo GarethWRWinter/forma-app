@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.models.chat import ChatMessage, ChatSession
 from app.models.coach import CoachNudge
-from app.models.integration import DropboxToken, StravaToken, TrainingPeaksToken
+from app.models.integration import DropboxToken, StravaToken, TrainingPeaksToken, WahooToken
 from app.models.memory import MemoryEdge, MemoryEntity
 from app.models.metrics import DailyMetrics
 from app.models.onboarding import GoalEvent, OnboardingResponse
@@ -90,7 +90,7 @@ def delete_account(db: Session, user: User) -> None:
 
     # Kill all sessions and cut off external data access immediately.
     token_service.revoke_all_for_user(db, user.id)
-    for model in (StravaToken, DropboxToken, TrainingPeaksToken):
+    for model in (StravaToken, DropboxToken, TrainingPeaksToken, WahooToken):
         db.query(model).filter(model.user_id == user.id).delete()
 
     db.commit()

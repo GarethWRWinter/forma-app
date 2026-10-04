@@ -33,7 +33,7 @@ const StatCard = React.forwardRef<HTMLDivElement, StatCardProps>(
           const result = await coachInsights.explainMetric(explainable, value);
           setExplanation(result.explanation);
         } catch {
-          setExplanation("Couldn't load explanation right now. Try again later.");
+          setExplanation("Forma couldn't explain that just now. Tap the number again in a minute.");
         } finally {
           setLoading(false);
         }
@@ -101,7 +101,7 @@ const StatCard = React.forwardRef<HTMLDivElement, StatCardProps>(
             {loading ? (
               <div className="flex items-center gap-2 text-xs text-vb-text-dim">
                 <div className="h-3 w-3 animate-spin rounded-full border border-vb-forest border-t-transparent" />
-                Thinking...
+                Thinking…
               </div>
             ) : (
               <p className="text-xs leading-relaxed text-vb-text-dim">{explanation}</p>

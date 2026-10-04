@@ -30,7 +30,7 @@ export const COACH_INITIATIVE_KEY = ["coach-initiative"] as const;
 const KIND_LABEL: Record<string, string> = {
   open_loop: "picking this back up",
   ride_insight: "something in your riding",
-  weekly_checkin: "the weekly check in",
+  weekly_checkin: "the weekly check-in",
 };
 
 /**

@@ -18,7 +18,7 @@
  */
 
 import { Unzip, UnzipInflate } from "fflate";
-import { rides } from "@/lib/api";
+import { ApiError, rides } from "@/lib/api";
 
 const RIDE_FILE_RE = /\.(fit|gpx|tcx)(\.gz)?$/i;
 
@@ -234,19 +234,26 @@ export async function importArchive(
   const counts: ImportCounts = { imported: 0, duplicates: 0, failed: 0 };
   let done = 0;
   const total = wanted.size;
+  // A refusal that applies to every file (no membership) stops the import
+  // and says why, instead of counting thousands of rides as "failed".
+  let refusal: ApiError | null = null;
 
   await streamZipSimple(
     file,
     (name) => (wanted.has(name) ? "collect" : "skip"),
     async (name, bytes) => {
-      if (signal?.aborted) return;
+      if (signal?.aborted || refusal) return;
       const basename = name.split("/").pop() || name;
       try {
         const result = await rides.importFile(basename, bytes);
         if (result.status === "imported") counts.imported++;
         else if (result.status === "duplicate") counts.duplicates++;
         else counts.failed++;
-      } catch {
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 402) {
+          refusal = err;
+          return;
+        }
         counts.failed++;
       }
       done++;
@@ -256,5 +263,6 @@ export async function importArchive(
     4 // concurrency: at most 4 inflated files in flight at once
   );
 
+  if (refusal) throw refusal;
   return counts;
 }

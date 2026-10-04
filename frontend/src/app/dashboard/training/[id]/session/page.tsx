@@ -732,12 +732,12 @@ export default function TrainingSessionPage() {
                           Bluetooth isn&apos;t available in this browser
                         </p>
                         <p className="mt-1 text-xs text-vb-chalk-dim">
-                          Use <strong>Chrome</strong>, <strong>Edge</strong>, or
-                          <strong> Brave</strong> on a Mac, PC, or Android.{" "}
-                          <strong>iPhone and iPad aren&apos;t supported</strong>:
-                          every iOS browser (including Chrome) runs on Safari&apos;s
-                          engine, which doesn&apos;t have Web Bluetooth. Native
-                          iOS app to follow.
+                          Open Forma in <strong>Chrome</strong> on a Mac or PC
+                          (Edge works too).{" "}
+                          <strong>iPhone and iPad can&apos;t do this</strong>:
+                          every browser on them, Chrome included, runs on
+                          Safari&apos;s engine, which can&apos;t talk to Bluetooth
+                          devices.
                         </p>
                       </div>
                     </div>
@@ -1207,12 +1207,12 @@ export default function TrainingSessionPage() {
                       Bluetooth isn&apos;t available in this browser
                     </p>
                     <p className="mt-1 text-xs text-vb-chalk-dim">
-                      Use <strong>Chrome</strong>, <strong>Edge</strong>, or
-                      <strong> Brave</strong> on a Mac, PC, or Android.{" "}
-                      <strong>iPhone and iPad aren&apos;t supported</strong>:
-                      every iOS browser (including Chrome) runs on Safari&apos;s
-                      engine, which doesn&apos;t have Web Bluetooth. Native iOS
-                      app to follow.
+                      Open Forma in <strong>Chrome</strong> on a Mac or PC
+                      (Edge works too).{" "}
+                      <strong>iPhone and iPad can&apos;t do this</strong>:
+                      every browser on them, Chrome included, runs on
+                      Safari&apos;s engine, which can&apos;t talk to Bluetooth
+                      devices.
                     </p>
                   </div>
                 </div>

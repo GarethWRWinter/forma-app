@@ -110,7 +110,7 @@ async def sync_dropbox(
         import logging
         logging.getLogger(__name__).exception("Dropbox sync failed")
         raise BadRequestException(
-            detail=f"Dropbox sync failed: {str(e)}. You may need to re-authorize Dropbox."
+            detail="Dropbox sync failed. If it keeps happening, disconnect and connect Dropbox again in Settings, then Data in."
         )
 
 
@@ -134,7 +134,7 @@ def update_folder_path(
         DropboxToken.user_id == current_user.id
     ).first()
     if not token:
-        raise BadRequestException(detail="Dropbox not connected")
+        raise BadRequestException(detail="Dropbox isn't connected. Settings, then Data in, then Connect Dropbox.")
 
     token.folder_path = body.folder_path
     db.commit()

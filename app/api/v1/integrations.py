@@ -22,10 +22,25 @@ router = APIRouter(prefix="/integrations", tags=["integrations"])
 
 
 @router.get("/strava/auth-url")
-def get_strava_auth_url(current_user: User = Depends(get_current_user)):
+def get_strava_auth_url(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Get Strava OAuth authorization URL. The state is a signed, short-lived
     token proving which user started the flow, since the callback is
-    unauthenticated."""
+    unauthenticated.
+
+    Reconnect only. Strava's API Agreement (s5.3) bars its data from AI
+    applications, so a rider who has never linked Strava is sent to the
+    account-archive import instead; existing links keep working until the
+    live integration is retired.
+    """
+    from app.models.integration import StravaToken
+
+    if not db.query(StravaToken).filter(StravaToken.user_id == current_user.id).first():
+        raise BadRequestException(
+            detail="Forma can't take a live Strava link. Import your Strava archive in Settings, then Data in, and your whole history comes across."
+        )
     state = create_oauth_state_token(str(current_user.id), provider="strava")
     url = strava_service.get_auth_url(state=state)
     return {"auth_url": url}

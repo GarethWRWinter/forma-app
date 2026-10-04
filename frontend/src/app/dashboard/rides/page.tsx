@@ -102,7 +102,7 @@ export default function RidesPage() {
       queryClient.invalidateQueries({ queryKey: ["rides"] });
       queryClient.invalidateQueries({ queryKey: ["fitness-summary"] });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Upload failed";
+      const msg = err instanceof Error ? err.message : "That upload didn't go through. Try the file again.";
       setError(msg);
     } finally {
       setUploading(false);
@@ -162,20 +162,20 @@ export default function RidesPage() {
       ) : data?.rides.length === 0 ? (
         <EmptyState
           kicker="The log is open"
-          title="No rides yet, and I'd love to see what you can do."
+          title="No rides yet. Show me what you can do."
           action={
             <Button
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
             >
               <Upload className="h-3.5 w-3.5" />
-              Upload a FIT file
+              Upload a ride file
             </Button>
           }
         >
-          Upload a ride file, link your Wahoo in Settings, or import your
-          Strava archive and every ride you've ever logged starts working
-          for you. Each one sharpens your power profile.
+          Upload a .fit, .gpx or .tcx file to start. Got years of riding on
+          Strava or Garmin, or a Wahoo? Bring it all across from Settings,
+          then Data in. Every ride fills in more of your power profile.
         </EmptyState>
       ) : (
         <>

@@ -25,6 +25,7 @@ function RegisterInner() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [inviteCode, setInviteCode] = useState("");
+  const [healthConsent, setHealthConsent] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -50,7 +51,7 @@ function RegisterInner() {
     setLoading(true);
 
     try {
-      await register(email, password, name || undefined, inviteCode || undefined);
+      await register(email, password, name || undefined, inviteCode || undefined, healthConsent);
       router.push("/onboarding");
     } catch (err: unknown) {
       const msg =
@@ -106,11 +107,11 @@ function RegisterInner() {
                 value={inviteCode}
                 onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
                 required={inviteRequired}
-                placeholder="FORMA-XXXXXX"
+                placeholder="From your invite email"
                 className="font-mono uppercase tracking-[0.08em]"
               />
               <p className="mt-1.5 text-xs text-vb-text-dim">
-                Forma is invite-only while the Founding Hundred fills. No code
+                Forma is invite-only while the founding hundred fills. No code
                 yet? Join the list at ridewithforma.com.
               </p>
             </div>
@@ -166,6 +167,40 @@ function RegisterInner() {
               </button>
             </div>
           </div>
+
+          {/* Explicit consent for health data (UK GDPR Article 9): unticked by
+              default, and the account can't be created without it. */}
+          <label className="flex items-start gap-3 text-sm leading-relaxed text-vb-text-dim">
+            <input
+              type="checkbox"
+              checked={healthConsent}
+              onChange={(e) => setHealthConsent(e.target.checked)}
+              required
+              className="mt-1 h-4 w-4 flex-none accent-[var(--color-vb-red)]"
+            />
+            <span>
+              Forma can use the health details I share with it, such as
+              injuries, illness and sleep, to coach me. I&apos;ve read the{" "}
+              <a
+                href="https://ridewithforma.com/privacy"
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2 hover:text-vb-text"
+              >
+                privacy policy
+              </a>{" "}
+              and{" "}
+              <a
+                href="https://ridewithforma.com/terms"
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2 hover:text-vb-text"
+              >
+                terms
+              </a>
+              .
+            </span>
+          </label>
 
           <Button type="submit" variant="flamme" size="lg" disabled={loading} className="w-full">
             {loading ? "Creating account…" : <>Create account <Arrow /></>}

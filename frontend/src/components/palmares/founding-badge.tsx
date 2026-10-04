@@ -212,7 +212,7 @@ export function FoundingBadge() {
             </Button>
           </div>
           <p className="f-data text-xs text-vb-text-muted">
-            {saveState === "saving" && "Saving your photo to your account..."}
+            {saveState === "saving" && "Saving your photo to your account…"}
             {saveState === "saved" &&
               "Saved. Your badge will look exactly like this next time."}
             {saveState === "failed" &&

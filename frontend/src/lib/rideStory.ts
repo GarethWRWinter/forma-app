@@ -76,9 +76,9 @@ export function rideStory(ride: Ride): string | null {
     const z = ZONE_STORY[dom];
     const load =
       tss && tss >= 60
-        ? ` ${tss} TSS banked, enough to move your fitness on.`
+        ? ` ${tss} TSS of training load banked, enough to move your fitness on.`
         : tss
-          ? ` ${tss} TSS banked.`
+          ? ` ${tss} TSS of training load banked.`
           : "";
     return `Mostly ${z.name.toLowerCase()}, ${z.means}. This ${z.does}.${load}`;
   }

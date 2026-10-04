@@ -381,7 +381,7 @@ function GoalsPageInner() {
               onChange={(e) =>
                 setGoalForm({ ...goalForm, notes: e.target.value })
               }
-              placeholder="Course details, a time you're chasing, how the day needs to go..."
+              placeholder="Course details, a time you're chasing, how the day needs to go…"
               rows={3}
               className={textareaClasses}
             />
@@ -853,8 +853,8 @@ function GoalCard({
             </Link>
           }
         >
-          So, how did it go? Ten minutes on {goal.event_name} and this race
-          starts working for the next one.
+          So, how did it go? Give me ten minutes on {goal.event_name} and
+          I&apos;ll use it to shape your next block.
         </CoachNote>
       )}
     </div>

@@ -33,8 +33,8 @@ function VerifyEmailInner() {
         <>
           <div className="border border-vb-border-subtle bg-vb-surface p-5">
             <p className="text-sm leading-relaxed text-vb-text">
-              Verified. That address is yours and your coach knows where to
-              find you.
+              Verified. That address is yours, and Forma knows where to find
+              you.
             </p>
           </div>
           <Link href="/dashboard" className="f-kicker text-vb-red hover:text-vb-red-dim">
@@ -45,8 +45,8 @@ function VerifyEmailInner() {
       {state === "failed" && (
         <>
           <div className="border-l-[3px] border-vb-red bg-vb-surface px-4 py-3 text-sm text-vb-text">
-            That link has expired or was already used. Request a fresh one
-            from inside the app.
+            That link has expired. Log in and press Resend the link at the
+            top of the page for a fresh one.
           </div>
           <Link href="/login" className="f-kicker text-vb-red hover:text-vb-red-dim">
             Log in →
@@ -69,9 +69,9 @@ export default function VerifyEmailPage() {
         <div className="mb-8">
           <Kicker className="mb-2">One click, done</Kicker>
           <h2 className="f-display text-4xl leading-[0.95]">
-            Email
+            Confirm
             <br />
-            verification.
+            your email.
           </h2>
         </div>
         <Suspense fallback={null}>

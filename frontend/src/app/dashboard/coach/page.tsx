@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { chat, goals as goalsApi } from "@/lib/api";
+import { ApiError, chat, goals as goalsApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { CoachDot, CoachGlyph } from "@/components/ui/coach-glyph";
 import { CadenceSpinner } from "@/components/ui/cadence-spinner";
@@ -40,6 +40,17 @@ import { useVoiceChat } from "@/hooks/useVoiceChat";
 import { useAuth } from "@/lib/auth-context";
 import { VoiceButton } from "@/components/voice/VoiceButton";
 import { VoiceIndicator } from "@/components/voice/VoiceIndicator";
+
+/** What the coach says when a message fails. "Send that again" is only the
+    right answer when the connection dropped: a rider without a membership
+    (402) or over the month's limit (429) would otherwise resend forever and
+    never learn why (launch audit, 4 Oct 2026). */
+function sendFailureMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 401) {
+    return error.message;
+  }
+  return "I lost the connection there. Send that again.";
+}
 
 function CoachPageInner() {
   const { user: authUser } = useAuth();
@@ -248,12 +259,12 @@ function CoachPageInner() {
             queryClient.invalidateQueries({ queryKey: ["workouts-week"] });
           }
         }
-      } catch {
+      } catch (error) {
         setMessages((prev) => {
           const updated = [...prev];
           updated[updated.length - 1] = {
             role: "assistant",
-            content: "I lost the connection there. Send that again.",
+            content: sendFailureMessage(error),
           };
           return updated;
         });
@@ -600,8 +611,7 @@ function CoachPageInner() {
         const updated = [...prev];
         updated[updated.length - 1] = {
           role: "assistant",
-          content:
-            "I lost the connection there. Send that again.",
+          content: sendFailureMessage(error),
         };
         return updated;
       });
@@ -836,12 +846,13 @@ function CoachPageInner() {
                   Coach {coach}
                 </h3>
                 <p className="mt-1 max-w-sm text-sm text-vb-text-dim">
-                  Training, racing, head, life, ask me anything. And I
-                  remember what you tell me: every conversation sharpens{" "}
+                  Training, racing, your head, your life: ask me anything. I
+                  remember what you tell me, and you can see everything
+                  I&apos;ve kept in{" "}
                   <Link href="/dashboard/brain" className="text-vb-forest hover:underline">
-                    your brain
+                    Brain
                   </Link>
-                  , and better memory makes a better coach.
+                  .
                 </p>
                 <StarterChips
                   starters={starters.slice(0, 6)}
@@ -1044,7 +1055,7 @@ function CoachPageInner() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask your coach anything..."
+              placeholder="Ask your coach anything…"
               rows={1}
               className="max-h-32 flex-1 resize-none rounded-sm border border-vb-border bg-vb-surface px-4 py-2.5 text-sm text-vb-text placeholder-vb-text-muted focus:border-vb-forest focus:outline-none"
               style={{

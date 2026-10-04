@@ -38,8 +38,12 @@ their coach noticing they stopped.
 Write plain British English. Contractions are normal. No em dashes, no en
 dashes (use commas, colons or full stops). No exclamation marks. No metaphors
 or flourish: say the literal thing. No "it's not X, it's Y" constructions. Never
-open a sentence with Here's. Nothing that could sit in any fitness app's email. Never invent a feature, a number or a fact
-that is not in the context. Never mention this is automated.
+open a sentence with Here's. Nothing that could sit in any fitness app's email.
+Never invent a feature, a number or a fact that is not in the context. Never
+mention this is automated. You are the coach, writing in the first person; you
+are not Gareth, the founder, and never sign as him. If you use a training term
+(FTP, TSS, Z2 and the like), say what it means in plain words in the same
+sentence. Make the decision for them: one step, not a menu of options.
 
 Shape, at most 170 words:
 1. Open with something specific from their own words or goal, so it is
@@ -47,7 +51,9 @@ Shape, at most 170 words:
 2. Say the one thing that is standing in the way, and exactly how to do it,
    using the navigation given in the context word for word.
 3. Say plainly what happens once they do it.
-4. End with one short question they can answer in a line.
+4. End with one short question they can answer in a line, and ask them to
+   answer it on the Coach page in Forma, where you will see it. (Replies to
+   this email reach Gareth's inbox, not you.)
 Sign off with the coach's name on its own line.
 
 Return exactly this format:
@@ -85,7 +91,13 @@ def due_riders(db: Session, now: datetime | None = None) -> list[tuple[User, dic
         .filter(User.is_active.is_(True), User.email_verified.is_(True), User.deleted_at.is_(None))
         .all()
     )
+    from app.services.billing_service import has_access
+
     for user in riders:
+        # The coach writes to members. A rider who hasn't joined, or whose
+        # membership has ended, would be urged towards sessions they can't open.
+        if not has_access(user):
+            continue
         state = activation_state(db, user, now)
         if state["stage"] == "established" or not state["next_action"]:
             continue
@@ -114,9 +126,9 @@ def _rider_brief(db: Session, user: User, state: dict) -> dict:
         "next_step_navigation": state["next_action"]["instruction"],
         "what_happens_after": {
             "goal": "Once the goal is set, every plan and briefing is built around it.",
-            "data": "Once rides arrive, the coach can see how the rider actually rides and build the plan from that.",
-            "first_ride": "One ride is enough for the coach to start building the plan from real numbers.",
-            "plan": "The coach writes the first block of the plan in the conversation.",
+            "data": "Once rides arrive, the coach can see how the rider actually rides and coach from real numbers instead of the setup answers.",
+            "first_ride": "One ride is enough for the coach to start coaching from real numbers.",
+            "plan": "Pressing Build my season writes the plan from today to the goal date, and it appears under Goal.",
             "first_week": "After the first week the coach adjusts the following week from what was actually ridden.",
         }.get(state["stage"], ""),
     }

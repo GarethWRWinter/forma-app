@@ -147,7 +147,7 @@ async def upload_goal_gpx(
         raise NotFoundException(detail="Goal not found")
 
     if not file.filename or not file.filename.lower().endswith(".gpx"):
-        raise BadRequestException(detail="File must be a .gpx file")
+        raise BadRequestException(detail="Course files need to be .gpx. Export the route as a GPX file and upload that.")
 
     # Save GPX file
     os.makedirs(GPX_UPLOAD_DIR, exist_ok=True)
@@ -336,20 +336,20 @@ def get_race_projection(
 
     if not current_user.ftp or not current_user.weight_kg:
         raise BadRequestException(
-            detail="FTP and weight are required for race projections. Update your profile."
+            detail="The projection needs your FTP and weight. Add both in Settings, then Profile."
         )
 
     route_data = goal.route_data
     if not route_data or not route_data.get("elevation_profile"):
         raise BadRequestException(
-            detail="Elevation profile required. Upload a GPX file for this goal."
+            detail="The projection needs the course. Upload the route's GPX file to this goal."
         )
 
     from app.services.race_projection_service import get_race_projection as compute_projection
     projection = compute_projection(goal, current_user, db)
 
     if not projection:
-        raise BadRequestException(detail="Unable to compute projection with available data.")
+        raise BadRequestException(detail="There isn't enough data to project this one yet.")
 
     return projection
 

@@ -63,6 +63,9 @@ The shape:
 Rules:
 - Address the rider by first name.
 - Real numbers from their data, never vague generalities, never invented.
+- No rides yet (fitness numbers all zero, no last ride)? Never quote the
+  zeros. Say plainly you haven't seen them ride yet, name today's session if
+  there is one, and ask about the riding they actually do.
 - The question closes the message. Nothing after it.
 - Never stack two questions. One, chosen well.
 - If the honest observation is that things are on track, say so plainly and

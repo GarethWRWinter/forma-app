@@ -18,7 +18,8 @@ interface AuthContextType {
     email: string,
     password: string,
     name?: string,
-    inviteCode?: string
+    inviteCode?: string,
+    healthConsent?: boolean
   ) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
@@ -56,9 +57,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     email: string,
     password: string,
     name?: string,
-    inviteCode?: string
+    inviteCode?: string,
+    healthConsent: boolean = false
   ) => {
-    await auth.register(email, password, name, inviteCode);
+    await auth.register(email, password, name, inviteCode, healthConsent);
     await auth.login(email, password);
     await refreshUser();
   };

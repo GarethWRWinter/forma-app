@@ -176,6 +176,136 @@ def _days_per_week(weekly_hours: float, experience: str | None) -> int:
     return 6
 
 
+# --- The long ride ---
+# Every event that takes longer than an hour is decided by the weekly long
+# ride, and the engine used to have none: an 8-hour Fred Whitton plan topped
+# out at 2 hours, because each session's length came from an even share of
+# the week's TSS. Found in the launch audit, 4 Oct 2026, on a test rider.
+
+# Events where duration is the limiter, so the long ride grows towards them.
+LONG_EVENT_TYPES = {"sportive", "gran_fondo", "gravel", "road_race", "mtb", "stage_race"}
+# When the rider gives no target duration, a typical finishing time.
+DEFAULT_EVENT_MINUTES = {
+    "sportive": 300, "gran_fondo": 300, "gravel": 300,
+    "road_race": 180, "mtb": 180, "stage_race": 240,
+}
+# Road racers ride at least race distance in training; sportive riders build
+# to three-quarters of theirs and let the day's adrenaline carry the rest.
+LONG_RIDE_RATIO = {"road_race": 1.0, "stage_race": 1.0}
+LONG_RIDE_MAX_S = 5 * 3600
+LONG_RIDE_MIN_S = 90 * 60
+
+
+def _enum_value(value: object) -> str:
+    return str(getattr(value, "value", value) or "")
+
+
+def _long_ride_cap_seconds(goal: GoalEvent | None, weekly_hours: float) -> int:
+    """How long the weekly long ride grows to over the plan.
+
+    Three-quarters of the event's duration is the classic target: a rider who
+    can ride 6 hours steadily can finish an 8-hour sportive on the day. Road
+    racers ride the full race duration. Short events (crits, time trials, hill
+    climbs) are not decided by duration, so their long ride stops at 2 hours.
+    Never more than 55% of the rider's week, never more than 5 hours, never
+    less than 90 minutes.
+    """
+    if goal is None:
+        cap = 150 * 60
+    else:
+        etype = _enum_value(goal.event_type)
+        if etype in LONG_EVENT_TYPES:
+            minutes = goal.target_duration_minutes or DEFAULT_EVENT_MINUTES.get(etype, 180)
+            cap = minutes * 60 * LONG_RIDE_RATIO.get(etype, 0.75)
+        else:
+            cap = 2 * 3600
+    cap = min(cap, LONG_RIDE_MAX_S, weekly_hours * 3600 * 0.55)
+    return int(max(cap, LONG_RIDE_MIN_S))
+
+
+def _round_quarter_hour(seconds: float) -> int:
+    return int(round(seconds / 900) * 900)
+
+
+def _long_ride_seconds(
+    cap_s: int,
+    phase_type: str,
+    cumulative_week: int,
+    is_recovery: bool,
+    experience: str | None,
+) -> int:
+    """This week's long ride: 15 minutes longer each week up to the cap
+    (10 for beginners), held at the cap in the peak, cut by 40% in recovery
+    weeks."""
+    beginner = experience in ("beginner", None)
+    start = 75 * 60 if beginner else LONG_RIDE_MIN_S
+    step = 600 if beginner else 900
+    grown = min(cap_s, start + step * cumulative_week)
+    if phase_type == "peak":
+        grown = cap_s
+    if is_recovery:
+        grown = grown * 0.6
+    return max(3600, _round_quarter_hour(grown))
+
+
+def _long_ride_template(duration_s: int, event_name: str | None = None) -> dict:
+    """A Zone 2 ride of exactly the length the week calls for."""
+    hours, minutes = divmod(duration_s // 60, 60)
+    length = f"{hours} h {minutes:02d}" if minutes else f"{hours} h"
+    purpose = (
+        f"This is the ride that gets you round {event_name}."
+        if event_name
+        else "This is the ride that builds the engine everything else runs on."
+    )
+    warmup, cooldown = 900, 300
+    return {
+        "name": "Long Ride",
+        "workout_type": "endurance",
+        "description": (
+            f"The long ride: {length} at an easy, conversational effort (Zone 2, "
+            f"a pace you could hold a chat at). {purpose} Eat something every "
+            "30 minutes from the start, and finish feeling you could have gone on."
+        ),
+        "duration_seconds": duration_s,
+        "planned_if": 0.65,
+        "steps": [
+            {"step_type": "warmup", "duration_seconds": warmup, "power_target_pct": 0.55},
+            {
+                "step_type": "steady_state",
+                "duration_seconds": duration_s - warmup - cooldown,
+                "power_target_pct": 0.68,
+                "power_low_pct": 0.56,
+                "power_high_pct": 0.75,
+                "cadence_target": 88,
+            },
+            {"step_type": "cooldown", "duration_seconds": cooldown, "power_target_pct": 0.50},
+        ],
+    }
+
+
+def _pick_long_ride_day(
+    available: list[tuple[int, date]],
+    selected_days: list[tuple[int, date]],
+    hard_days: set[int],
+    actual_days: int,
+) -> tuple[tuple[int, date], list[tuple[int, date]]]:
+    """Saturday if the rider can ride it, then Sunday, then their latest free
+    day. Returns the day and the week's training days with it included."""
+    by_dow = {slot[0]: slot for slot in available}
+    chosen = by_dow.get(5) or by_dow.get(6) or max(available, key=lambda s: s[0])
+    days = list(selected_days)
+    if chosen not in days:
+        if len(days) < actual_days:
+            days.append(chosen)
+        else:
+            # Give up an easy day before a hard one.
+            easy = [d for d in days if d[0] not in hard_days]
+            days.remove(easy[-1] if easy else days[-1])
+            days.append(chosen)
+    days.sort(key=lambda x: x[0])
+    return chosen, days
+
+
 def _build_weekly_workout_types(
     phase_type: str,
     days: int,
@@ -385,7 +515,15 @@ def generate_plan(
     db.flush()
 
     # ── 7. Build phases targeting primary goal ──
-    phases = _build_phases(weeks_available, today, end_date, periodization_model)
+    # A rider with no goal has no race to taper for: no peak, no race week.
+    phases = _build_phases(
+        weeks_available, today, end_date, periodization_model,
+        has_event=primary_goal is not None,
+        long_event=bool(
+            primary_goal and _enum_value(primary_goal.event_type) in LONG_EVENT_TYPES
+        ),
+    )
+    long_ride_cap_s = _long_ride_cap_seconds(primary_goal, weekly_hours)
 
     # ── 8. Calculate progressive TSS targets ──
     starting_tss = _starting_weekly_tss(current_ctl, current_tsb)
@@ -426,6 +564,9 @@ def generate_plan(
             goal_event_dates=goal_event_dates,
             b_race_taper_dates=b_race_taper_dates,
             cumulative_week=cumulative_week,
+            long_ride_cap_s=long_ride_cap_s,
+            experience=experience,
+            event_name=primary_goal.event_name if primary_goal else None,
         )
 
     db.commit()
@@ -447,6 +588,9 @@ def _generate_adaptive_workouts(
     goal_event_dates: set,
     cumulative_week: int,
     b_race_taper_dates: set[date] | None = None,
+    long_ride_cap_s: int | None = None,
+    experience: str | None = None,
+    event_name: str | None = None,
 ) -> int:
     """
     Generate workouts for a phase with progressive overload and recovery weeks.
@@ -553,10 +697,46 @@ def _generate_adaptive_workouts(
         hard_types = [wt for wt in workout_types if wt in intensity_types]
         easy_types = [wt for wt in workout_types if wt not in intensity_types]
 
+        # 3b. The long ride: one per week, on the weekend where possible. Race
+        #     week has none (the event is the long ride), and the other taper
+        #     week keeps a shortened one so the legs remember the distance.
+        next_event = min(
+            (d for d in (goal_event_dates or set()) if d >= current_week_start),
+            default=None,
+        )
+        long_s = None
+        long_day = None
+        if long_ride_cap_s:
+            if phase_type in ("race", "recovery", "off_season"):
+                # Only a taper week that ends a full week clear of the event
+                # gets one; a Saturday long ride before a Sunday sportive is
+                # the mistake this guards against.
+                if phase_type == "race" and (
+                    next_event is None or (next_event - week_end).days >= 6
+                ):
+                    long_s = max(3600, _round_quarter_hour(long_ride_cap_s * 0.6))
+            else:
+                long_s = _long_ride_seconds(
+                    long_ride_cap_s, phase_type, cumulative_week, is_recovery, experience
+                )
+        if long_s:
+            long_day, selected_days = _pick_long_ride_day(
+                available, selected_days, hard_days, actual_days
+            )
+            # It takes the place of one easy session, never an extra day.
+            if "endurance" in easy_types:
+                easy_types.remove("endurance")
+            elif easy_types:
+                easy_types.pop()
+            elif hard_types:
+                hard_types.pop()
+
         # 4. Assign: hard types to hard days, easy types to easy days
         ordered = []
-        for dow, _ in selected_days:
-            if dow in hard_days and hard_types:
+        for dow, day in selected_days:
+            if long_day and day == long_day[1]:
+                ordered.append("endurance")
+            elif dow in hard_days and hard_types:
                 ordered.append(hard_types.pop(0))
             elif easy_types:
                 ordered.append(easy_types.pop(0))
@@ -565,10 +745,22 @@ def _generate_adaptive_workouts(
             else:
                 ordered.append("endurance")
 
-        # 5. Calculate TSS weights
+        # 5. Calculate TSS weights. The long ride's stress comes off the top;
+        #    the other sessions share what is left of the week.
+        long_tss = 0.0
+        long_template = None
+        if long_day:
+            long_template = _long_ride_template(long_s, event_name)
+            long_tss = estimate_tss(long_template, ftp)
+        shared_tss = (
+            max(target_weekly_tss - long_tss, target_weekly_tss * 0.4)
+            if long_day else target_weekly_tss
+        )
         tss_weights = []
-        for wt in ordered:
-            if wt in intensity_types:
+        for (dow, day), wt in zip(selected_days, ordered):
+            if long_day and day == long_day[1]:
+                tss_weights.append(0.0)
+            elif wt in intensity_types:
                 tss_weights.append(1.3)
             elif wt == "recovery":
                 tss_weights.append(0.5)
@@ -585,8 +777,41 @@ def _generate_adaptive_workouts(
             if workout_day in taper_set and wtype in intensity_types:
                 wtype = "endurance"
 
+            # Race week: nothing over an hour, and nothing hard in the last
+            # two days before the event.
+            days_to_event = (next_event - workout_day).days if next_event else None
+            in_race_week = phase_type == "race" and days_to_event is not None and 0 < days_to_event <= 6
+            if in_race_week and days_to_event <= 2 and wtype in intensity_types:
+                wtype = "recovery"
+
+            if long_day and workout_day == long_day[1]:
+                template = long_template
+                if workout_day in taper_set:
+                    template = _long_ride_template(
+                        max(3600, _round_quarter_hour(long_s * 0.6)), event_name
+                    )
+                planned_tss = estimate_tss(template, ftp)
+                workout = Workout(
+                    phase_id=phase.id,
+                    user_id=user.id,
+                    scheduled_date=workout_day,
+                    title=template["name"],
+                    description=template["description"],
+                    workout_type=wtype,
+                    planned_duration_seconds=template["duration_seconds"],
+                    planned_tss=round(planned_tss, 1),
+                    planned_if=template.get("planned_if"),
+                    status=WorkoutStatus.planned,
+                    sort_order=workout_sort_order,
+                )
+                db.add(workout)
+                db.flush()
+                workout_sort_order += 1
+                _create_workout_steps(db, workout, template)
+                continue
+
             # Calculate per-workout TSS target
-            workout_tss_target = target_weekly_tss * (tss_weights[slot_idx] / total_weight)
+            workout_tss_target = shared_tss * (tss_weights[slot_idx] / total_weight)
 
             # Reduce TSS on B-race mini-taper days (70% volume)
             if workout_day in taper_set:
@@ -599,6 +824,14 @@ def _generate_adaptive_workouts(
             target_duration_s = int(workout_tss_target / (planned_if ** 2 * 100) * 3600)
             # Clamp to reasonable bounds
             target_duration_s = max(1800, min(target_duration_s, int(weekly_hours * 3600 * 0.4)))
+            if in_race_week:
+                target_duration_s = min(target_duration_s, 3600)
+            # With a long ride in the week, the other sessions share what is
+            # left of the rider's hours rather than adding to them.
+            if long_day:
+                others = max(1, len(selected_days) - 1)
+                budget_s = (weekly_hours * 3600 - long_s) / others
+                target_duration_s = max(1800, min(target_duration_s, int(budget_s * 1.15)))
 
             template = get_template(wtype, duration_hint=target_duration_s)
             planned_tss = estimate_tss(template, ftp)
@@ -633,6 +866,8 @@ def _build_phases(
     start_date: date,
     end_date: date,
     model: str,
+    has_event: bool = True,
+    long_event: bool = False,
 ) -> list[dict]:
     """
     Determine training phases based on weeks available and periodization model.
@@ -688,23 +923,36 @@ def _build_phases(
         })
         return phases
 
-    # Full plan (8+ weeks)
-    if model == PeriodizationModel.polarized:
-        base_weeks = max(4, int(weeks_available * 0.50))
-        build_weeks = max(2, int(weeks_available * 0.25))
-        peak_weeks = max(1, int(weeks_available * 0.15))
-        race_weeks = weeks_available - base_weeks - build_weeks - peak_weeks
-    elif model == PeriodizationModel.sweet_spot:
-        base_weeks = max(3, int(weeks_available * 0.35))
-        build_weeks = max(3, int(weeks_available * 0.35))
-        peak_weeks = max(1, int(weeks_available * 0.15))
-        race_weeks = weeks_available - base_weeks - build_weeks - peak_weeks
-    else:
-        # Traditional
-        base_weeks = max(3, int(weeks_available * 0.40))
-        build_weeks = max(2, int(weeks_available * 0.30))
-        peak_weeks = max(1, int(weeks_available * 0.15))
-        race_weeks = weeks_available - base_weeks - build_weeks - peak_weeks
+    # No event: nothing to peak or taper for. Base, then build, to the end.
+    if not has_event:
+        base_weeks = max(3, int(weeks_available * 0.6))
+        d1 = current_date + timedelta(weeks=base_weeks)
+        phases.append({
+            "type": PhaseType.base,
+            "start_date": current_date,
+            "end_date": d1 - timedelta(days=1),
+            "focus": "Aerobic base: endurance foundation and movement efficiency",
+        })
+        phases.append({
+            "type": PhaseType.build,
+            "start_date": d1,
+            "end_date": end_date,
+            "focus": "Raise the ceiling: progressive intensity on a settled base",
+        })
+        return phases
+
+    # Full plan (8+ weeks). The taper is a fixed length, not a share of the
+    # plan: it used to be whatever was left over, which gave a 31-week plan a
+    # 6-week taper and a rider who arrived at the start line detrained.
+    race_weeks = 2 if long_event and weeks_available >= 12 else 1
+    peak_weeks = max(1, min(3, round(weeks_available * 0.12)))
+    remaining = weeks_available - race_weeks - peak_weeks
+    base_share = {
+        PeriodizationModel.polarized: 0.67,
+        PeriodizationModel.sweet_spot: 0.5,
+    }.get(model, 0.57)  # traditional: the old 40:30 base-to-build ratio
+    base_weeks = max(3, int(remaining * base_share))
+    build_weeks = max(2, remaining - base_weeks)
 
     d1 = current_date + timedelta(weeks=base_weeks)
     d2 = d1 + timedelta(weeks=build_weeks)

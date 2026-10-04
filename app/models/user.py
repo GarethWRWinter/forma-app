@@ -57,6 +57,11 @@ class User(TimestampMixin, Base):
         Integer, unique=True, nullable=True
     )
 
+    # When the rider gave explicit consent for Forma to use the health details
+    # they share (injuries, illness, sleep). UK GDPR Article 9 special-category
+    # data; registration requires it.
+    health_consent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Badge ground: the rider's chosen photo as a downscaled JPEG data URL.
     # Private to the rider; only ever drawn onto their own badge canvas.
     badge_photo: Mapped[str | None] = mapped_column(Text, nullable=True)

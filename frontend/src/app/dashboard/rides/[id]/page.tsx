@@ -205,7 +205,7 @@ export default function RideDetailPage() {
               : null
           }
           unit="W"
-          explainable="Normalized Power"
+          explainable="Normalised Power"
         />
         <StatTile
           label="Avg Power"

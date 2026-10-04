@@ -449,7 +449,7 @@ export default function GoalDetailPage() {
                     disabled={coachRead.isPending}
                     className="f-data text-xs text-vb-text-muted underline-offset-4 hover:text-vb-text hover:underline disabled:opacity-50"
                   >
-                    {coachRead.isPending ? "Rereading..." : "Fresh eyes"}
+                    {coachRead.isPending ? "Rereading…" : "Fresh eyes"}
                   </button>
                   <Link
                     href={`/dashboard/coach?ask=${encodeURIComponent(
@@ -476,7 +476,7 @@ export default function GoalDetailPage() {
                 onClick={() => coachRead.mutate()}
                 disabled={coachRead.isPending}
               >
-                {coachRead.isPending ? "Reading your numbers..." : "Get the read"}
+                {coachRead.isPending ? "Reading your numbers…" : "Get the read"}
               </Button>
             </div>
           )}
@@ -499,7 +499,7 @@ export default function GoalDetailPage() {
           }
         >
           So, how did {goal.event_name} go? Give me the result, link the ride
-          file, and this race starts working for the next one.
+          file, and I&apos;ll use both to shape your next block.
         </CoachNote>
       )}
 
@@ -961,7 +961,7 @@ export default function GoalDetailPage() {
                   className="text-sm text-vb-text transition-colors hover:text-vb-red"
                 >
                   {goal.route_url.length > 60
-                    ? goal.route_url.slice(0, 60) + "..."
+                    ? goal.route_url.slice(0, 60) + "…"
                     : goal.route_url}
                 </a>
               </div>

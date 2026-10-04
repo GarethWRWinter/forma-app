@@ -265,11 +265,31 @@ async def _access_token(db: Session, token: WahooToken) -> str:
     return token.access_token
 
 
+# Where Wahoo serves workout files from. The URL arrives inside the webhook
+# payload, so without this a forged event could make the server fetch any
+# address it can reach, internal ones included.
+_FILE_HOSTS = ("wahooligan.com", "amazonaws.com", "cloudfront.net")
+
+
+def _is_wahoo_file_host(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    parts = urlparse(url)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and any(
+        host == h or host.endswith("." + h) for h in _FILE_HOSTS
+    )
+
+
 def _workout_file_url(workout: dict) -> str | None:
     """The FIT file URL inside a workout payload, wherever Wahoo put it."""
     summary = workout.get("workout_summary") or {}
     file_info = summary.get("file") or workout.get("file") or {}
-    return file_info.get("url")
+    url = file_info.get("url")
+    if url and not _is_wahoo_file_host(url):
+        logger.warning("Wahoo workout file on an unexpected host, skipped: %s", url[:80])
+        return None
+    return url
 
 
 def _external_id(workout: dict) -> str:
@@ -474,7 +494,8 @@ async def handle_webhook_event(payload: dict) -> None:
             logger.warning("Wahoo webhook for unknown wahoo_user_id %s", wahoo_user)
             return
         user = db.query(User).filter(User.id == token.user_id).first()
-        if user is None:
+        # A closed account is erased, not paused: no imports, no debriefs.
+        if user is None or not user.is_active or user.deleted_at is not None:
             return
 
         access = await _access_token(db, token)

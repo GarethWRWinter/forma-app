@@ -17,27 +17,27 @@ const GOALS = [
   {
     value: "build_fitness",
     label: "Get fitter, full stop",
-    desc: "A stronger engine and longer days out. No finish line required",
+    desc: "A stronger engine and longer days out. No finish line required.",
   },
   {
     value: "target_event",
     label: "Aim at an event",
-    desc: "A date on the calendar, and a season built backwards from it",
+    desc: "A date on the calendar, and a season built backwards from it.",
   },
   {
     value: "improve_ftp",
     label: "Raise my FTP",
-    desc: "More watts at threshold. The number that moves everything else",
+    desc: "FTP is roughly the most power you can hold for an hour. Raise it and you're faster everywhere.",
   },
   {
     value: "race",
     label: "Race, properly",
-    desc: "Be there when it kicks off at the front, not watching it go",
+    desc: "Be there when it kicks off at the front, not watching it go.",
   },
   {
     value: "learn_skills",
     label: "Ride smarter",
-    desc: "Pacing, fuelling, handling. The craft of the sport",
+    desc: "Pacing, fuelling and bike handling: the craft of the sport.",
   },
 ];
 
@@ -59,7 +59,7 @@ const EVENT_TYPES = [
 
 const PRIORITIES = [
   { value: "a_race", label: "A race", desc: "The day the whole season points at" },
-  { value: "b_race", label: "B race", desc: "Matters, but we won't taper for it" },
+  { value: "b_race", label: "B race", desc: "Matters, but training doesn't ease off for it" },
   { value: "c_race", label: "C race", desc: "Training with a number on your back" },
 ];
 
@@ -253,7 +253,7 @@ export default function OnboardingPage() {
       await writePlan(createdGoalId);
     } catch (err: unknown) {
       const message =
-        err instanceof Error ? err.message : "Something went wrong";
+        err instanceof Error ? err.message : "That didn't save. Check your connection and try again.";
       setError(message);
       console.error(err);
     } finally {
@@ -292,7 +292,7 @@ export default function OnboardingPage() {
               What are we aiming at?
             </h2>
             <p className="mt-2 text-sm text-vb-text-dim">
-              Everything Forma builds starts from this answer.
+              Everything I build for you starts from this answer.
             </p>
 
             <div className="f-stagger mt-8 space-y-3">
@@ -344,7 +344,7 @@ export default function OnboardingPage() {
               Tell me about race day
             </h2>
             <p className="mt-2 text-sm text-vb-text-dim">
-              The more Forma knows about the day, the sharper the plan gets.
+              The more I know about the day, the better the plan fits it.
             </p>
 
             <div className="mt-8 space-y-5">
@@ -422,11 +422,11 @@ export default function OnboardingPage() {
               <div className="rounded-sm border border-vb-border-subtle bg-vb-surface p-4">
                 <h3 className="mb-1 flex items-center gap-2 text-sm font-medium text-vb-text">
                   <MapPin className="h-4 w-4 text-vb-red" />
-                  Show Forma the course
+                  Show me the course
                 </h3>
                 <p className="mb-4 text-xs text-vb-text-dim">
-                  A route link or a GPX file, and Forma reads the climbs before
-                  you do.
+                  Paste a route link or add the route&apos;s GPX file, and
+                  I&apos;ll know the climbs before you ride them.
                 </p>
 
                 {/* Route URL */}
@@ -481,13 +481,13 @@ export default function OnboardingPage() {
               {/* Notes */}
               <div>
                 <label className={fieldLabel}>
-                  Anything else Forma should know?{" "}
+                  Anything else I should know?{" "}
                   <span className="font-normal text-vb-text-muted">(optional)</span>
                 </label>
                 <textarea
                   value={eventNotes}
                   onChange={(e) => setEventNotes(e.target.value)}
-                  placeholder="e.g. 3 big climbs in the last 50km, expect headwinds on the coast..."
+                  placeholder="e.g. 3 big climbs in the last 50km, headwinds on the coast…"
                   rows={2}
                   className="w-full rounded-sm border border-vb-border bg-vb-surface px-3 py-2.5 text-sm text-vb-text placeholder:text-vb-text-muted focus:border-vb-red focus:outline-none focus:ring-1 focus:ring-vb-red"
                 />
@@ -517,8 +517,7 @@ export default function OnboardingPage() {
               How much bike is in your life?
             </h2>
             <p className="mt-2 text-sm text-vb-text-dim">
-              Honest answers build honest plans. Forma works with the week you
-              actually have.
+              Be honest here. I plan around the week you actually have.
             </p>
 
             <div className="mt-8 space-y-6">
@@ -580,8 +579,8 @@ export default function OnboardingPage() {
               <div>
                 <label className={fieldLabel}>Which days can hurt?</label>
                 <p className="mb-3 text-xs text-vb-text-dim">
-                  Tap each day. Hard days carry the intensity, rest days stay
-                  empty, easy days soak up the rest.
+                  Tap a day to change it. Hard days get the intervals, rest
+                  days stay empty, and easy days take the steady miles.
                 </p>
                 <div className="grid grid-cols-7 gap-2">
                   {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day, idx) => {
@@ -641,7 +640,8 @@ export default function OnboardingPage() {
               The engine, roughly.
             </h2>
             <p className="mt-2 text-sm text-vb-text-dim">
-              Skip anything you don&apos;t know. We&apos;ll measure the rest.
+              Skip anything you don&apos;t know. You can add it later in
+              Settings.
             </p>
 
             <div className="mt-8 space-y-5">
@@ -654,7 +654,10 @@ export default function OnboardingPage() {
                   placeholder="e.g. 250"
                 />
                 <p className="mt-1.5 text-xs text-vb-text-muted">
-                  No idea? Fine. Forma will find it on the road.
+                  Roughly the most power you can hold for an hour. No idea?
+                  Leave it blank: if your head unit has one set, I&apos;ll read
+                  it from your first ride file, and if not, there&apos;s a
+                  20-minute test in Settings.
                 </p>
               </div>
               <div>
@@ -695,13 +698,13 @@ export default function OnboardingPage() {
               Meet Forma.
             </h2>
             <p className="mt-2 text-sm text-vb-text-dim">
-              Forma is your coach, and adapts to you. Shape how Forma shows up.
-              The coaching is the same either way. You can fine-tune this
-              any time.
+              I&apos;m Forma, your coach. Pick how you&apos;d like me to talk
+              to you. The coaching underneath is the same whichever you
+              choose, and you can change it any time in Settings.
             </p>
 
             <div className="mt-8">
-              <Kicker className="mb-3">How Forma coaches you</Kicker>
+              <Kicker className="mb-3">How I talk to you</Kicker>
               <div className="f-stagger grid grid-cols-2 gap-2">
                 {COACH_TONES.map((t) => (
                   <button
@@ -757,8 +760,8 @@ export default function OnboardingPage() {
                   <>
                     Twice now, and it still won&apos;t write. Your account and
                     your answers are safe, but you&apos;re going through
-                    without week one. Open Training on the dashboard, hit Build
-                    my season, and I&apos;ll get it done there.
+                    without a plan for now. Open Goal in the menu, press Build
+                    my season, and I&apos;ll write it there.
                   </>
                 ) : (
                   <>
@@ -774,8 +777,8 @@ export default function OnboardingPage() {
                 kicker="Before you go"
                 coachName={coachName.trim() || "Forma"}
               >
-                Right. Give me these answers and I&apos;ll write week one before
-                you&apos;ve closed the laptop.
+                Right, that&apos;s everything I need. Press Start training and
+                I&apos;ll have your plan written before the kettle boils.
               </CoachNote>
             )}
 
@@ -798,7 +801,7 @@ export default function OnboardingPage() {
                 disabled={loading}
                 className="mt-8 w-full"
               >
-                {loading ? "Writing week one…" : planRetried ? (
+                {loading ? "Writing your plan…" : planRetried ? (
                   <>
                     Go to my dashboard <Arrow />
                   </>
@@ -820,7 +823,7 @@ export default function OnboardingPage() {
                   disabled={loading}
                   className="flex-1"
                 >
-                  {loading ? "Writing week one…" : (
+                  {loading ? "Writing your plan…" : (
                     <>
                       Start training <Arrow />
                     </>

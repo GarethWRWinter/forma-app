@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -9,6 +11,8 @@ from app.database import get_db
 from app.models.user import User
 from app.schemas.user import UserResponse, UserUpdate
 from app.services import gdpr_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -51,7 +55,7 @@ def set_badge_photo(
     db: Session = Depends(get_db),
 ):
     if not body.data_url.startswith(("data:image/jpeg;base64,", "data:image/png;base64,")):
-        raise BadRequestException(detail="Send the photo as a JPEG or PNG data URL")
+        raise BadRequestException(detail="That photo needs to be a JPEG or PNG.")
     current_user.badge_photo = body.data_url
     db.commit()
     return {"saved": True}
@@ -82,6 +86,19 @@ def delete_my_account(
     db: Session = Depends(get_db),
 ):
     """GDPR erasure — locks the account and cuts off third-party access now;
-    a scheduled purge removes the data after the retention window."""
+    a scheduled purge removes the data after the retention window.
+
+    The membership ends first. If Stripe can't be reached the account stays
+    open: locking a rider out while their card goes on being charged is the
+    one outcome worse than asking them to try again."""
+    from app.services import billing_service
+
+    try:
+        billing_service.cancel_all_subscriptions(current_user)
+    except Exception:
+        logger.exception("Could not cancel Stripe subscription for %s", current_user.id)
+        raise BadRequestException(
+            detail="I couldn't end your membership just now, so nothing has been deleted. Try again in a minute."
+        )
     gdpr_service.delete_account(db, current_user)
     return Response(status_code=204)

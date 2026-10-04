@@ -24,11 +24,11 @@ export default function Error({
         Mechanical
       </p>
       <h1 className="font-display text-3xl font-extrabold tracking-[-0.02em] text-vb-text">
-        Something broke on my side.
+        Something broke, and it wasn&apos;t you.
       </h1>
       <p className="max-w-sm text-sm text-vb-text-dim">
-        Not your fault, and nothing of yours is lost. Try again, and if it
-        keeps happening it's already on my list to fix.
+        Nothing of yours is lost. Try again. If it keeps happening, the
+        error has already been sent to Gareth and he&apos;ll fix it.
       </p>
       <button
         onClick={reset}

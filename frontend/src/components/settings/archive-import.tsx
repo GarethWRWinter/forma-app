@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Upload } from "lucide-react";
-import { rides } from "@/lib/api";
+import { ApiError, rides } from "@/lib/api";
 import {
   scanArchive,
   importArchive,
@@ -69,14 +69,14 @@ export function ArchiveImport() {
         setError(
           result.nestedZips > 0
             ? "This archive holds further zips inside it (Garmin exports do this). Unzip it once on your computer, then choose one of the inner zips here."
-            : "No ride files in this zip. Forma looks for .fit, .gpx and .tcx files, including gzipped ones."
+            : "No ride files in this zip. Forma looks for .fit, .gpx and .tcx files, including compressed .gz ones."
         );
         setStage("error");
         return;
       }
       setStage("scoped");
     } catch {
-      setError("Couldn't read that zip. Try re-downloading the archive.");
+      setError("Forma couldn't open that zip. Download the archive again and choose the new copy.");
       setStage("error");
     }
   };
@@ -111,9 +111,11 @@ export function ArchiveImport() {
       queryClient.invalidateQueries({ queryKey: ["rides"] });
       queryClient.invalidateQueries({ queryKey: ["fitness-summary"] });
       setStage("done");
-    } catch {
+    } catch (err) {
       setError(
-        "The import stopped partway. Everything already in is safe. Run it again and Forma skips straight past what it has."
+        err instanceof ApiError && err.status === 402
+          ? err.message
+          : "The import stopped partway. Everything already in is safe. Run it again and Forma skips the rides it already has."
       );
       setStage("error");
     }
@@ -141,11 +143,13 @@ export function ArchiveImport() {
       {stage === "idle" && (
         <div className="mt-4 border border-dashed border-vb-border p-5">
           <p className="text-sm leading-relaxed text-vb-text-dim">
-            Bring your whole history with you. Download your archive from
-            Strava (Settings, My Account, Download Request) or Garmin, drop
-            the zip here, and every ride you&apos;ve ever recorded starts
-            working for you. The zip never leaves your machine: Forma reads
-            the ride files out of it right here.
+            Bring your whole history with you. On the Strava website: Settings,
+            then My Account, then Download or Delete Your Account, then Request
+            Your Archive. Garmin&apos;s is under Account, then Data Management,
+            then Export Your Data. Each emails you a zip (Strava&apos;s usually
+            within a few hours, Garmin&apos;s can take a couple of days). Choose
+            it here and Forma reads every ride in it. The zip stays on your
+            computer; only the ride files inside it are uploaded.
           </p>
           <Button className="mt-4" onClick={() => fileRef.current?.click()}>
             <Upload className="h-3.5 w-3.5" />
@@ -235,8 +239,8 @@ export function ArchiveImport() {
             />
           </div>
           <p className="mt-2 text-xs text-vb-text-dim">
-            rides read, remembered, working for you. Safe to leave this page
-            open in the background.
+            rides in so far. Keep this tab open until it finishes; it&apos;s
+            fine to work in another tab meanwhile.
           </p>
         </div>
       )}
@@ -265,8 +269,8 @@ export function ArchiveImport() {
               .
             </p>
             <p className="mt-1 text-xs text-vb-text-dim">
-              Your fitness history is rebuilding now. Titles and stories
-              arrive as Forma reads through them.
+              Forma is rebuilding your fitness history now. Ride titles and
+              one-line stories appear as it reads through them.
             </p>
           </div>
           <Button variant="ghost" size="sm" onClick={reset}>

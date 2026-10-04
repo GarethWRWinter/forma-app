@@ -21,7 +21,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.email not in settings.admin_emails:
+    if current_user.email.lower() not in {e.lower() for e in settings.admin_emails}:
         raise ForbiddenException(detail="Not authorised")
     return current_user
 

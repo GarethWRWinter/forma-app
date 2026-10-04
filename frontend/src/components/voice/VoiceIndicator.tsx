@@ -69,15 +69,15 @@ export function VoiceIndicator({
             {interimTranscript ? (
               <span className="italic">{interimTranscript}</span>
             ) : (
-              "Listening... speak now"
+              "Listening, go ahead…"
             )}
           </p>
         )}
         {mode === "processing" && (
-          <p className="text-xs text-vb-text-dim">Processing...</p>
+          <p className="text-xs text-vb-text-dim">Thinking…</p>
         )}
         {mode === "speaking" && (
-          <p className="text-xs text-vb-forest">Coach Forma is speaking...</p>
+          <p className="text-xs text-vb-forest">Forma is speaking…</p>
         )}
       </div>
     </div>

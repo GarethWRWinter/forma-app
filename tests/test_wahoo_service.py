@@ -243,3 +243,15 @@ def test_cap_during_refresh_stays_an_error(db_session, monkeypatch, caplog, noti
         r.levelname == "ERROR" and "refresh rejected" in r.getMessage()
         for r in caplog.records
     )
+
+
+def test_workout_files_only_come_from_wahoo_hosts():
+    """The file URL arrives in the webhook body; a forged one must not make
+    the server fetch an internal address (launch audit, 4 Oct 2026)."""
+    from app.services.wahoo_service import _workout_file_url
+
+    ok = {"workout_summary": {"file": {"url": "https://cdn.wahooligan.com/files/abc.fit?sig=1"}}}
+    assert _workout_file_url(ok) == ok["workout_summary"]["file"]["url"]
+    for bad in ("http://cdn.wahooligan.com/a.fit", "https://169.254.169.254/latest",
+                "https://evilwahooligan.com/a.fit", "https://localhost/a.fit"):
+        assert _workout_file_url({"workout_summary": {"file": {"url": bad}}}) is None

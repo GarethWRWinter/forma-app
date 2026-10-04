@@ -56,8 +56,8 @@ function ResetPasswordForm() {
     return (
       <div className="border border-vb-border-subtle bg-vb-surface p-5">
         <p className="text-sm leading-relaxed text-vb-text">
-          Done. New password set, every old session signed out. Taking you to
-          the log in…
+          Done. Your new password is set, and anywhere you were logged in
+          has been logged out. Taking you to log in…
         </p>
       </div>
     );

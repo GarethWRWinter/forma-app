@@ -259,7 +259,7 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["strava-status"] });
       alert(
         data.synced > 0
-          ? `${data.synced} rides in from Strava`
+          ? `Rides in from Strava: ${data.synced}`
           : "Strava answered, but had nothing new since the last sync."
       );
     },
@@ -273,7 +273,7 @@ export default function SettingsPage() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["rides"] });
       queryClient.invalidateQueries({ queryKey: ["dropbox-status"] });
-      alert(`${data.synced} ride file(s) in from Dropbox`);
+      alert(`Rides in from Dropbox: ${data.synced}`);
     },
     onError: (err: Error) => {
       alert(err.message || "That sync didn't go through. Try again in a minute.");
@@ -324,7 +324,8 @@ export default function SettingsPage() {
       <section className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6">
         <h2 className="f-display text-2xl text-vb-text">Profile</h2>
         <p className="mt-1 text-sm text-vb-text-dim">
-          The engine, roughly. We&apos;ll refine it as you ride.
+          Forma works out your training zones from these, so keep them
+          current.
         </p>
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
           <div>
@@ -384,8 +385,8 @@ export default function SettingsPage() {
         <div className="mt-8">
           <h3 className="f-display text-lg text-vb-text">Which days can hurt?</h3>
           <p className="mt-1 mb-4 text-xs leading-relaxed text-vb-text-dim">
-            Tap a day to cycle it through easy, rest and hard. Hard days carry
-            the intensity, easy days carry the miles.
+            Tap a day to cycle it through easy, rest and hard. Changes apply
+            the next time you build your plan: Goal, then Build my season.
           </p>
           <div className="grid grid-cols-7 gap-2">
             {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day, idx) => {
@@ -434,7 +435,8 @@ export default function SettingsPage() {
             })}
           </div>
           <p className="mt-2 text-[11px] text-vb-text-muted">
-            Hard days get the threshold and VO2 work. Easy days build the engine.
+            Hard days get the intervals. Easy days get the steady riding that
+            builds your base.
           </p>
         </div>
 
@@ -454,8 +456,9 @@ export default function SettingsPage() {
       <section className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6">
         <h2 className="f-display text-2xl text-vb-text">FTP test</h2>
         <p className="mt-2 text-sm text-vb-text-dim">
-          Ride 20 minutes as hard as you dare and give Forma the average.
-          FTP is 95% of it, the classic test.
+          Warm up well, then ride 20 minutes as hard as you can hold evenly
+          and enter your average power. Your FTP (roughly the most power you
+          can hold for an hour) is 95% of it.
         </p>
         <div className="mt-4 flex items-end gap-3">
           <div className="flex-1">
@@ -615,7 +618,7 @@ export default function SettingsPage() {
                 onChange={(e) =>
                   setGoalForm({ ...goalForm, notes: e.target.value })
                 }
-                placeholder="The course, the climbs, what a good day looks like..."
+                placeholder="The course, the climbs, what a good day looks like…"
                 rows={3}
                 className={`${fieldClasses} resize-none`}
               />
@@ -670,8 +673,8 @@ export default function SettingsPage() {
         <div className="mt-4 divide-y divide-vb-border-subtle">
           {goalsData?.goals.length === 0 && (
             <p className="py-4 text-center text-sm text-vb-text-dim">
-              Nothing on the calendar yet. Give Forma a date to build the
-              season backwards from.
+              Nothing on the calendar yet. Add it from the full goals page and
+              Forma rebuilds your plan around the date.
             </p>
           )}
           {goalsData?.goals.map((goal) => (
@@ -794,11 +797,10 @@ export default function SettingsPage() {
       {/* ============ DATA IN ============ */}
       <SectionHeader kicker="Data in" title="Where your rides come from" />
       <p className="-mt-4 max-w-2xl text-sm leading-relaxed text-vb-text-dim">
-        Your rides are yours. Forma reads them straight from the source, your
-        head unit, your files, your archive, so no platform can ever stand
-        between you and your coach. Riding Garmin? Import your archive below,
-        then use Dropbox for new rides; a bridge like tapiriik moves each
-        ride there automatically.
+        You only need one way in. Ride with a Wahoo? Connect it below and
+        every ride arrives on its own. Otherwise, start with the ride archive
+        so Forma begins with your whole history, then send new rides through
+        Dropbox or upload them on the Rides page.
       </p>
 
       {/* Wahoo: the push door — ride ends, ride arrives */}
@@ -863,7 +865,7 @@ export default function SettingsPage() {
                       />
                     </div>
                     <p className="mt-2 text-xs text-vb-text-dim">
-                      rides read, remembered, working for you
+                      rides read so far
                     </p>
                   </>
                 ) : (
@@ -955,8 +957,8 @@ export default function SettingsPage() {
             {!stravaStatus.backfill?.status && (
               <div className="border border-vb-border-subtle bg-vb-bg p-4">
                 <p className="text-sm text-vb-text-dim">
-                  Give Forma your full history and every ride you&apos;ve ever
-                  logged starts working for you.
+                  Import your full Strava history so Forma can read every ride
+                  you&apos;ve logged.
                 </p>
                 <Button
                   size="sm"
@@ -1005,21 +1007,11 @@ export default function SettingsPage() {
         ) : (
           <div className="mt-4 border border-dashed border-vb-border p-5">
             <p className="text-sm leading-relaxed text-vb-text-dim">
-              The better way in from Strava is the archive above: one zip,
-              your whole history, no ongoing tie to Strava&apos;s platform
-              rules. Live linking still works if you prefer it.
+              Forma can&apos;t take a live Strava link for new riders:
+              Strava&apos;s API terms don&apos;t allow its data to be used by
+              an AI coach. Use the ride archive above instead. One zip brings
+              your whole Strava history across.
             </p>
-            <Button
-              variant="ghost"
-              className="mt-4"
-              onClick={async () => {
-                const { auth_url } = await strava.getAuthUrl();
-                window.location.href = auth_url;
-              }}
-            >
-              Connect Strava
-              <Arrow />
-            </Button>
           </div>
         )}
       </section>
@@ -1119,8 +1111,9 @@ export default function SettingsPage() {
         ) : (
           <div className="mt-4 border border-dashed border-vb-border p-5">
             <p className="text-sm leading-relaxed text-vb-text-dim">
-              Drop FIT files into a Dropbox folder and Forma collects them
-              from there. Handy for head units that never met Strava.
+              Save FIT files into a Dropbox folder and Forma picks them up
+              every 15 minutes. Riding Garmin? A free bridge such as tapiriik
+              can copy each new ride into the folder for you.
             </p>
             <Button
               variant="ghost"
@@ -1189,8 +1182,8 @@ function CoachSection() {
     <section className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6">
       <h2 className="f-display text-2xl text-vb-text">Your coach</h2>
       <p className="mt-1 text-sm text-vb-text-dim">
-        Forma is your coach. Choose the manner, keep the standard. The
-        coaching is the same either way.
+        Pick how Forma talks to you. The coaching underneath is the same
+        whichever you choose.
       </p>
 
       {/* Tone, the primary personalisation */}
@@ -1284,9 +1277,10 @@ function DataExportCard() {
     <section className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6">
       <h2 className="f-display text-2xl text-vb-text">Download your data</h2>
       <p className="mt-2 text-sm leading-relaxed text-vb-text-dim">
-        Everything Forma knows about you in one file: your profile, every ride
-        it has read, your goals, your plans, and every conversation with your
-        coach. It arrives as JSON, so any tool can open it.
+        Everything Forma knows about you in one file: your profile, a summary
+        of every ride, your goals, your plans, and every conversation with
+        your coach. It downloads as a JSON file, a plain-text format most
+        data tools can read.
       </p>
       <div className="mt-4 flex items-center gap-3">
         <Button size="sm" onClick={runExport} disabled={stage === "working"}>
@@ -1339,10 +1333,11 @@ function DeleteAccountCard() {
     <section className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6">
       <h2 className="f-display text-2xl text-vb-text">Delete your account</h2>
       <p className="mt-2 text-sm leading-relaxed text-vb-text-dim">
-        Your access ends the moment you confirm. Your rides, your goals, your
-        plans and everything Forma remembers about you are purged once the
-        retention window closes. This one can&apos;t be undone, so take the
-        download above first if you want to keep a copy.
+        Your access ends the moment you confirm, and your rides, goals, plans
+        and everything Forma remembers about you are deleted for good 30 days
+        later. It can&apos;t be undone, so take the download above first if
+        you want a copy. If you&apos;re a member, your membership ends at
+        the same moment and no further payments are taken.
       </p>
 
       {confirming ? (

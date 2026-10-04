@@ -37,9 +37,9 @@ RECOVERY_SPIN = {
 # === Endurance ===
 
 ENDURANCE_Z2_SHORT = {
-    "name": "Endurance - Z2 (Short)",
+    "name": "Short endurance ride",
     "workout_type": "endurance",
-    "description": "Base aerobic endurance ride. Stay in Zone 2.",
+    "description": "Steady riding in Zone 2, an easy pace you could chat at. It builds your aerobic base.",
     "duration_seconds": 3600,  # 1 hour
     "planned_if": 0.65,
     "steps": [
@@ -50,9 +50,9 @@ ENDURANCE_Z2_SHORT = {
 }
 
 ENDURANCE_Z2_LONG = {
-    "name": "Endurance - Z2 (Long)",
+    "name": "Long endurance ride",
     "workout_type": "endurance",
-    "description": "Long base ride for aerobic development. Stay disciplined in Zone 2.",
+    "description": "A long ride in Zone 2, an easy pace you could chat at. Stay disciplined on the climbs.",
     "duration_seconds": 7200,  # 2 hours
     "planned_if": 0.65,
     "steps": [
@@ -63,9 +63,9 @@ ENDURANCE_Z2_LONG = {
 }
 
 ENDURANCE_Z2_EXTENDED = {
-    "name": "Endurance - Z2 (Extended)",
+    "name": "Extended endurance ride",
     "workout_type": "endurance",
-    "description": "Extended endurance ride. Build your aerobic engine.",
+    "description": "An extended ride in Zone 2, an easy pace you could chat at. Time in the saddle is the point.",
     "duration_seconds": 10800,  # 3 hours
     "planned_if": 0.65,
     "steps": [
@@ -228,7 +228,7 @@ SPRINT_NEUROMUSCULAR = {
     "steps": [
         {"step_type": "warmup", "duration_seconds": 900, "power_target_pct": 0.55},
         {"step_type": "steady_state", "duration_seconds": 300, "power_target_pct": 0.70, "notes": "Build-up spin"},
-        {"step_type": "interval_on", "duration_seconds": 10, "power_target_pct": 2.00, "cadence_target": 120, "repeat_count": 6, "notes": "MAX effort sprint!"},
+        {"step_type": "interval_on", "duration_seconds": 10, "power_target_pct": 2.00, "cadence_target": 120, "repeat_count": 6, "notes": "Flat-out sprint"},
         {"step_type": "interval_off", "duration_seconds": 290, "power_target_pct": 0.45, "notes": "Full recovery between sprints"},
         {"step_type": "cooldown", "duration_seconds": 600, "power_target_pct": 0.45},
     ],

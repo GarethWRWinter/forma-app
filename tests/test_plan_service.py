@@ -331,3 +331,91 @@ class TestWorkoutManagement:
         # Steps should be ordered
         orders = [s.step_order for s in fetched.steps]
         assert orders == sorted(orders)
+
+
+class TestLongRideAndTaper:
+    """Found in the launch audit (4 Oct 2026): an 8-hour sportive plan never
+    rode longer than 2 hours, a 31-week plan tapered for 6 weeks, and a rider
+    with no goal was tapered for a race that did not exist."""
+
+    def _sportive_plan(self, weeks_out=31, minutes=480, hours=6.0):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        user.weekly_hours_available = hours
+        user.preferred_hard_days = [5, 6]
+        user.rest_days = []
+        db.commit()
+        event_date = date.today() + timedelta(weeks=weeks_out)
+        goal = GoalEvent(
+            user_id=user.id, event_name="Fred Whitton", event_type="sportive",
+            priority="a_race", event_date=event_date, target_duration_minutes=minutes,
+        )
+        db.add(goal)
+        db.commit()
+        plan = generate_plan(db, user, goal_event_id=goal.id)
+        return db, user, plan, event_date
+
+    def test_long_ride_builds_towards_the_event(self):
+        db, user, plan, _ = self._sportive_plan()
+        workouts = get_plan_workouts(db, plan.id, user.id)
+        longest = max(w.planned_duration_seconds for w in workouts)
+        # 55% of a 6-hour week, rounded to the quarter hour.
+        assert longest >= 3 * 3600
+        first_month = [w for w in workouts if w.scheduled_date < date.today() + timedelta(weeks=4)]
+        assert max(w.planned_duration_seconds for w in first_month) < longest
+
+    def test_long_ride_lands_on_the_weekend(self):
+        db, user, plan, _ = self._sportive_plan()
+        long_rides = [
+            w for w in get_plan_workouts(db, plan.id, user.id)
+            if w.description.startswith("The long ride")
+        ]
+        assert long_rides
+        assert all(w.scheduled_date.weekday() in (5, 6) for w in long_rides)
+
+    def test_week_stays_close_to_the_riders_hours(self):
+        db, user, plan, _ = self._sportive_plan(hours=6.0)
+        by_week: dict[date, int] = {}
+        for w in get_plan_workouts(db, plan.id, user.id):
+            monday = w.scheduled_date - timedelta(days=w.scheduled_date.weekday())
+            by_week[monday] = by_week.get(monday, 0) + w.planned_duration_seconds
+        assert max(by_week.values()) <= 6.0 * 3600 * 1.15
+
+    def test_taper_is_at_most_two_weeks(self):
+        db, user, plan, _ = self._sportive_plan(weeks_out=31)
+        race = [p for p in plan.phases if str(getattr(p.phase_type, "value", p.phase_type)) == "race"]
+        assert len(race) == 1
+        assert (race[0].end_date - race[0].start_date).days <= 20
+
+    def test_race_week_is_short_and_easy(self):
+        db, user, plan, event_date = self._sportive_plan()
+        race_week = [
+            w for w in get_plan_workouts(db, plan.id, user.id)
+            if 0 < (event_date - w.scheduled_date).days <= 6
+        ]
+        assert all(w.planned_duration_seconds <= 3600 for w in race_week)
+        last_two = [w for w in race_week if (event_date - w.scheduled_date).days <= 2]
+        assert all(
+            str(getattr(w.workout_type, "value", w.workout_type)) in ("recovery", "endurance")
+            for w in last_two
+        )
+
+    def test_no_goal_means_no_taper(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        plan = generate_plan(db, user)
+        kinds = {str(getattr(p.phase_type, "value", p.phase_type)) for p in plan.phases}
+        assert kinds == {"base", "build"}
+
+    def test_crit_long_ride_stops_at_two_hours(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        goal = GoalEvent(
+            user_id=user.id, event_name="Crit series", event_type="crit",
+            priority="a_race", event_date=date.today() + timedelta(weeks=12),
+        )
+        db.add(goal)
+        db.commit()
+        plan = generate_plan(db, user, goal_event_id=goal.id)
+        longest = max(w.planned_duration_seconds for w in get_plan_workouts(db, plan.id, user.id))
+        assert longest <= 2 * 3600

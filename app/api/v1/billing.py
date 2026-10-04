@@ -39,7 +39,12 @@ def start_checkout(
     db: Session = Depends(get_db),
 ):
     if not billing_service.is_configured():
-        raise BadRequestException(detail="Billing is not configured yet")
+        raise BadRequestException(detail="Membership isn't open yet.")
+    # A second checkout would start a second subscription and charge twice.
+    if current_user.subscription_status in ("active", "trialing", "past_due"):
+        raise BadRequestException(
+            detail="You're already a member. Manage billing has your card, invoices and renewal date."
+        )
     try:
         url = billing_service.create_checkout_session(db, current_user)
     except Exception:
@@ -56,7 +61,7 @@ def open_portal(
     db: Session = Depends(get_db),
 ):
     if not billing_service.is_configured():
-        raise BadRequestException(detail="Billing is not configured yet")
+        raise BadRequestException(detail="Membership isn't open yet.")
     try:
         url = billing_service.create_portal_session(db, current_user)
     except Exception:

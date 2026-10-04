@@ -69,15 +69,16 @@ async def send_verification(to: str, full_name: str | None, link: str) -> bool:
     name = _first_name(full_name, to)
     return await send(
         to,
-        "One click and your coach is ready",
+        "One click to confirm your email",
         f"""{name},
 
 Welcome to Forma. One click confirms this address is yours:
 
 {link}
 
-The link works for 24 hours. If you didn't create a Forma account, ignore
-this and nothing happens.
+That way password resets can reach you, and so can I if you go quiet partway through setting up.
+
+The link works for 24 hours. If you didn't create a Forma account, ignore this and nothing happens.
 
 See you on the road,
 Forma
@@ -110,7 +111,7 @@ async def send_waitlist_welcome(
     """
     greeting = f"Hey, {name.strip().split()[0]}\n\n" if name and name.strip() else ""
     place = (
-        f"Your place is held. You're number {position} of a hundred.\n"
+        f"Your place is held. You're number {position} in the queue for a hundred founding places.\n"
         if position
         else "Your place is held.\n"
     )
@@ -118,55 +119,35 @@ async def send_waitlist_welcome(
         to,
         "your place is held",
         f"""{greeting}{place}
-The doors open soon, and I'll write the day they do. Between now and then you'll get one letter a
-week from me, and each will have something in it you can use on that week's
-rides. Real numbers from my own testing, the marginal gains that cost nothing,
-and what most riders get wrong. If you're not a little faster by launch day,
-I'll have failed at the easy half of this. The first lands this week, and it's
-about the day I nearly put a bottle through Sir Bradley Wiggins's front wheel.
+The doors open soon, and I'll write the day they do. Between now and then you'll get one letter a week from me, and each will have something in it you can use on that week's rides. Real numbers from my own testing, the marginal gains that cost nothing, and what most riders get wrong. If you're not a little faster by launch day, I'll have failed at the easy half of this. The first lands this week, and it's about the day I nearly put a bottle through Sir Bradley Wiggins's front wheel.
 
 That's my end of it. Now the favour, and it's a real one.
 
-Here's my guess about you, and do tell me if I've got it wrong. You're not lazy
-and you're not short of information. You probably carry more data about your own
-riding than anyone had access to twenty years ago. And somewhere behind you
-there's a plan you stopped following, a block that came apart around week three,
-and a little voice in your head telling you that the weak link was you (that
-voice is lying to you, but we'll get to that another time).
+Here's my guess about you, and do tell me if I've got it wrong. You're not lazy and you're not short of information. You probably carry more data about your own riding than anyone had access to twenty years ago. And somewhere behind you there's a plan you stopped following, a block that came apart around week three, and a little voice in your head telling you that the weak link was you (that voice is lying to you, but we'll get to that another time).
 
-It wasn't. It was almost certainly a plan written for a rider with no job, no
-family and no February.
+It wasn't. It was almost certainly a plan written for a rider with no job, no family and no February.
 
-That's the thing I'm actually up against, and it's why I need you. I know what
-went wrong in my own training. I can only guess at what goes wrong in yours.
+That's the thing I'm actually up against, and it's why I need you. I know what went wrong in my own training. I can only guess at what goes wrong in yours.
 
 So, one question, and I read every reply.
 
 What frustrates you most about your training right now?
 
-The real one, however untidy. If it helps, the things I'm trying to
-understand are:
+The real one, however untidy. If it helps, the things I'm trying to understand are:
 
-  Where does it come apart? The week that goes sideways, the session that keeps
-  moving down the calendar, the plan you stopped opening and started avoiding.
+Where does it come apart? The week that goes sideways, the session that keeps moving down the calendar, the plan you stopped opening and started avoiding.
 
-  What actually stands between you and the thing you're aiming at? Time,
-  knowledge, motivation, an old injury, a life that refuses to cooperate.
+What actually stands between you and the thing you're aiming at? Time, knowledge, motivation, an old injury, a life that refuses to cooperate.
 
-  What have you gone looking for in other apps and never found? Or found, and
-  hated the way it worked.
+What have you gone looking for in other apps and never found? Or found, and hated the way it worked.
 
-One line is a complete answer. So is five paragraphs. There's no wrong thing to
-say here, and you needn't be diplomatic about anything you've paid for.
+One line is a complete answer. So is five paragraphs. There's no wrong thing to say here, and you needn't be diplomatic about anything you've paid for.
 
-What you tell me is what gets built between now and launch. I mean that
-literally. It's how I decide what to work on next, and it's
-the reason the list is a hundred people rather than a hundred thousand.
+What you tell me is what gets built between now and launch. I mean that literally. It's how I decide what to work on next, and it's the reason there are a hundred founding places rather than a hundred thousand.
 
 G
 
-PS. When I say I read every reply, it's because the maths allows it. That won't
-always be true, which is rather the point of going first.
+PS. When I say I read every reply, it's because the maths allows it. That won't always be true, which is rather the point of going first.
 """,
     )
 
@@ -186,46 +167,32 @@ async def send_waitlist_reintroduction(
     greeting = f"{name.strip().split()[0]},\n\n" if name and name.strip() else ""
     when = f"back in {joined_month}" if joined_month else "a few weeks ago"
     place = (
-        f"You're number {position} in the queue, and there are a hundred\nfounding places."
+        f"You're number {position} in the queue, and there are a hundred founding places."
         if position
         else "There are a hundred founding places."
     )
     return await send(
         to,
         "I owe you an email",
-        f"""{greeting}You put your name down for Forma {when}, and then I went quiet on
-you. That's on me.
+        f"""{greeting}You put your name down for Forma {when}, and then I went quiet on you. That's on me.
 
-Here's what I was doing instead of writing to you. Building the thing. Forma
-now reads your rides against the conditions you actually rode in, remembers
-what you tell it, and rewrites next week when your life gets in the way. That
-last part took longer than everything else put together.
+Here's what I was doing instead of writing to you: building the thing. Forma now reads your rides against the conditions you actually rode in, remembers what you tell it, and rewrites next week when your life gets in the way. That last part took longer than everything else put together.
 
-So, the date. I won't promise one yet; you'll get a letter from me the day the doors open.
-{place}
+So, the date. I won't promise one yet; you'll get a letter from me the day the doors open. {place}
 
-From now until then you'll get one letter a week, and each one will have
-something in it you can use on that week's rides. Real numbers from my own
-testing, the marginal gains that cost nothing, the fuelling maths most riders
-get wrong. If you're not a little faster by launch day, I'll have failed at
-the easy half of this.
+From now until then you'll get one letter a week, and each one will have something in it you can use on that week's rides. Real numbers from my own testing, the marginal gains that cost nothing, the fuelling maths most riders get wrong. If you're not a little faster by launch day, I'll have failed at the easy half of this.
 
 One question before any of that, and I do read every reply.
 
 What does your current setup get wrong?
 
-Not the feature you'd like added. The thing that actually annoys you: the plan
-that assumed Tuesday evening was free when it never is, the app full of numbers
-that never once told you what to do with any of them, or the block that fell
-apart in week three and somehow left you feeling like the problem was you.
+Not the feature you'd like added. The thing that actually annoys you: the plan that assumed Tuesday evening was free when it never is, the app full of numbers that never once told you what to do with any of them, or the block that fell apart in week three and somehow left you feeling like the problem was you.
 
-Hit reply and tell me in a line. I'm still building this, and what riders tell
-me now is what ends up getting built.
+Hit reply and tell me in a line. I'm still building this, and what riders tell me now is what ends up getting built.
 
 G
 
-PS. You joined a list of one hundred, not one hundred thousand. When I write
-that I read every reply, it's because the maths allows it.
+PS. There are a hundred founding places, not a hundred thousand. When I write that I read every reply, it's because the maths allows it.
 """,
     )
 
@@ -251,19 +218,15 @@ async def send_wahoo_disconnected(
         return await send(
             to,
             "Wahoo has stopped talking to Forma",
-            f"""{greeting}Your Wahoo connection has stopped working, and this time Reconnect on its
-own won't fix it. Wahoo allows an app ten keys per rider and Forma has used
-them all, which is a fault on my side, not yours.
+            f"""{greeting}Your Wahoo connection has stopped working, and this time Reconnect on its own won't fix it. Wahoo allows an app ten keys per rider and Forma has used them all, which is a fault on my side, not yours.
 
 Clearing it takes about a minute, in this order:
 
-1. In the Wahoo app: Settings, then Authorized Apps, then Forma, then
-   Deauthorize. (Or sign in at wahooligan.com/profile and remove Forma there.)
+1. In the Wahoo app: Settings, then Authorized Apps, then Forma, then Deauthorize. (Or sign in at wahooligan.com/profile and remove Forma there.)
 
 2. Back in Forma: Settings, then Data in, then Reconnect on the Wahoo card.
 
-Nothing is lost. Wahoo still has every ride, and I'll pull back anything I
-missed the moment we're reconnected.
+Nothing is lost. Wahoo still has every ride, and I'll fetch the ones I missed as soon as you reconnect.
 
 Forma
 """,
@@ -271,17 +234,11 @@ Forma
     return await send(
         to,
         "Wahoo has stopped talking to Forma",
-        f"""{greeting}Your Wahoo connection just stopped working, so your rides aren't
-reaching me at the moment.
+        f"""{greeting}Your Wahoo connection just stopped working, so your rides aren't reaching me at the moment.
 
-Nothing is lost. Wahoo still has every ride, and I'll pull back anything I
-missed the moment we're reconnected. It takes about twenty seconds:
+Nothing is lost. Wahoo still has every ride, and I'll fetch the ones I missed as soon as you reconnect. It takes about twenty seconds: Settings, then Data in, then Reconnect on the Wahoo card.
 
-Settings, then Data in, then Reconnect on the Wahoo card.
-
-This happens occasionally because Wahoo issues a new key each time we talk and
-very rarely one goes astray. It isn't something you did, and it isn't
-something your head unit did.
+This happens occasionally because Wahoo issues a new key each time we talk, and very rarely one goes astray. It isn't something you did, and it isn't something your head unit did.
 
 Forma
 """,
@@ -295,13 +252,11 @@ async def send_password_reset(to: str, full_name: str | None, link: str) -> bool
         "Reset your Forma password",
         f"""{name},
 
-Someone asked to reset the password on your Forma account. If that was
-you, this link sets a new one:
+Someone asked to reset the password on your Forma account. If that was you, this link sets a new one:
 
 {link}
 
-It works for one hour. If it wasn't you, ignore this email; your password
-stays as it is and your account is untouched.
+It works for one hour. If it wasn't you, ignore this email; your password stays as it is and your account is untouched.
 
 Forma
 """,

@@ -143,7 +143,7 @@ export default function LoginPage() {
         </form>
 
         <p className="mt-10 border-t border-vb-border-subtle pt-6 text-sm text-vb-text-dim">
-          New here?{" "}
+          New here? You&apos;ll need your invite code.{" "}
           <Link
             href="/register"
             className="f-kicker text-vb-red hover:text-vb-red-dim"

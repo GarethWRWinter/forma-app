@@ -59,7 +59,7 @@ export default function LandingPage() {
           <p className="mt-8 max-w-xl text-lg leading-relaxed text-vb-text-dim">
             Forma reads every ride, remembers every conversation, and uses all
             of it to write what comes next. A season built backwards from your
-            race day, rebuilt every time your life moves.
+            race day, and rewritten when your life gets in the way.
           </p>
           <div className="mt-10 flex flex-wrap gap-3">
             <Link
@@ -88,10 +88,10 @@ export default function LandingPage() {
                   It remembers everything.
                 </h2>
                 <p className="mt-4 max-w-xl leading-relaxed text-vb-text-dim">
-                  You mention a wedding in June, once, in passing. Saturday
-                  rides quietly disappear from that week. The block rebuilds
-                  itself. The goal date never moves. Every ride, every
-                  conversation, the knee, the night shifts. Forma keeps it all,
+                  You mention a wedding in June, once, in passing. When June
+                  comes, Forma still knows, and rewrites that week around it
+                  with you. The goal date doesn&apos;t move. Every ride, every
+                  conversation, the knee, the night shifts: Forma keeps it all,
                   and uses it.
                 </p>
               </div>
@@ -108,9 +108,9 @@ export default function LandingPage() {
                 </h2>
                 <p className="mt-4 max-w-xl leading-relaxed text-vb-text-dim">
                   Strava tells you what you did. Forma tells you what to do
-                  next. Yesterday informs tomorrow: your history, your
-                  recovery, your life all shape the next block. Not a plan you
-                  adapt to. A coach that adapts to you.
+                  next. Your history, your recovery and your life all shape
+                  the next block, so the plan fits you rather than the other
+                  way round.
                 </p>
               </div>
             </div>
@@ -125,9 +125,9 @@ export default function LandingPage() {
                   And it rides with you.
                 </h2>
                 <p className="mt-4 max-w-xl leading-relaxed text-vb-text-dim">
-                  Plans you can ride inside the app, on your turbo, with live
-                  power and a voice in your ear. Every session written straight
-                  back into memory the moment the cooldown ends.
+                  Ride your sessions inside Forma on a Bluetooth smart trainer,
+                  from Chrome on a laptop, with live power and a voice in your
+                  ear. The ride is saved the moment the cool-down ends.
                 </p>
                 {/* Carbon instrument strip — a taste of ride mode */}
                 <div className="f-carbon mt-6 flex max-w-xl items-center justify-between rounded-sm px-6 py-5">
@@ -155,9 +155,9 @@ export default function LandingPage() {
 
         {/* Closing CTA */}
         <section className="f-rise mb-24 bg-vb-text px-8 py-14 text-center md:px-16">
-          <p className="f-kicker text-white/60">One coach. Yours.</p>
+          <p className="f-kicker text-white/60">Invite-only for the founding hundred</p>
           <h2 className="f-display mt-3 text-4xl text-white">
-            Start the relationship.
+            Got your invite? Start here.
           </h2>
           <Link
             href="/register"

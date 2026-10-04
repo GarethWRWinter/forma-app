@@ -30,37 +30,40 @@ NEXT_ACTION: dict[str, dict] = {
     "goal": {
         "title": "Set the goal",
         "instruction": (
-            "Tell me the event you're aiming at, or add it yourself from Goal, then "
-            "All goals, then Create goal. Everything I build depends on it."
+            "Give me one event to aim at, even a sportive or a club hill climb, "
+            "and I'll build the plan backwards from its date. Tell me about it "
+            "here, or add it yourself: Goal, then Set the goal myself."
         ),
-        "link": "/dashboard/settings",
+        "link": "/dashboard/goals",
     },
     "data": {
         "title": "Connect your rides",
         "instruction": (
-            "I can't see any riding yet. Connect it: Settings, then Data in, then "
-            "Connect Wahoo. Wahoo sends every ride the moment your head unit "
-            "syncs. No Wahoo? Upload a ride file from the Rides page, or import "
-            "your Strava archive in the same Data in section."
+            "I can't see any riding yet. Ride with a Wahoo? Settings, then Data "
+            "in, then Connect Wahoo, and every ride arrives the moment your head "
+            "unit syncs. Otherwise bring your history across: ask Strava or "
+            "Garmin for your account archive, then Settings, then Data in, then "
+            "Ride archive, then Choose the zip."
         ),
         "link": "/dashboard/settings",
     },
     "first_ride": {
         "title": "Get one ride in",
         "instruction": (
-            "You're connected. The first ride that lands shows me how you "
-            "actually ride, and I build from that rather than from a form. Go and "
-            "ride, or upload a recent file from the Rides page."
+            "You're connected, but no ride has landed yet. Your next one shows me "
+            "how you actually ride, and I coach from that rather than from a "
+            "form. Go and ride, or upload a recent file: Rides, then Upload a "
+            "ride file."
         ),
         "link": "/dashboard/rides",
     },
     "plan": {
         "title": "Build the plan",
         "instruction": (
-            "I have your goal and your riding. Ask me to build your plan and I'll "
-            "write the first block now."
+            "I have your goal and your riding, so it's time for the plan: Goal, "
+            "then Build my season. I'll write it from today to the day itself."
         ),
-        "link": "/dashboard/coach",
+        "link": "/dashboard/training",
     },
     "first_week": {
         "title": "Finish the first week",

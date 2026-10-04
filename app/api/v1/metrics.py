@@ -47,7 +47,7 @@ def get_user_zones(
 ):
     """Get current power and HR zones based on FTP."""
     if not current_user.ftp:
-        raise BadRequestException(detail="FTP not set. Update your profile first.")
+        raise BadRequestException(detail="Add your FTP first: Settings, then Profile.")
 
     zone_data = get_zones(current_user)
     power_zones = None
@@ -211,7 +211,7 @@ def get_ride_zones(
 
     ftp = ride.ftp_at_time or current_user.ftp or 0
     if ftp <= 0:
-        raise BadRequestException(detail="FTP not available for zone calculation")
+        raise BadRequestException(detail="Add your FTP in Settings, then Profile, to see zones for this ride.")
 
     result = get_ride_zone_distribution(db, ride_id, ftp)
     return RideZonesResponse(
@@ -242,7 +242,7 @@ def submit_ftp_test(
 ):
     """Submit a 20-minute FTP test result. Updates user FTP."""
     if body.twenty_min_avg_power <= 0:
-        raise BadRequestException(detail="Power must be positive")
+        raise BadRequestException(detail="Enter your 20-minute average power in watts.")
 
     new_ftp = ftp_from_20min_test(body.twenty_min_avg_power)
     current_user.ftp = new_ftp

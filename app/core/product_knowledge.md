@@ -4,13 +4,15 @@ What Forma does today and where each control lives. Relay instructions using the
 
 ## Getting set up
 
-Forma is invite-only while the founding hundred fills; at launch there is one shared invite code.
+Forma is invite-only while the founding hundred fills. Registration needs an invite code: one shared code, a single word, capped at a hundred uses. There is no public launch date; never promise one.
 
-To join: ridewithforma.com, then Get started, then Invite code, Full name (optional), Email, Password (at least 8 characters), then Create account. A valid invite during the invite-only period assigns a founding number, 1 to 100, never reissued.
+To join: the invite link (app.ridewithforma.com/register?invite=...) fills the code in. Otherwise app.ridewithforma.com, then Get started, then Invite code, Full name (optional), Email, Password (at least 8 characters), then Create account. A wrong, used-up or expired code is refused with "That invite code doesn't work"; the fix is to reply to the invite email. A valid invite assigns a founding number, 1 to 100, never reissued.
 
-Onboarding follows: What are we aiming at?, Tell me about race day (event riders only), How much bike is in your life? (hours, years, Which days can hurt?), The engine, roughly, Meet Forma (tone, optional coach name), then Start training, which writes the first plan. If that fails, the screen offers Write the plan again, then Go to my dashboard; build later from Goal, then Build my season.
+Forma is a web app only. There is no App Store or Play Store app, and none is promised.
 
-A verification email, "One click and your coach is ready", follows; the link lasts 24 hours. Unverified riders are not locked out; a banner offers Resend the link.
+Onboarding follows: What are we aiming at?, Tell me about race day (event riders only), How much bike is in your life? (hours, years, Which days can hurt?), The engine, roughly (FTP and weight, both optional), Meet Forma (How I talk to you, optional coach name), then Start training, which writes the first plan. If that fails, the screen offers Write the plan again, then Go to my dashboard; build later from Goal, then Build my season.
+
+A verification email, "One click to confirm your email", follows; the link lasts 24 hours. Unverified riders are not locked out; a banner at the top of every page offers Resend the link. Confirming matters for two things: password resets, and the coach's check-in emails, which only go to confirmed addresses.
 
 Navigation. The sidebar (menu icon on a phone): Today, Coach, Rides, Form, Goal, Brain, Palmarès, Settings. Form opens the page headed Performance; Goal opens the training plan. The Goals list has no sidebar entry: Goal, then All goals, or Settings, then Goals, then Full goals page.
 
@@ -20,11 +22,11 @@ Log in remembers a rider for 30 days by default.
 
 ## Data in
 
-Settings, then Data in holds four cards: Wahoo, Ride archive, Strava, Dropbox.
+Settings, then Data in holds four cards: Wahoo, Ride archive, Strava, Dropbox. The rule for a new rider: Wahoo riders connect Wahoo; everyone else imports their Strava or Garmin archive first, then sends new rides by Dropbox or file upload.
 
 ### Wahoo
 
-Connect: Settings, then Data in, then Connect Wahoo. The rider signs in at Wahoo and returns to "Wahoo linked. Any rides from while it was disconnected are on their way." The first link imports history in the background; after that each ride arrives when the ELEMNT syncs.
+Connect: Settings, then Data in, then Connect Wahoo. The rider signs in at Wahoo and returns to "Wahoo linked. Your Wahoo rides are coming across now, including any from while it was disconnected." The first link imports history in the background; after that each ride arrives when the ELEMNT syncs.
 
 Import full history shows "Reading your history N / total". Imported rides are skipped, so it is safe to run again; no per-ride debriefs. If it stops: "Import stopped. Not your fault. Retry and it picks up where it left off." with Retry import.
 
@@ -37,11 +39,11 @@ Needs reconnecting. When Wahoo stops accepting Forma's key, the card shows Needs
 
 ### File upload
 
-Rides, then Upload a ride file, top right. Accepted: .fit, .gpx, .tcx and .gz versions, up to 30MB (the on-screen message says 50MB; 30MB is the real limit). Upload needs an active membership when the gate is on.
+Rides, then Upload a ride file, top right. Accepted: .fit, .gpx, .tcx and .gz versions, up to 30MB (the on-screen message says 50MB; 30MB is the real limit). Upload needs an active membership.
 
-### Strava archive
+### Ride archive (Strava or Garmin)
 
-Settings, then Data in, then Ride archive. The rider requests the archive at Strava (Settings, My Account, Download Request), then uses Choose the zip. The zip is read in the browser; only the ride files inside are sent. The card shows "N rides found", then How far back: Everything, Last 3 years, Last 12 months. Finished: "History in. N rides imported, N already on record, N unreadable." Duplicates of existing rides are skipped. No per-ride debriefs; fitness is rebuilt once at the end. Garmin archives are a zip of zips: unzip once, then choose one inner zip. Live Strava linking is not part of Forma: Strava's API terms do not allow its data to be used by an AI coach. If a rider asks to connect Strava, point them to the archive import above; their complete history comes across that way.
+Settings, then Data in, then Ride archive. The rider requests the archive first. Strava, on the website: Settings, then My Account, then Download or Delete Your Account, then Request Your Archive; Strava emails a zip, usually within a few hours. Garmin: Account, then Data Management, then Export Your Data; it can take a couple of days. Then Choose the zip. The zip is read in the browser; only the ride files inside are sent. The card shows "N rides found", then How far back: Everything, Last 3 years, Last 12 months. Finished: "History in. N rides imported, N already on record, N unreadable." Duplicates of existing rides are skipped. No per-ride debriefs; fitness is rebuilt once at the end. Garmin archives are a zip of zips: unzip once, then choose one inner zip. Live Strava linking is not offered to new riders: Strava's API terms do not allow its data to be used by an AI coach. The Strava card says so. If a rider asks to connect Strava, point them to the Ride archive; their complete history comes across that way. New Strava rides after the import: upload the file, or use Dropbox.
 
 ### Dropbox for Garmin
 
@@ -79,7 +81,7 @@ You may edit the current week in chat (change, move, add, skip) once the rider c
 
 Pre-ride briefing on Today is written once a day: today's session, conditions, clothing, chain prep, one question. Weather is read at the start of the most recent GPS ride; with none, the briefing says it has no forecast. On a goal day the card becomes Race day · the team car: a longer briefing with pacing in watts and, given a GPX, headwind, tailwind and crosswind by kilometre.
 
-Race Radio lives in Ride mode: Today, then Start ride, or the workout page, then Start Session. It needs an FTP or refuses. Connect your devices lists Power Meter, Heart Rate Monitor, Smart Trainer (ERG) and Cadence Sensor over Bluetooth in Chrome, Edge or Brave on Mac, PC or Android; iPhone and iPad are not supported. Race Radio lines are pre-written templates chosen by the step, spoken in the coach voice; Radio mutes them. Stop offers Save ride & end, Discard & end, Keep going. A saved session becomes a ride and completes the workout.
+Race Radio lives in Ride mode: Today, then Start ride, or the workout page, then Start Session. It needs an FTP or refuses. Connect your devices lists Power Meter, Heart Rate Monitor, Smart Trainer (ERG) and Cadence Sensor over Bluetooth, in Chrome on a Mac or PC (Edge works too; Brave blocks Bluetooth by default). iPhone and iPad cannot do it, and there is no native app. ERG means the smart trainer sets the resistance so the rider holds the target power whatever their cadence. Race Radio lines are pre-written templates chosen by the step, spoken in the coach voice; Radio mutes them. Stop offers Save ride & end, Discard & end, Keep going. A saved session becomes a ride and completes the workout.
 
 ## The coach
 
@@ -97,15 +99,27 @@ Each rider has a monthly conversation budget. When spent, chat replies with the 
 
 ## Membership and money
 
-Forma costs £19.99 a month. The founding hundred pay £14.99 a month, fixed for as long as they stay. Forma is in its founding preview: billing has not opened yet and nobody is charged during the preview. The founding hundred will be invited by letter, with one shared invite code, when billing opens. Do not promise a date; say the founder will write to them when the doors open. Founding riders see "Founding rider · n of 100" on Palmarès with Download your badge.
+The founding hundred pay £14.99 a month, locked for as long as they stay a member. After the hundred, the list price is £19.99 a month. Founding riders see "Founding rider · n of 100" on Palmarès with Download your badge.
 
-Settings, then Membership shows Active, Trial, Payment issue, Cancelled or Not a member yet. Join Forma (Stripe checkout) and Manage billing (cards, invoices, cancellation) appear only once billing is switched on; during the preview they are not there and nothing needs paying. A failed payment shows "Your last payment didn't go through. Update the card and nothing is interrupted, Stripe retries for a few days." Access continues during retries. With the gate on and no active membership, uploads, chat, attachments and Ride mode recording answer: "Your Forma membership isn't active. Join from Settings and the coach is yours again."
+Paying: Settings, then Membership, then Join Forma, which opens Stripe Checkout. Membership shows Active, Trial, Payment issue, Cancelled or Not a member yet, and "Current month runs to" a date. Manage billing opens Stripe's billing portal: change the card, see invoices, or cancel. Cancelling stops the next payment; the rider keeps full access until the end of the month already paid for. A failed payment shows "Your last payment didn't go through. Update the card in Manage billing and nothing is interrupted; Stripe retries the payment for a few days." Access continues during retries.
+
+Without an active membership, chat, ride uploads, attachments and Ride mode recording answer: "This needs an active Forma membership. Go to Settings, then Membership, then Join Forma, and it works straight away." The plan, goals and Settings still open.
+
+Deleting the account ends the membership at the same moment; no further payments are taken. A member who only wants to stop paying should cancel in Manage billing instead and keep everything until the paid month runs out.
 
 ## Your data
 
 Export: Settings, then Data out, then Download my data. The JSON file holds account details, onboarding answers, goals, ride summaries, plans, workouts, daily fitness numbers, chats, nudges and memories. It excludes per-second ride data, original FIT files and connection keys.
 
-Delete: Settings, then Data out, then Delete my account, type the account email, then Delete it. The rider is logged out at once, the account closes, and Strava and Dropbox connections are removed immediately. Remaining data is purged after 30 days. It cannot be undone; take the download first.
+Delete: Settings, then Data out, then Delete my account, type the account email, then Delete it. The rider is logged out at once, the account closes, and Strava and Dropbox connections are removed immediately. Remaining data is purged after 30 days. It cannot be undone; take the download first. It does not stop payments: cancel in Manage billing first.
+
+## Who sees what
+
+Gareth, the founder, may read coaching conversations to improve the product. Say so plainly if a rider asks who can see their chats.
+
+## When the coach writes first
+
+If a rider goes quiet partway through setting up (no goal, no rides connected, no first ride, no plan, or the first week of the plan), the coach emails them after 1, 3 and 7 quiet days at that step, once each, with the one next step. Only confirmed email addresses get these. Replies to the email reach Gareth's inbox, not the coach; to answer the coach, use Coach in the app.
 
 ## When something breaks
 
@@ -115,8 +129,9 @@ Delete: Settings, then Data out, then Delete my account, type the account email,
 - An import stopped: Retry import or Try again. Skipped rides are never duplicated.
 - "No ride files in this zip": no .fit, .gpx or .tcx inside, or a Garmin zip of zips (unzip once first).
 - Ride mode or Export refuses: Settings, then Profile, then FTP (watts).
-- "I can't reach your numbers right now": wait a minute and refresh. "Something slipped a gear.": Try again. "This road does not exist.": Back to the dashboard.
+- "I can't reach your numbers right now": wait a minute and refresh. "Something broke, and it wasn't you.": Try again. "This road does not exist.": Back to the dashboard.
 - Membership message: Settings, then Membership, then Join Forma or Manage billing.
+- "There's already a Forma account with that email": log in, or reset the password from the login page.
 - If the answer is not in this document, say so plainly and give gareth@ridewithforma.com.
 
 ## Not yet documented
@@ -125,7 +140,6 @@ Delete: Settings, then Data out, then Delete my account, type the account email,
 - Whether the Wahoo connection is revoked automatically on account deletion, and when the 30 day purge runs.
 - What the briefing says before any GPS ride exists.
 - TrainingPeaks: nothing rider-facing exists yet.
-- The exact wording of the verification and reset emails.
 - After renaming the coach, a few labels still say Forma.
 
 If a rider asks about any of these, say plainly that you are not sure and give gareth@ridewithforma.com.

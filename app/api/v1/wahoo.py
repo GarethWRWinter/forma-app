@@ -26,7 +26,7 @@ router = APIRouter(prefix="/integrations/wahoo", tags=["integrations"])
 def get_wahoo_auth_url(current_user: User = Depends(get_current_user)):
     """Wahoo OAuth authorization URL, state-signed to the requesting user."""
     if not wahoo_service.is_configured():
-        raise BadRequestException(detail="Wahoo linking is not configured yet")
+        raise BadRequestException(detail="Wahoo linking isn't available yet.")
     state = create_oauth_state_token(str(current_user.id), provider="wahoo")
     return {"auth_url": wahoo_service.get_auth_url(state=state)}
 
@@ -129,7 +129,7 @@ async def sync_wahoo(
     except Exception:
         logger.exception("Wahoo sync failed for user %s", current_user.id)
         raise BadRequestException(
-            detail="Wahoo sync failed. Try reconnecting Wahoo in Settings."
+            detail="Wahoo sync failed. Try again in a minute, or use Reconnect Wahoo in Settings, then Data in."
         )
 
     for ride in imported:
@@ -153,7 +153,7 @@ async def start_wahoo_backfill(
     """Import full Wahoo history. Idempotent, existing rides are skipped."""
     status = wahoo_service.get_connection_status(db, current_user.id)
     if not status.get("connected"):
-        raise BadRequestException(detail="Wahoo is not connected")
+        raise BadRequestException(detail="Wahoo isn't connected. Settings, then Data in, then Connect Wahoo.")
     asyncio.create_task(wahoo_service.run_backfill_background(str(current_user.id)))
     return {"status": "backfill_started"}
 

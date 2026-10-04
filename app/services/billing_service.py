@@ -31,10 +31,13 @@ def get_or_create_customer(db: Session, user: User) -> str:
     if user.stripe_customer_id:
         return user.stripe_customer_id
     _client()
+    # Idempotent per rider: a double click on Join used to race two requests
+    # into two Stripe customers, and the portal only ever shows one of them.
     customer = stripe.Customer.create(
         email=user.email,
         name=user.full_name or None,
         metadata={"forma_user_id": str(user.id)},
+        idempotency_key=f"forma-customer-{user.id}",
     )
     user.stripe_customer_id = customer.id
     db.commit()
@@ -115,9 +118,44 @@ def _period_end_ts(sub) -> int | None:
     return sub.get("current_period_end")
 
 
+def _current_state(sub: dict) -> dict:
+    """The subscription as Stripe holds it now, not as the event saw it.
+
+    Stripe does not promise to deliver events in order. A late
+    subscription.updated (active) landing after subscription.deleted would
+    otherwise hand a cancelled rider their access back, so ask for the live
+    object and fall back to the event's copy only if Stripe can't be reached.
+    """
+    if not sub.get("id"):
+        return sub
+    try:
+        _client()
+        return stripe.Subscription.retrieve(sub["id"]).to_dict()
+    except Exception:
+        logger.warning("Could not refresh subscription %s; using the event copy", sub.get("id"))
+        return sub
+
+
+def cancel_all_subscriptions(user: User) -> int:
+    """End every live subscription for this rider now. Used when an account
+    is deleted: an erased account must never go on charging a card."""
+    if not (is_configured() and user.stripe_customer_id):
+        return 0
+    _client()
+    ended = 0
+    for sub in stripe.Subscription.list(
+        customer=user.stripe_customer_id, status="all", limit=20
+    ).auto_paging_iter():
+        if sub.status in ("active", "trialing", "past_due", "unpaid", "incomplete"):
+            stripe.Subscription.cancel(sub.id)
+            ended += 1
+    return ended
+
+
 def _apply_subscription(sub: dict) -> None:
     from app.database import SessionLocal
 
+    sub = _current_state(sub)
     customer_id = sub.get("customer")
     status = sub.get("status") or "none"
     if sub.get("status") == "canceled" or sub.get("ended_at"):
@@ -160,7 +198,7 @@ def has_access(user: User) -> bool:
     passes. past_due keeps access (Stripe retries cards for days; a flaky
     card must not kill a training week), canceled does not.
     """
-    if user.email in settings.admin_emails:
+    if user.email.lower() in {e.lower() for e in settings.admin_emails}:
         return True
     if not settings.require_subscription:
         return True

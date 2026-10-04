@@ -283,10 +283,12 @@ async def send_message(
     )
 
 
-@router.post("/tts")
+@router.post("/tts", dependencies=[Depends(rate_limit(120, 3600))])
 async def text_to_speech_endpoint(
     body: TTSRequest,
-    current_user: User = Depends(get_current_user),
+    # Every call is paid for (ElevenLabs), so it sits behind the membership
+    # like the coach it voices.
+    current_user: User = Depends(require_paid_access),
 ):
     """
     Convert text to speech using ElevenLabs.
@@ -300,7 +302,7 @@ async def text_to_speech_endpoint(
         from fastapi import HTTPException
         raise HTTPException(
             status_code=503,
-            detail="Voice is not configured. Set ELEVENLABS_API_KEY in environment.",
+            detail="Spoken replies aren't available right now. Text replies still work.",
         )
 
     return StreamingResponse(

@@ -160,7 +160,7 @@ export function PersonalBestsGrid({ points, days, className }: PersonalBestsGrid
               )}
               {isAtPB && (
                 <div className="mt-1.5 text-[10px] font-medium text-vb-clay">
-                  All-time PB!
+                  All-time PB
                 </div>
               )}
               {point.ride_date && (

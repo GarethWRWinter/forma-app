@@ -21,7 +21,7 @@ def get_current_user(
     # A suspended or deleted account must not authenticate, even with a
     # still-valid (short-lived) access token.
     if not user.is_active or user.deleted_at is not None:
-        raise UnauthorizedException(detail="Account is inactive")
+        raise UnauthorizedException(detail="This account has been closed. If that's a surprise, email gareth@ridewithforma.com.")
     return user
 
 
@@ -38,6 +38,6 @@ def require_paid_access(user: User = Depends(get_current_user)) -> User:
     if not billing_service.has_access(user):
         raise HTTPException(
             status_code=402,
-            detail="Your Forma membership isn't active. Join from Settings and the coach is yours again.",
+            detail="This needs an active Forma membership. Go to Settings, then Membership, then Join Forma, and it works straight away.",
         )
     return user

@@ -74,19 +74,19 @@ export const COACH_TONES: CoachTone[] = [
     key: "balanced",
     label: "Balanced",
     description: "Warm and direct in equal measure, the classic coach.",
-    sample: "Solid week. Thursday's the session that matters, let's arrive fresh.",
+    sample: "Solid week. Thursday's the session that matters, so arrive fresh.",
   },
   {
     key: "empathetic",
     label: "Empathetic & nurturing",
     description: "Leads with feelings, celebrates generously, softens hard truths.",
-    sample: "You've carried a heavy week and still showed up, I'm proud of you. Let's be kind to your legs today.",
+    sample: "You've carried a heavy week and still showed up. I'm proud of you. Let's be kind to your legs today.",
   },
   {
     key: "stoic",
     label: "Stoic & calm",
     description: "Spare, steady, unflappable. Facts, then one action.",
-    sample: "TSB is −27. The work is done. Rest today.",
+    sample: "You're carrying a lot of fatigue. The work is done. Rest today.",
   },
   {
     key: "direct",
@@ -98,12 +98,12 @@ export const COACH_TONES: CoachTone[] = [
     key: "analytical",
     label: "Analytical & data-deep",
     description: "Numbers first, mechanisms explained, depth welcome.",
-    sample: "Decoupling was 8.4% after 2,100kJ, fuelling, not fitness. At 80g/hr I'd expect under 5%.",
+    sample: "Heart-rate drift was 8.4% after 2,100kJ. That's fuelling, not fitness. At 80g of carbs an hour I'd expect under 5%.",
   },
   {
     key: "playful",
     label: "Playful & witty",
-    description: "Light, funny, banter-forward, serious training, unserious delivery.",
+    description: "Light and funny. Serious training, delivered with a grin.",
     sample: "Three PBs in one ride? Leave some watts for the rest of us. Easy spin tomorrow, hotshot.",
   },
 ];

@@ -42,17 +42,17 @@ import {
 // never condescend; no dashes (typography law).
 const RIDER_TYPE_VERDICT: Record<string, string> = {
   all_rounder:
-    "No single spike, you're competitive across every system. Your edge is versatility; your ceiling comes from sharpening the tails.",
+    "No single spike: you're competitive across every system. Versatility is your edge, and the next gains come from your weakest system.",
   sprinter:
-    "Explosive top end, the final 200 metres belong to you. The work is carrying that weapon over the climbs to the finish.",
+    "Explosive top end: the final 200 metres are yours. The work now is getting that sprint over the climbs to the finish.",
   climber:
     "You go up better than you go along. Your races are decided where the road tilts; protect the watts per kilo.",
   time_trialist:
-    "A diesel engine that holds monstrous steady power. Your race is against the clock, and the clock is losing.",
+    "A diesel: big, steady power for a long time. Your best days are against the clock.",
   puncheur:
-    "Short, sharp and vicious. Five-minute power is your weapon; pick finishes with a wall in the last kilometre.",
+    "Short, sharp and punchy. Five-minute power is your strength; pick finishes with a wall in the last kilometre.",
   pursuiter:
-    "Big engine in the three-to-eight-minute range. Track DNA on the road; break away and stay away.",
+    "Big engine for efforts of three to eight minutes, like a track pursuiter. On the road, that means breaking away and staying away.",
   rouleur:
     "Strong everywhere the road is flat and hard. Wind, cobbles and long ranges are where you win.",
 };
@@ -284,8 +284,8 @@ export default function DashboardPage() {
     tsb > 10
       ? "Fresh. A good day to go hard."
       : tsb < -20
-        ? "Deep fatigue. Absorb it."
-        : "Productive strain";
+        ? "Deep fatigue. Go easy until it clears."
+        : "Tired, in a useful way";
 
   const ramp = fitness?.ramp_rate ?? 0;
   const ctlSub = ramp > 0 ? "Building" : ramp < 0 ? "Easing" : "Holding steady";
@@ -497,7 +497,7 @@ export default function DashboardPage() {
               {todaySession.planned_duration_seconds
                 ? formatDuration(todaySession.planned_duration_seconds)
                 : ""}
-              {todaySession.planned_tss ? ` · ${Math.round(todaySession.planned_tss)} TSS` : ""}
+              {todaySession.planned_tss ? ` · training load ${Math.round(todaySession.planned_tss)} TSS` : ""}
               {todaySession.status === "completed" ? " · done ✓" : ""}
             </p>
             {todayDetail?.steps && todayDetail.steps.length > 0 && (
@@ -517,7 +517,7 @@ export default function DashboardPage() {
         <section className="f-rise border border-vb-border-subtle bg-vb-surface px-5 py-5 md:px-8">
           <p className="f-kicker text-vb-text-muted">Today</p>
           <p className="mt-1.5 text-base text-vb-text-dim">
-            Nothing on the sheet. Feet up, or spin easy. Even Coppi took rest days.
+            Nothing planned today, so rest. Even Coppi took rest days.
           </p>
         </section>
       )}
@@ -570,7 +570,7 @@ export default function DashboardPage() {
           <QuietTile
             label="FTP"
             value="Not set"
-            sub="Set it in settings"
+            sub="Your one-hour power. Add it in Settings"
             href="/dashboard/settings"
           />
         )}
@@ -839,8 +839,9 @@ export default function DashboardPage() {
                 </Link>
               }
             >
-              Connect Wahoo or drop in a ride file, and I&apos;ll start
-              building your power profile.
+              Upload a ride and I&apos;ll start building your power profile.
+              Years of riding on Strava or Garmin, or a Wahoo? Bring it all
+              across from Settings, then Data in.
             </EmptyState>
           ) : (
             <ul className="f-stagger">
@@ -914,7 +915,8 @@ export default function DashboardPage() {
                   </Link>
                 }
               >
-                Give me a race to aim you at and the whole plan bends around it.
+                Give me an event to aim at, and I&apos;ll rebuild the plan
+                around its date.
               </EmptyState>
             ) : (
               <ul className="f-stagger">

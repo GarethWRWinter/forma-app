@@ -5,7 +5,7 @@
 
 const API_BASE = "/api/v1";
 
-class ApiError extends Error {
+export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
     super(message);
@@ -76,6 +76,14 @@ async function request<T>(
     ...options,
     headers,
   });
+
+  // On the auth endpoints a 401 is the answer, not an expired session: a
+  // mistyped password. Refreshing and bouncing to /login there swallowed the
+  // "email and password don't match" message, so a rider who typed one letter
+  // wrong watched the page reload with no reason given (launch audit, 4 Oct).
+  if (response.status === 401 && path.startsWith("/auth/")) {
+    throw new ApiError(normalizeErrorMessage(await response.text()), 401);
+  }
 
   if (response.status === 401) {
     // Try refresh
@@ -194,24 +202,16 @@ async function authedFetch(
 }
 
 async function uploadFile<T>(path: string, file: File): Promise<T> {
-  const token = getToken();
   const formData = new FormData();
   formData.append("file", file);
-
-  const headers: Record<string, string> = {};
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers,
-    body: formData,
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new ApiError(normalizeErrorMessage(text), response.status);
-  }
-
+  // Through authedFetch so an upload after half an hour idle refreshes the
+  // token instead of failing; a long archive import used to mark every file
+  // after the 30-minute mark as failed (launch audit, 4 Oct 2026).
+  const response = await authedFetch(
+    path,
+    { method: "POST", body: formData },
+    "That upload didn't go through. Try again."
+  );
   return response.json();
 }
 
@@ -221,7 +221,13 @@ export const authConfig = () =>
   request<{ invite_required: boolean }>("/auth/config");
 
 export const auth = {
-  register: (email: string, password: string, fullName?: string, inviteCode?: string) =>
+  register: (
+    email: string,
+    password: string,
+    fullName?: string,
+    inviteCode?: string,
+    healthConsent: boolean = false
+  ) =>
     request<{ id: string; email: string }>("/auth/register", {
       method: "POST",
       body: JSON.stringify({
@@ -229,6 +235,7 @@ export const auth = {
         password,
         full_name: fullName,
         invite_code: inviteCode,
+        health_consent: healthConsent,
       }),
     }),
 
