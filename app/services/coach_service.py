@@ -549,8 +549,8 @@ def _build_rider_context(
         pass
 
     # Watts for the work itself, from the session's own steps and the rider's
-    # FTP. Left to the model, "half your FTP" for a 245W rider came out as
-    # "roughly 145W" (launch audit, 4 Oct 2026); the sum is done here instead.
+    # FTP, worked out here so the coach quotes targets rather than doing the
+    # arithmetic itself.
     def _main_set_watts(w) -> str | None:
         ftp = user.ftp
         work = [
