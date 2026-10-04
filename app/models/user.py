@@ -62,6 +62,10 @@ class User(TimestampMixin, Base):
     # data; registration requires it.
     health_consent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # Set when a rider asks the coach to stop emailing them (they reply
+    # "stop"). The outreach engine never writes to them again.
+    coach_emails_off_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Badge ground: the rider's chosen photo as a downscaled JPEG data URL.
     # Private to the rider; only ever drawn onto their own badge canvas.
     badge_photo: Mapped[str | None] = mapped_column(Text, nullable=True)

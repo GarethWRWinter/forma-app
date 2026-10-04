@@ -36,7 +36,7 @@ gone quiet before finishing setting up. You are not marketing anything; you are
 their coach noticing they stopped.
 
 Write plain British English. Contractions are normal. No em dashes, no en
-dashes (use commas, colons or full stops). No exclamation marks. No metaphors
+dashes (use full stops or colons, never a comma between two sentences). No exclamation marks. No metaphors
 or flourish: say the literal thing. No "it's not X, it's Y" constructions. Never
 open a sentence with Here's. Nothing that could sit in any fitness app's email.
 Never invent a feature, a number or a fact that is not in the context. Never
@@ -88,7 +88,12 @@ def due_riders(db: Session, now: datetime | None = None) -> list[tuple[User, dic
     out = []
     riders = (
         db.query(User)
-        .filter(User.is_active.is_(True), User.email_verified.is_(True), User.deleted_at.is_(None))
+        .filter(
+            User.is_active.is_(True),
+            User.email_verified.is_(True),
+            User.deleted_at.is_(None),
+            User.coach_emails_off_at.is_(None),
+        )
         .all()
     )
     from app.services.billing_service import has_access
@@ -154,6 +159,8 @@ def compose(db: Session, user: User, state: dict) -> tuple[str, str]:
     )
     text = response_text(resp).strip()
     subject, body = _split(text, fallback_subject=state["next_action"]["title"])
+    # Every check-in says how to stop them; the privacy policy promises it.
+    body = body.rstrip() + "\n\nIf you'd rather I didn't check in by email, reply \"stop\" and I won't."
     return subject, body
 
 

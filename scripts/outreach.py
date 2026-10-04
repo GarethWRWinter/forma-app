@@ -10,6 +10,9 @@
     # Actually send to that one rider and log it:
     ... scripts/outreach.py --email rider@example.com --send
 
+    # A rider replied "stop": the coach never emails them again:
+    ... scripts/outreach.py --stop rider@example.com
+
 Dry run by default. --send is the only thing that emails anyone.
 """
 
@@ -28,9 +31,20 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--email", help="One rider; composes regardless of whether they are due.")
     ap.add_argument("--send", action="store_true", help="Send (and log) instead of printing.")
+    ap.add_argument("--stop", metavar="EMAIL", help="The rider replied 'stop': never email them again.")
     args = ap.parse_args()
     db = SessionLocal()
     try:
+        if args.stop:
+            from datetime import datetime
+
+            user = db.query(User).filter(User.email == args.stop.strip().lower()).first()
+            if user is None:
+                raise SystemExit(f"No rider with email {args.stop}")
+            user.coach_emails_off_at = datetime.utcnow()
+            db.commit()
+            print(f"Coach emails off for {user.email}.")
+            return
         if args.email:
             user = db.query(User).filter(User.email == args.email.strip().lower()).first()
             if user is None:
