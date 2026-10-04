@@ -138,8 +138,18 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
        with the 4242 test card; then live mode (account verification, live product
        and £14.99 price, live webhook to the same URL, live customer portal saved,
        live keys on Railway). REQUIRE_SUBSCRIPTION=true only on the day doors open.
-5. [ ] Legal pages (privacy incl. "founder reviews conversations", "coach emails you";
+5. [~] Legal pages (privacy incl. "founder reviews conversations", "coach emails you";
        terms) + ICO registration. Monitoring is done (Sentry + UptimeRobot).
+       DRAFTED 4 Oct 2026: prd/legal/privacy-policy.md and terms.md, with CONFIRM
+       and DECIDE marks for Gareth. Publish at ridewithforma.com/privacy and /terms
+       (the register page already links there). Health-data consent is live at
+       registration.
+5d. [ ] **LAUNCH GATE: Wahoo app in Production mode, webhook token set.** Sandbox
+       apps get 25 API calls per 5 minutes across every rider (production: 200),
+       and a hundred history imports would stall it. Check developers.wahooligan.com;
+       if Sandbox, submit for Wahoo's review now. Set a webhook token in the same
+       portal and the same value as WAHOO_WEBHOOK_TOKEN on Railway (unset on
+       4 Oct 2026, so the webhook accepts anyone's events).
 5c. [ ] **LAUNCH GATE: EU VAT registration (non-Union One Stop Shop) before the first
        EU rider pays.** Decided 1 Oct 2026: Stripe in standard mode with Stripe Tax,
        not Managed Payments. Managed Payments makes Stripe the seller, which puts UK

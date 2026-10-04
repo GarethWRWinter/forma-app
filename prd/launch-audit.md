@@ -100,3 +100,52 @@ be. **LATER** is logged and left.
 
 - [ ] L1 MUST. Register, onboarding, dashboard and coach usable at 375px.
 - [ ] L2 SHOULD. Add to Home Screen gives a proper icon and name (PWA manifest).
+
+---
+
+## Results, 4 October 2026
+
+Method: a fresh rider registered against production with a single-use code
+(AUDITOCT4, now revoked), went through verification, onboarding, goal, plan,
+ride upload, the coach, Wahoo and Strava links and Stripe checkout; three
+parallel audits covered copy, in-app copy and the code. Everything marked
+FIXED is deployed (API 6eba62f onwards, app on Vercel, landing 9923c1c) and
+re-checked on production unless it says otherwise.
+
+| Item | Result |
+| --- | --- |
+| A1-A4 truth | FIXED. Passed 15 September date, false "doors close", "unsubscribe in a click", "no store app", data FAQ (Anthropic named), billing truth in the coach's knowledge |
+| A5 journal numbers | OPEN. Unsourced figures listed in the report for Gareth to confirm |
+| B1-B4 voice | FIXED across landing, journal, app, emails, coach prompts. Coach still writes the odd comma splice; rule tightened |
+| C1 waitlist | PASS. Mobile fields were 140-190px tall, FIXED |
+| C2-C5 | FIXED (invite-only said plainly, OG card re-rendered, orphans) |
+| D1-D3 journal | PASS |
+| E1-E2 coach first contact | FIXED. Blind to the week on a Sunday; now sees seven days ahead with watts and the app's session names |
+| F1 invite codes | PASS |
+| F2 verification | PASS |
+| F3 login | FIXED. Email case locked riders out; a wrong password reloaded the page silently |
+| F4 onboarding | PASS |
+| F5 plan | FIXED. No long ride for any event, 6-week tapers, tapers with no goal |
+| F6 data in | FIXED. Duplicate uploads double-counted; uploads failed after 30 minutes idle |
+| F7 paywall | FIXED. Unpaid riders now see a membership banner and the real reason |
+| F8 billing | FIXED. Double checkout, out-of-order webhooks, no confirmation on return |
+| F9 activation | FIXED. Four of five next steps pointed somewhere wrong |
+| F10 export/delete | FIXED. Deletion now cancels the membership and cuts Wahoo |
+| G1 Wahoo production | OPEN. Gareth: check Sandbox or Production in the Wahoo portal |
+| G2 Strava | FIXED. Reconnect only; button removed |
+| G3 consent screens | OPEN. Rename Strava app; Wahoo app name |
+| H1-H4 Stripe live | OPEN. Gareth mid-activation |
+| I1-I2 privacy, terms | DRAFTED in prd/legal/. Gareth reviews; then publish |
+| I3 health consent | FIXED. Required tick box at registration, timestamped |
+| I4 ICO | OPEN. Gareth |
+| I5 company disclosure | FIXED on every landing and journal page |
+| J1 lock | FIXED. constraints.txt, Python 3.13 image |
+| J2 migrations | FIXED. Failed migration fails the deploy |
+| J3 backups | OPEN. Gareth: confirm Railway Postgres backups and try one restore |
+| J4 monitoring | PASS. Point UptimeRobot at /health/deep |
+| J5 purge | FIXED. Reads every table from the database, runs daily; first run removed 7 old test accounts |
+| J7 Vercel | OPEN. Still manual |
+| K1 isolation | PASS (4 tests, after local DB migrated) |
+| K2 secrets | PASS. WAHOO_WEBHOOK_TOKEN is NOT set: OPEN, Gareth |
+| K3 rate limits | FIXED. Keyed on the proxy-seen address; voice behind paywall and limited |
+| L1 phone | PASS on landing; app checked at 375px in earlier sessions |
