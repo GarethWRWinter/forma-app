@@ -548,23 +548,63 @@ def _build_rider_context(
     except Exception:
         pass
 
+    # Watts for the work itself, from the session's own steps and the rider's
+    # FTP. Left to the model, "half your FTP" for a 245W rider came out as
+    # "roughly 145W" (launch audit, 4 Oct 2026); the sum is done here instead.
+    def _main_set_watts(w) -> str | None:
+        ftp = user.ftp
+        work = [
+            st for st in (w.steps or [])
+            if getattr(st.step_type, "value", st.step_type) in ("interval_on", "steady_state")
+            and st.power_target_pct
+        ]
+        if not ftp or not work:
+            return None
+        main = max(
+            work,
+            key=lambda st: (getattr(st.step_type, "value", st.step_type) == "interval_on", st.duration_seconds or 0),
+        )
+        lo = main.power_low_pct or main.power_target_pct
+        hi = main.power_high_pct or main.power_target_pct
+        if round(lo * ftp) == round(hi * ftp):
+            return f"about {round(main.power_target_pct * ftp)}W"
+        return f"{round(lo * ftp)} to {round(hi * ftp)}W"
+
     # ── 11. This Week's Workouts ──
+    # From this Monday through the next seven days. The calendar week alone
+    # left the coach blind on a Sunday: a rider who joined that day and asked
+    # "what should I do this week?" heard "I'm only seeing today's session"
+    # (launch audit, 4 Oct 2026). And each session goes by the name the app
+    # shows, so the coach and the calendar never call it two things.
     try:
+        from app.core.session_naming import session_display_name
+
         week_start = today - timedelta(days=today.weekday())  # Monday
-        workouts = get_workouts_by_date(db, user.id, week_start=week_start)
+        workouts = [
+            w
+            for start in (week_start, week_start + timedelta(days=7))
+            for w in get_workouts_by_date(db, user.id, week_start=start)
+            if w.scheduled_date <= today + timedelta(days=7)
+        ]
         if workouts:
             context["this_week"] = [
                 {
                     "id": w.id,
                     "date": str(w.scheduled_date),
-                    "title": w.title,
+                    "day": w.scheduled_date.strftime("%A"),
+                    "title": (
+                        session_display_name(getattr(w.workout_type, "value", w.workout_type), w.id)
+                        if getattr(w.workout_type, "value", w.workout_type) != "rest"
+                        else w.title
+                    ),
                     "type": w.workout_type,
                     "description": w.description,
                     "status": w.status,
                     "planned_tss": w.planned_tss,
                     "planned_duration_min": round(w.planned_duration_seconds / 60) if w.planned_duration_seconds else None,
+                    "main_set_watts": _main_set_watts(w),
                 }
-                for w in workouts[:7]
+                for w in workouts[:14]
             ]
     except Exception:
         pass
