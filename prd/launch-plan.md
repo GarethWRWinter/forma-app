@@ -144,7 +144,16 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
        and DECIDE marks for Gareth. Publish at ridewithforma.com/privacy and /terms
        (the register page already links there). Health-data consent is live at
        registration.
-5d. [ ] **LAUNCH GATE: Wahoo app in Production mode, webhook token set.** Sandbox
+5e. [x] **Backups (7 Oct 2026).** Railway's scheduled backups need the Pro plan,
+       so they run free instead: nightly encrypted dumps by GitHub Actions in the
+       private repo GarethWRWinter/forma-db-backups (5 days kept), plus a weekly
+       copy on Gareth's Mac (launchd, newest four, ~/Forma-Backups). Read-only
+       Postgres login forma_backup. Restore drill passed: 34/34 tables,
+       3,375,452 rows, every count matching production. Passphrase and URL in the
+       Mac's Keychain (forma-db-backup-passphrase, forma-db-backup-url).
+5d. [x] **LAUNCH GATE: Wahoo app in Production mode, webhook token set.** Done
+       7 Oct 2026: app is Production and Approved; WAHOO_WEBHOOK_TOKEN set and
+       token-less events now refused (403). Sandbox
        apps get 25 API calls per 5 minutes across every rider (production: 200),
        and a hundred history imports would stall it. Check developers.wahooligan.com;
        if Sandbox, submit for Wahoo's review now. Set a webhook token in the same

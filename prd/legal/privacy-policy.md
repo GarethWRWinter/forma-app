@@ -88,6 +88,8 @@ for its job, under a contract that requires them to protect it.
 - **Postmark** (sends our emails), and **Google Workspace** (our inbox, where
   your replies arrive).
 - **Sentry** (error reports when something breaks).
+- **GitHub** (stores our nightly database backups, encrypted with a key
+  GitHub does not hold).
 - **OpenWeatherMap** (the weather on your rides). Only the start point and
   time of a ride are sent.
 - **CARTO** (map tiles). When the app shows a map, your browser fetches the
@@ -114,8 +116,9 @@ Transfer Agreement).
   letters.
 - **Payment records:** Stripe and our accounts keep what tax law requires
   (six years).
-- **Backups:** erased data can survive in encrypted backups for up to
-  [CONFIRM: backup retention, e.g. 30 days] before they roll over.
+- **Backups:** we back up the database every night and every week, and
+  the copies are encrypted. Erased data can survive in a backup for up to
+  30 days before the oldest copy is replaced.
 
 ## Your rights
 
