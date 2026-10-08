@@ -105,7 +105,7 @@ Paying: Settings, then Membership, then Join Forma, which opens Stripe Checkout.
 
 Without an active membership, chat, ride uploads, attachments and Ride mode recording answer: "This needs an active Forma membership. Go to Settings, then Membership, then Join Forma, and it works straight away." The plan, goals and Settings still open.
 
-Deleting the account ends the membership at the same moment; no further payments are taken. A member who only wants to stop paying should cancel in Manage billing instead and keep everything until the paid month runs out.
+First 14 days: a rider who cancels within 14 days of first subscribing and emails gareth@ridewithforma.com gets that first payment refunded in full, no questions. Gareth does the refund himself. Deleting the account ends the membership at the same moment; no further payments are taken. A member who only wants to stop paying should cancel in Manage billing instead and keep everything until the paid month runs out.
 
 ## Your data
 

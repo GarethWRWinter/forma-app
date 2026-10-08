@@ -1,8 +1,7 @@
 # Terms of service
 
 DRAFT for Gareth's review, 4 October 2026. Not legal advice; have it read by
-someone qualified before it goes live. Lines marked DECIDE are choices only
-you can make. Publish at ridewithforma.com/terms.
+someone qualified before it goes live. Publish at ridewithforma.com/terms.
 
 ---
 
@@ -53,11 +52,9 @@ your account. One account per person.
 - **Cancelling.** Cancel any time in Settings, then Membership, then Manage
   billing. You keep full access until the end of the month you've paid for,
   and you won't be charged again.
-- **Your 14-day right to cancel.** By law you can cancel within 14 days of
-  first subscribing. DECIDE: either "If you do, email me and I'll refund
-  that first payment in full" (simplest, recommended), or "Because Forma
-  starts coaching straight away at your request, a refund covers the days
-  you haven't used."
+- **Your first 14 days.** If Forma isn't for you, cancel within 14 days of
+  first subscribing, email gareth@ridewithforma.com, and I'll refund that
+  first payment in full. No questions, no forms.
 - **Failed payments.** If a payment fails, Stripe tries again over a few
   days and your access continues while it does. If it can't be collected,
   the membership ends.
