@@ -28,6 +28,17 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { ArchiveImport } from "@/components/settings/archive-import";
 import { MembershipCard } from "@/components/settings/membership-card";
 import { WahooCard } from "@/components/settings/wahoo-card";
+import { HealthSettings } from "@/components/safety/HealthSettings";
+import { useSafetyState } from "@/components/safety/useSafetyState";
+import {
+  FTP_NOT_YET_DOCTOR,
+  FTP_NOT_YET_LAYOFF,
+  FTP_TEST_OVER_35,
+  FTP_TEST_WARNING,
+  MINOR_HOLD_TEXT,
+  ftpGate,
+  showCheckUpLine,
+} from "@/components/safety/safety-rules";
 
 const EVENT_TYPES = [
   { value: "road_race", label: "Road Race" },
@@ -122,6 +133,15 @@ export default function SettingsPage() {
   // FTP test state
   const [ftpTestPower, setFtpTestPower] = useState("");
   const [ftpResult, setFtpResult] = useState<string | null>(null);
+
+  // The FTP test is a maximal effort, so it waits while a hold, an uncleared
+  // health answer or the layoff gate applies. Until the state is known the
+  // entry stays hidden: the gate fails closed.
+  const { data: safetyState, isError: safetyError, refetch: refetchSafety } = useSafetyState(!!user);
+  const ftpTestGate = ftpGate(safetyState);
+  // Accounts made before date of birth was asked have none, so the check-up
+  // line shows to them, which is the safe side of not knowing.
+  const dateOfBirth = user?.date_of_birth;
 
   // Dropbox folder edit state
   const [editingFolder, setEditingFolder] = useState(false);
@@ -452,14 +472,51 @@ export default function SettingsPage() {
         </div>
       </section>
 
+      {/* Health: screening answers, clearance, where the rider stands */}
+      <HealthSettings />
+
       {/* FTP Test */}
       <section className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6">
         <h2 className="f-display text-2xl text-vb-text">FTP test</h2>
-        <p className="mt-2 text-sm text-vb-text-dim">
+        {/* Always shown, above the instructions */}
+        <div className="mt-3 border-l-2 border-vb-red pl-4 text-sm leading-relaxed text-vb-text">
+          <p>{FTP_TEST_WARNING}</p>
+          {showCheckUpLine(dateOfBirth) && <p className="mt-2">{FTP_TEST_OVER_35}</p>}
+        </div>
+        <p className="mt-3 text-sm text-vb-text-dim">
           Warm up well, then ride 20 minutes as hard as you can hold evenly
           and enter your average power. Your FTP (roughly the most power you
           can hold for an hour) is 95% of it.
         </p>
+        {ftpTestGate !== "open" ? (
+          <p className="mt-4 rounded-sm bg-vb-sunken px-4 py-3 text-sm text-vb-text">
+            {ftpTestGate === "closed" ? (
+              MINOR_HOLD_TEXT
+            ) : ftpTestGate === "doctor" ? (
+              <>
+                {FTP_NOT_YET_DOCTOR}{" "}
+                <a href="#health" className="underline underline-offset-2 hover:text-vb-red">
+                  If one has, tell me under Health.
+                </a>
+              </>
+            ) : ftpTestGate === "layoff" ? (
+              FTP_NOT_YET_LAYOFF
+            ) : safetyError ? (
+              <>
+                I couldn&apos;t check whether the test is right for you today.{" "}
+                <button
+                  type="button"
+                  onClick={() => refetchSafety()}
+                  className="underline underline-offset-2 hover:text-vb-red"
+                >
+                  Try again
+                </button>
+              </>
+            ) : (
+              "Checking…"
+            )}
+          </p>
+        ) : (
         <div className="mt-4 flex items-end gap-3">
           <div className="flex-1">
             <label className={labelClasses}>20-minute average power (w)</label>
@@ -477,6 +534,7 @@ export default function SettingsPage() {
             Calculate
           </Button>
         </div>
+        )}
         {ftpResult && (
           <p className="f-data mt-3 text-sm font-semibold text-vb-text">
             {ftpResult}

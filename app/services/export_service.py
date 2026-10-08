@@ -3,22 +3,154 @@ Workout and ride export builders.
 
 Supports:
 - ZWO (Zwift Workout) - XML format for Zwift structured workouts
+- ERG and MRC - minutes/watts and minutes/percent files for trainer apps
 - FIT (Flexible and Interoperable Data Transfer) - binary format for Garmin/Wahoo
 - GPX (GPS Exchange Format) - XML format for GPS tracks
+
+Every workout file is written in the order ride mode rides it (one shared
+flattening, the same as useTrainingSession.flattenSteps): an interval_on and
+the interval_off after it repeat as on, off, on, off. And none of them ever
+asks a trainer to hold more than ERG_CAP (1.30 x FTP) in ERG. A step above
+it is a max effort: in ZWO a FreeRide block and in FIT an open target, so
+the trainer lets go; ERG and MRC have no way to let go, so the target is
+held at the cap and the course text tells the rider to switch ERG off.
 """
 
+import struct
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from io import BytesIO
 from xml.dom import minidom
 
 from sqlalchemy.orm import Session
 
 from app.models.ride import RideData
 from app.models.training import Workout, WorkoutStep
+from app.services.safety_service import ERG_CAP
+
+_EPS = 1e-6
+_RAMPS = ("warmup", "cooldown", "ramp")
+
+# What the rider sees at a max-effort step. British English, no dashes.
+MAX_EFFORT_ZWO = "Max effort. ERG is off for this one, so ride it all out."
+MAX_EFFORT_COURSE_TEXT = f"Max effort: ERG off, ride it all out (this file holds {ERG_CAP:.0%} of FTP)"
+# Shown this long before a max effort, so there's time to switch ERG off.
+MAX_EFFORT_WARNING_SECONDS = 30
+MAX_EFFORT_WARNING = "Max effort coming up: switch ERG off now"
+MAX_EFFORT_FIT_NAME = "Max effort"
+
+
+def _step_type(step) -> str:
+    value = step.step_type
+    return getattr(value, "value", value)
+
+
+def flatten_steps(workout: Workout) -> list[WorkoutStep]:
+    """Every step in the order it is ridden, exactly as ride mode flattens
+    them: an interval_on followed by an interval_off repeats as on, off, on,
+    off, repeat_count times; an interval_on alone repeats on its own; every
+    other step is ridden once."""
+    steps = sorted(workout.steps, key=lambda s: s.step_order)
+    flat: list[WorkoutStep] = []
+    i = 0
+    while i < len(steps):
+        step = steps[i]
+        if _step_type(step) == "interval_on":
+            nxt = steps[i + 1] if i + 1 < len(steps) else None
+            off = nxt if nxt is not None and _step_type(nxt) == "interval_off" else None
+            for _ in range(max(step.repeat_count or 1, 1)):
+                flat.append(step)
+                if off is not None:
+                    flat.append(off)
+            if off is not None:
+                i += 1
+        else:
+            flat.append(step)
+        i += 1
+    return flat
+
+
+def _over_cap(pct: float) -> bool:
+    return pct > ERG_CAP + _EPS
+
+
+def _capped(pct: float) -> float:
+    return min(pct, ERG_CAP)
+
+
+def _steady_pct(step, default: float) -> float:
+    return step.power_target_pct or default
+
+
+def _ramp_pcts(step) -> tuple[float, float]:
+    """A ramp's start and end, as ERG, MRC and FIT write them, held to the
+    cap: a ramp that crosses ERG_CAP is held up to it, never beyond."""
+    low = step.power_low_pct or 0.40
+    high = step.power_high_pct or step.power_target_pct or 0.70
+    return _capped(low), _capped(high)
+
+
+def _step_label(step) -> str:
+    return step.notes or _step_type(step).replace("_", " ").title()
 
 
 # === ZWO Export (Zwift Workout Format) ===
+
+
+def _zwo_max_effort(wo, duration: int) -> None:
+    """A FreeRide block: Zwift lets go of ERG for it, so the rider sprints
+    against their own resistance instead of a trainer holding 200%."""
+    elem = ET.SubElement(wo, "FreeRide")
+    elem.set("Duration", str(duration))
+    text = ET.SubElement(elem, "textevent")
+    text.set("timeoffset", "0")
+    text.set("message", MAX_EFFORT_ZWO)
+
+
+def _zwo_single(wo, step) -> None:
+    """One ridden step, on its own."""
+    st = _step_type(step)
+
+    if st == "warmup":
+        elem = ET.SubElement(wo, "Warmup")
+        elem.set("Duration", str(step.duration_seconds))
+        low = step.power_low_pct or (step.power_target_pct * 0.7 if step.power_target_pct else 0.40)
+        high = step.power_high_pct or step.power_target_pct or 0.65
+        elem.set("PowerLow", f"{_capped(low):.2f}")
+        elem.set("PowerHigh", f"{_capped(high):.2f}")
+        if step.cadence_target:
+            elem.set("Cadence", str(step.cadence_target))
+
+    elif st == "cooldown":
+        elem = ET.SubElement(wo, "Cooldown")
+        elem.set("Duration", str(step.duration_seconds))
+        high = step.power_high_pct or step.power_target_pct or 0.55
+        low = step.power_low_pct or (step.power_target_pct * 0.7 if step.power_target_pct else 0.35)
+        elem.set("PowerLow", f"{_capped(low):.2f}")
+        elem.set("PowerHigh", f"{_capped(high):.2f}")
+
+    elif st == "ramp":
+        elem = ET.SubElement(wo, "Warmup")
+        elem.set("Duration", str(step.duration_seconds))
+        elem.set("PowerLow", f"{_capped(step.power_low_pct or 0.40):.2f}")
+        elem.set("PowerHigh", f"{_capped(step.power_high_pct or 1.00):.2f}")
+
+    elif st == "free_ride":
+        elem = ET.SubElement(wo, "FreeRide")
+        elem.set("Duration", str(step.duration_seconds))
+
+    else:
+        # steady_state, interval_on, interval_off: one held target.
+        default = {"interval_on": 1.00, "interval_off": 0.50}.get(st, 0.65)
+        pct = _steady_pct(step, default)
+        if _over_cap(pct):
+            _zwo_max_effort(wo, step.duration_seconds)
+            return
+        elem = ET.SubElement(wo, "SteadyState")
+        elem.set("Duration", str(step.duration_seconds))
+        elem.set("Power", f"{pct:.2f}")
+        if step.cadence_target:
+            elem.set("Cadence", str(step.cadence_target))
+
 
 def workout_to_zwo(workout: Workout, ftp: int = 200) -> str:
     """
@@ -29,7 +161,9 @@ def workout_to_zwo(workout: Workout, ftp: int = 200) -> str:
         warmup -> <Warmup>
         cooldown -> <Cooldown>
         steady_state -> <SteadyState>
-        interval_on/interval_off -> <IntervalsT>
+        interval_on/interval_off -> <IntervalsT> (Zwift alternates on and
+            off itself), unless either half is above ERG_CAP: then each
+            repeat is written out, the hard half as a <FreeRide> max effort
         ramp -> <Warmup> with different PowerLow/PowerHigh
         free_ride -> <FreeRide>
     """
@@ -45,7 +179,7 @@ def workout_to_zwo(workout: Workout, ftp: int = 200) -> str:
     tags = ET.SubElement(root, "tags")
     if workout.workout_type:
         tag = ET.SubElement(tags, "tag")
-        tag.set("name", workout.workout_type)
+        tag.set("name", getattr(workout.workout_type, "value", workout.workout_type))
 
     # Workout
     wo = ET.SubElement(root, "workout")
@@ -54,70 +188,33 @@ def workout_to_zwo(workout: Workout, ftp: int = 200) -> str:
     i = 0
     while i < len(steps):
         step = steps[i]
-        st = step.step_type
+        if _step_type(step) == "interval_on":
+            nxt = steps[i + 1] if i + 1 < len(steps) else None
+            off = nxt if nxt is not None and _step_type(nxt) == "interval_off" else None
+            repeats = max(step.repeat_count or 1, 1)
+            on_pct = _steady_pct(step, 1.00)
+            off_pct = _steady_pct(off, 0.50) if off is not None else None
 
-        if st == "warmup":
-            elem = ET.SubElement(wo, "Warmup")
-            elem.set("Duration", str(step.duration_seconds))
-            low = step.power_low_pct or (step.power_target_pct * 0.7 if step.power_target_pct else 0.40)
-            high = step.power_high_pct or step.power_target_pct or 0.65
-            elem.set("PowerLow", f"{low:.2f}")
-            elem.set("PowerHigh", f"{high:.2f}")
-            if step.cadence_target:
-                elem.set("Cadence", str(step.cadence_target))
-
-        elif st == "cooldown":
-            elem = ET.SubElement(wo, "Cooldown")
-            elem.set("Duration", str(step.duration_seconds))
-            high = step.power_high_pct or step.power_target_pct or 0.55
-            low = step.power_low_pct or (step.power_target_pct * 0.7 if step.power_target_pct else 0.35)
-            elem.set("PowerLow", f"{low:.2f}")
-            elem.set("PowerHigh", f"{high:.2f}")
-
-        elif st == "steady_state":
-            elem = ET.SubElement(wo, "SteadyState")
-            elem.set("Duration", str(step.duration_seconds))
-            elem.set("Power", f"{step.power_target_pct:.2f}" if step.power_target_pct else "0.65")
-            if step.cadence_target:
-                elem.set("Cadence", str(step.cadence_target))
-
-        elif st == "interval_on":
-            # Look for the matching interval_off that follows
-            off_step = steps[i + 1] if i + 1 < len(steps) and steps[i + 1].step_type == "interval_off" else None
-
-            if off_step:
+            if off is not None and not _over_cap(on_pct) and not _over_cap(off_pct):
                 elem = ET.SubElement(wo, "IntervalsT")
-                elem.set("Repeat", str(step.repeat_count or 1))
+                elem.set("Repeat", str(repeats))
                 elem.set("OnDuration", str(step.duration_seconds))
-                elem.set("OffDuration", str(off_step.duration_seconds))
-                elem.set("OnPower", f"{step.power_target_pct:.2f}" if step.power_target_pct else "1.00")
-                elem.set("OffPower", f"{off_step.power_target_pct:.2f}" if off_step.power_target_pct else "0.50")
+                elem.set("OffDuration", str(off.duration_seconds))
+                elem.set("OnPower", f"{on_pct:.2f}")
+                elem.set("OffPower", f"{off_pct:.2f}")
                 if step.cadence_target:
-                    elem.set("CadenceResting", str(off_step.cadence_target or 80))
+                    elem.set("CadenceResting", str(off.cadence_target or 80))
                     elem.set("Cadence", str(step.cadence_target))
-                i += 1  # skip the off step
             else:
-                # No matching off, treat as steady state
-                elem = ET.SubElement(wo, "SteadyState")
-                elem.set("Duration", str(step.duration_seconds))
-                elem.set("Power", f"{step.power_target_pct:.2f}" if step.power_target_pct else "1.00")
-
-        elif st == "interval_off":
-            # Standalone recovery interval (already consumed by on step normally)
-            elem = ET.SubElement(wo, "SteadyState")
-            elem.set("Duration", str(step.duration_seconds))
-            elem.set("Power", f"{step.power_target_pct:.2f}" if step.power_target_pct else "0.50")
-
-        elif st == "free_ride":
-            elem = ET.SubElement(wo, "FreeRide")
-            elem.set("Duration", str(step.duration_seconds))
-
-        elif st == "ramp":
-            elem = ET.SubElement(wo, "Warmup")
-            elem.set("Duration", str(step.duration_seconds))
-            elem.set("PowerLow", f"{step.power_low_pct:.2f}" if step.power_low_pct else "0.40")
-            elem.set("PowerHigh", f"{step.power_high_pct:.2f}" if step.power_high_pct else "1.00")
-
+                # Written out repeat by repeat, in the order they're ridden.
+                for _ in range(repeats):
+                    _zwo_single(wo, step)
+                    if off is not None:
+                        _zwo_single(wo, off)
+            if off is not None:
+                i += 1
+        else:
+            _zwo_single(wo, step)
         i += 1
 
     # Pretty print
@@ -126,7 +223,40 @@ def workout_to_zwo(workout: Workout, ftp: int = 200) -> str:
     return dom.toprettyxml(indent="  ", encoding=None)
 
 
-# === ERG Export (Absolute Watts) ===
+# === ERG and MRC Export ===
+
+
+def _course_points(workout: Workout) -> tuple[list[tuple[float, float]], list[tuple[int, str]]]:
+    """The minutes/fraction-of-FTP points both ERG and MRC files carry, and
+    the course text for each step, in ridden order. A step above ERG_CAP is
+    held at the cap (these formats can't let go) and its text says so."""
+    points: list[tuple[float, float]] = []
+    texts: list[tuple[int, str]] = []
+    minutes = 0.0
+    elapsed = 0
+    for step in flatten_steps(workout):
+        st = _step_type(step)
+        label = _step_label(step)
+        if st in _RAMPS:
+            start, finish = _ramp_pcts(step)
+        elif st == "free_ride":
+            start = finish = 0.50
+        else:
+            pct = _steady_pct(step, 0.65)
+            if _over_cap(pct):
+                label = MAX_EFFORT_COURSE_TEXT
+                # A heads-up during the step before, in time order.
+                warn_at = max(elapsed - MAX_EFFORT_WARNING_SECONDS, texts[-1][0] + 1 if texts else 0)
+                if warn_at < elapsed:
+                    texts.append((warn_at, MAX_EFFORT_WARNING))
+            start = finish = _capped(pct)
+        points.append((minutes, start))
+        minutes += step.duration_seconds / 60.0
+        points.append((minutes, finish))
+        texts.append((elapsed, label))
+        elapsed += step.duration_seconds
+    return points, texts
+
 
 def workout_to_erg(workout: Workout, ftp: int = 200) -> str:
     """
@@ -146,50 +276,19 @@ def workout_to_erg(workout: Workout, ftp: int = 200) -> str:
         "[END COURSE HEADER]",
         "[COURSE DATA]",
     ]
-
-    current_time = 0.0  # minutes
-    steps = sorted(workout.steps, key=lambda s: s.step_order)
-
-    for step in steps:
-        repeats = step.repeat_count or 1
-        for _ in range(repeats):
-            duration_min = step.duration_seconds / 60.0
-
-            if step.step_type in ("warmup", "cooldown", "ramp"):
-                low_pct = step.power_low_pct or 0.40
-                high_pct = step.power_high_pct or step.power_target_pct or 0.70
-                low_w = round(low_pct * ftp)
-                high_w = round(high_pct * ftp)
-                lines.append(f"{current_time:.2f}\t{low_w}")
-                current_time += duration_min
-                lines.append(f"{current_time:.2f}\t{high_w}")
-            elif step.step_type == "free_ride":
-                watts = round(0.50 * ftp)
-                lines.append(f"{current_time:.2f}\t{watts}")
-                current_time += duration_min
-                lines.append(f"{current_time:.2f}\t{watts}")
-            else:
-                pct = step.power_target_pct or 0.65
-                watts = round(pct * ftp)
-                lines.append(f"{current_time:.2f}\t{watts}")
-                current_time += duration_min
-                lines.append(f"{current_time:.2f}\t{watts}")
-
+    points, texts = _course_points(workout)
+    for minute, pct in points:
+        lines.append(f"{minute:.2f}\t{round(pct * ftp)}")
     lines.append("[END COURSE DATA]")
 
     # Course text for step labels
     lines.append("[COURSE TEXT]")
-    elapsed = 0
-    for step in steps:
-        label = step.notes or step.step_type.replace("_", " ").title()
-        lines.append(f"{elapsed}\t{label}\t10")
-        elapsed += step.duration_seconds * (step.repeat_count or 1)
+    for second, label in texts:
+        lines.append(f"{second}\t{label}\t10")
     lines.append("[END COURSE TEXT]")
 
     return "\n".join(lines)
 
-
-# === MRC Export (Percent FTP) ===
 
 def workout_to_mrc(workout: Workout, ftp: int = 200) -> str:
     """
@@ -208,39 +307,14 @@ def workout_to_mrc(workout: Workout, ftp: int = 200) -> str:
         "[END COURSE HEADER]",
         "[COURSE DATA]",
     ]
-
-    current_time = 0.0
-    steps = sorted(workout.steps, key=lambda s: s.step_order)
-
-    for step in steps:
-        repeats = step.repeat_count or 1
-        for _ in range(repeats):
-            duration_min = step.duration_seconds / 60.0
-
-            if step.step_type in ("warmup", "cooldown", "ramp"):
-                low_pct = (step.power_low_pct or 0.40) * 100
-                high_pct = (step.power_high_pct or step.power_target_pct or 0.70) * 100
-                lines.append(f"{current_time:.2f}\t{low_pct:.0f}")
-                current_time += duration_min
-                lines.append(f"{current_time:.2f}\t{high_pct:.0f}")
-            elif step.step_type == "free_ride":
-                lines.append(f"{current_time:.2f}\t50")
-                current_time += duration_min
-                lines.append(f"{current_time:.2f}\t50")
-            else:
-                pct = (step.power_target_pct or 0.65) * 100
-                lines.append(f"{current_time:.2f}\t{pct:.0f}")
-                current_time += duration_min
-                lines.append(f"{current_time:.2f}\t{pct:.0f}")
-
+    points, texts = _course_points(workout)
+    for minute, pct in points:
+        lines.append(f"{minute:.2f}\t{pct * 100:.0f}")
     lines.append("[END COURSE DATA]")
 
     lines.append("[COURSE TEXT]")
-    elapsed = 0
-    for step in steps:
-        label = step.notes or step.step_type.replace("_", " ").title()
-        lines.append(f"{elapsed}\t{label}\t10")
-        elapsed += step.duration_seconds * (step.repeat_count or 1)
+    for second, label in texts:
+        lines.append(f"{second}\t{label}\t10")
     lines.append("[END COURSE TEXT]")
 
     return "\n".join(lines)
@@ -248,15 +322,24 @@ def workout_to_mrc(workout: Workout, ftp: int = 200) -> str:
 
 # === FIT Workout Export (Binary) ===
 
+
+def _fit_string(text: str, size: int = 16) -> bytes:
+    """A fixed-size FIT string field: UTF-8, cut on a character boundary so
+    a multi-byte character can't overflow the field, null-padded."""
+    raw = text.encode("utf-8")[: size - 1]
+    raw = raw.decode("utf-8", errors="ignore").encode("utf-8")
+    return raw + b"\x00" * (size - len(raw))
+
+
 def workout_to_fit(workout: Workout, ftp: int = 200) -> bytes:
     """
     Convert a workout to Garmin FIT workout format.
 
     FIT is a binary format used by Garmin, Wahoo, and Hammerhead devices.
     This builds a minimal valid FIT file with workout and workout_step messages.
+    A head unit driving a trainer sets ERG from each step's power target, so
+    a step above ERG_CAP (and a free ride) gets an open target: no ERG.
     """
-    import struct
-
     # FIT message types
     MESG_FILE_ID = 0
     MESG_WORKOUT = 26
@@ -270,6 +353,7 @@ def workout_to_fit(workout: Workout, ftp: int = 200) -> bytes:
 
     # Duration/target types
     DURATION_TIME = 0
+    TARGET_OPEN = 2
     TARGET_POWER = 4
 
     # Step type mapping
@@ -283,24 +367,7 @@ def workout_to_fit(workout: Workout, ftp: int = 200) -> bytes:
         else:
             return INTENSITY_ACTIVE
 
-    # Flatten steps (expand repeats for intervals)
-    flat_steps = []
-    steps = sorted(workout.steps, key=lambda s: s.step_order)
-    i = 0
-    while i < len(steps):
-        step = steps[i]
-        if step.step_type == "interval_on":
-            off_step = steps[i + 1] if i + 1 < len(steps) and steps[i + 1].step_type == "interval_off" else None
-            repeats = step.repeat_count or 1
-            for _ in range(repeats):
-                flat_steps.append(step)
-                if off_step:
-                    flat_steps.append(off_step)
-            if off_step:
-                i += 1
-        else:
-            flat_steps.append(step)
-        i += 1
+    flat_steps = flatten_steps(workout)
 
     # Build FIT data records as raw bytes
     # We'll build a simple FIT file with Definition + Data messages
@@ -320,15 +387,15 @@ def workout_to_fit(workout: Workout, ftp: int = 200) -> bytes:
     records += _fit_data_record(0, struct.pack("<BHHII", 5, 1, 1, 12345, 1000000000))
 
     # --- Workout Message ---
-    workout_name = (workout.title or "Workout")[:16].encode("utf-8")
-    workout_name_padded = workout_name + b"\x00" * (16 - len(workout_name))
     wo_fields = [
         (4, 1, 0),    # sport: enum - 2=cycling
         (8, 2, 132),  # num_valid_steps: uint16
         (0, 16, 7),   # wkt_name: string (16 bytes)
     ]
     records += _fit_definition(1, MESG_WORKOUT, wo_fields)
-    records += _fit_data_record(1, struct.pack("<BH", 2, len(flat_steps)) + workout_name_padded)
+    records += _fit_data_record(
+        1, struct.pack("<BH", 2, len(flat_steps)) + _fit_string(workout.title or "Workout")
+    )
 
     # --- Workout Step Messages ---
     ws_fields = [
@@ -345,34 +412,37 @@ def workout_to_fit(workout: Workout, ftp: int = 200) -> bytes:
     records += _fit_definition(2, MESG_WORKOUT_STEP, ws_fields)
 
     for idx, step in enumerate(flat_steps):
-        name = (step.notes or step.step_type.replace("_", " "))[:16].encode("utf-8")
-        name_padded = name + b"\x00" * (16 - len(name))
-
+        st = _step_type(step)
+        name = step.notes or st.replace("_", " ")
         duration_ms = step.duration_seconds * 1000
-        intensity = _step_intensity(step.step_type)
+        intensity = _step_intensity(st)
+        target_type = TARGET_POWER
 
         # Power targets: FIT uses watts + 1000 offset for custom targets
-        if step.step_type in ("warmup", "cooldown", "ramp"):
-            low_pct = step.power_low_pct or 0.40
-            high_pct = step.power_high_pct or step.power_target_pct or 0.70
+        if st in _RAMPS:
+            low_pct, high_pct = _ramp_pcts(step)
             low_w = round(low_pct * ftp) + 1000
             high_w = round(high_pct * ftp) + 1000
-        elif step.step_type == "free_ride":
-            low_w = 0
-            high_w = 0
+        elif st == "free_ride":
+            target_type, low_w, high_w = TARGET_OPEN, 0, 0
         else:
-            pct = step.power_target_pct or 0.65
-            target_w = round(pct * ftp)
-            # ±5W range
-            low_w = target_w - 5 + 1000
-            high_w = target_w + 5 + 1000
+            pct = _steady_pct(step, 0.65)
+            if _over_cap(pct):
+                # A max effort: no power target, so nothing for ERG to hold.
+                target_type, low_w, high_w = TARGET_OPEN, 0, 0
+                name = MAX_EFFORT_FIT_NAME
+            else:
+                target_w = round(pct * ftp)
+                # ±5W range
+                low_w = target_w - 5 + 1000
+                high_w = target_w + 5 + 1000
 
-        data = name_padded + struct.pack(
+        data = _fit_string(name) + struct.pack(
             "<BIBIIIBH",
             DURATION_TIME,     # duration_type
             duration_ms,       # duration_value
-            TARGET_POWER,      # target_type
-            0,                 # target_value (0 = custom)
+            target_type,       # target_type
+            0,                 # target_value (0 = custom, or open)
             low_w,             # custom_target_value_low
             high_w,            # custom_target_value_high
             intensity,         # intensity
@@ -386,7 +456,6 @@ def workout_to_fit(workout: Workout, ftp: int = 200) -> bytes:
 
 def _fit_definition(local_mesg: int, global_mesg: int, fields: list) -> bytes:
     """Build a FIT definition message."""
-    import struct
     header = 0x40 | (local_mesg & 0x0F)  # Definition message flag
     result = struct.pack("<BBBHB", header, 0, 0, global_mesg, len(fields))
     for field_def_num, size, base_type in fields:
@@ -402,7 +471,6 @@ def _fit_data_record(local_mesg: int, data: bytes) -> bytes:
 
 def _build_fit_file(records: bytes) -> bytes:
     """Wrap records in a FIT file with header and CRC."""
-    import struct
 
     data_size = len(records)
 

@@ -322,19 +322,15 @@ def _pending_initiative(db: Session, user_id: str):
     """The rider's open initiative, if they have one.
 
     Newest first, because if a race ever leaves two rows pending the rider
-    should see the current thought rather than the stale one.
+    should see the current thought rather than the stale one. Goes through
+    initiative_service, which first retires stale cards and any the rider's
+    safety state now rules out (an under-18 hold, the quiet window after
+    crisis words, a training card under a hold), so a card raised before a
+    hold opened never stays on screen.
     """
-    from app.models.coach_initiative import CoachInitiative
+    from app.services.initiative_service import pending_initiative
 
-    return (
-        db.query(CoachInitiative)
-        .filter(
-            CoachInitiative.user_id == user_id,
-            CoachInitiative.status == "pending",
-        )
-        .order_by(CoachInitiative.created_at.desc())
-        .first()
-    )
+    return pending_initiative(db, user_id)
 
 
 def _get_own_initiative(db: Session, user: User, initiative_id: str):

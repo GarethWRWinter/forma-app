@@ -1,8 +1,9 @@
 # Privacy policy
 
-DRAFT for Gareth's review, 4 October 2026. Not legal advice; have it read by
-someone qualified before it goes live. Lines marked CONFIRM need a fact only
-you can supply. Publish at ridewithforma.com/privacy.
+DRAFT for Gareth's review, 4 October 2026, revised 8 October 2026 for the
+health questions, safety records and consent records. Not legal advice; have
+it read by someone qualified before it goes live. Lines marked CONFIRM need
+a fact only you can supply. Publish at ridewithforma.com/privacy.
 
 ---
 
@@ -26,20 +27,46 @@ Gareth Winter, the founder, and I answer it myself.
 ## What we collect
 
 **Your account.** Name, email address, password (stored only as a one-way
-hash), and the invite code you joined with.
+hash), the invite code you joined with, your date of birth (Forma is for
+adults) and the country you live in (so the coach gives you the right
+emergency numbers).
 
 **Your riding.** The ride files you upload or that arrive from Wahoo or
 Dropbox: power, heart rate, cadence, speed, GPS trace, time and place. From
-them we work out your fitness numbers.
+them we work out your fitness numbers. When you start a session in ride
+mode, we also record what your trainer was told: the power targets, your FTP
+at the time and whether ERG mode was on.
 
 **What you tell the coach.** Your conversations with Forma, your goals and
 why they matter to you, your schedule, and anything else you choose to share.
 Forma keeps a memory of the things that matter for your coaching.
 
 **Health information.** Injuries, illness, sleep, how sessions feel,
-medication if you mention it. This is special-category data under UK GDPR,
-and we only process it because you gave explicit consent when you created
-your account.
+medication if you mention it, and your answers to the health questions you're
+asked when you join. This is special-category data under UK GDPR. We process
+it because you gave explicit consent when you created your account (or, for
+an account made before we asked, when the app first asked you), with one
+exception: the safety records below, which we keep after your account closes
+in case we ever need them for a legal claim.
+
+**Safety records.** Your answers to the health questions, and whether you've
+told us a doctor has cleared you (with any limits they set). Any safety
+holds: times the app or the coach kept your plan to easy riding or paused it,
+and why. A record of each time the coach raised a possible safety concern:
+the few words that raised it, your message and the coach's reply in that
+exchange, what you were shown, and whether I checked it.
+
+**Proof of what you agreed to.** When you accept the terms, agree to Forma
+using your health information, tell us a doctor has cleared you, or confirm
+the notice before your first ride, we record the exact words you saw, which
+version they were, the time, your IP address and your browser details.
+These records are never changed afterwards.
+
+**What the coach writes for you.** Your training plan and the changes the
+coach proposed, the briefings, debriefs, notes and emails it wrote you, the
+files and photos you send it, and a record of each time it used the AI model
+for you (what for, and what it cost), so your coaching stays within its
+monthly budget.
 
 **Payments.** Stripe handles your card. We never see or store the card
 number; we keep whether your membership is active and when it renews.
@@ -57,7 +84,11 @@ browser's local storage so you stay signed in.
 | What | Why | Lawful basis |
 | --- | --- | --- |
 | Account, rides, conversations, plans | To coach you: plans, debriefs, briefings, answers | Contract |
-| Health information | So the coaching keeps you safe and fits your body | Explicit consent |
+| Date of birth and country | To check you're 18 or over and live where Forma is available, and to give you the right emergency numbers | Contract |
+| Health information, including your health question answers | So the coaching fits your body, and holds back hard training when your health says it should | Explicit consent |
+| Safety holds and flagged conversations | To keep hard training off your plan when it should be, and to check the coach responded properly when it raised a concern | Explicit consent |
+| Keeping safety records for three years after your account closes | In case there is ever a claim about an injury | Legitimate interests, and for health details, establishing or defending legal claims (UK GDPR Article 9(2)(f)) |
+| Proof of what you agreed to | To show what you agreed to, and when | Legal obligation (we must be able to show your consent) and legitimate interests |
 | Payment status | To run your membership | Contract |
 | Coach check-in emails | The coach emails you if you go quiet, and about your training | Contract (you can turn these off; see below) |
 | Reading conversations to improve Forma | I read coaching conversations to find where the coach gets things wrong and fix it | Legitimate interests |
@@ -66,9 +97,18 @@ browser's local storage so you stay signed in.
 
 **A word on the founder reading conversations.** While Forma is small, I
 read coaching conversations myself to see where the coach is helping and
-where it is wrong. Nobody else does. I never share them, quote them, or use
-them in marketing without asking you first. If you'd rather I didn't, email
-me and I'll exclude your account.
+where it is wrong. Nobody else does. I never quote them or use them in
+marketing, and I never share them without asking you first, except where the
+law requires it, where there's a legal claim (see below), or where I believe
+someone's life is in danger. If you'd rather I didn't read yours, email me
+and I'll exclude your account.
+
+**Flagged conversations.** If the coach flags a conversation as a possible
+safety concern, we may read it to check the coach responded properly. This
+isn't a monitoring or emergency service: if you need help now, call 999 (112
+in the EU). When the coach flags a conversation, I get an email with a short
+excerpt so I can check it. Excluding your account from the reading above
+doesn't cover flagged conversations; those are always checked.
 
 We never sell your data and never use it for advertising.
 
@@ -86,7 +126,7 @@ for its job, under a contract that requires them to protect it.
 - **Vercel** (hosts the app's web pages).
 - **Stripe** (payments).
 - **Postmark** (sends our emails), and **Google Workspace** (our inbox, where
-  your replies arrive).
+  your replies and our safety alerts arrive).
 - **Sentry** (error reports when something breaks).
 - **GitHub** (stores our nightly database backups, encrypted with a key
   GitHub does not hold).
@@ -98,6 +138,8 @@ for its job, under a contract that requires them to protect it.
   them from Google.
 - **Wahoo, Dropbox, Strava**, only if you connect them, to bring your rides
   in. Disconnecting stops it.
+- **Our insurer and legal advisers**, only if there is ever a claim or a
+  possible claim, and only the records that relate to it.
 
 Some of these companies are based in the United States. Where your data
 leaves the UK, it is protected by the UK's approved safeguards (adequacy
@@ -109,9 +151,20 @@ Transfer Agreement).
 - **While you're a member:** everything, so the coach remembers.
 - **When you delete your account** (Settings, then Delete my account): you are
   locked out at once, connections to Wahoo, Strava and Dropbox are cut, and
-  your membership ends. Thirty days later everything is erased for good. The
-  thirty days exist so an account closed by mistake can be recovered;
-  email me within them.
+  your membership ends. Thirty days later everything is erased for good,
+  apart from the safety records below. The thirty days exist so an account
+  closed by mistake can be recovered; email me within them.
+- **Safety records:** when you accepted the terms, your answers to the
+  health questions, any limits a doctor set, any safety holds, and the record
+  of each time the coach raised a safety concern, including your message and
+  the coach's reply in that exchange. We keep these for three years after
+  your account closes (for an account held as possibly belonging to someone
+  under 18, until that person's 21st birthday if that is later, counted from
+  the age they told us or the date of birth they gave, whichever runs
+  later), because we may need them if there is ever a claim about an
+  injury. Until then they're marked as belonging to a closed account and
+  used for nothing else. [CONFIRM with the solicitor: three years or six
+  (Limitation Act 1980 s.11 for injury, s.5 for contract).]
 - **Waitlist:** until you ask to leave, or six months after we stop sending
   letters.
 - **Payment records:** Stripe and our accounts keep what tax law requires
@@ -125,12 +178,15 @@ Transfer Agreement).
 You can ask to see what we hold, correct it, delete it, restrict or object
 to how we use it, or take it with you. Most of this is one click: Settings,
 then Download my data, gives you everything in a file, and Delete my
-account erases it. For anything else, email me and I'll answer within a month
-(usually far sooner).
+account erases it, apart from the safety records above. We keep those even
+if you ask us to delete them, because the law lets us keep information we may
+need for a legal claim (UK GDPR Article 17(3)(e)). For anything else, email
+me and I'll answer within a month (usually far sooner).
 
 You can withdraw consent for health information at any time. Because the
 coaching depends on it, the way to do that is to delete your account, or
-tell the coach what to forget and I'll remove it.
+tell the coach what to forget and I'll remove it. Either way, we keep the
+safety records above for three years.
 
 **Coach emails:** reply "stop" to any of them, or email me, and they stop.
 **Waitlist letters:** reply "stop" and you're off the list.
@@ -149,7 +205,13 @@ knowing.
 
 ## Age
 
-Forma is for adults. You must be 18 or over to create an account.
+Forma is for adults. You must be 18 or over to create an account, and we ask
+for your date of birth when you sign up. If we find that an account belongs
+to someone under 18, we close it, refund what was paid and delete their
+data, apart from the safety record of why we closed it. We keep that record
+for three years, or until their 21st birthday if that is later, because the
+time limit for a claim only starts at 18. We work that birthday out from the
+age they told us or the date of birth they gave, whichever runs later.
 
 ## Changes
 

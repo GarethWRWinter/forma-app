@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowUp, X } from "lucide-react";
 import { CoachDot } from "@/components/ui/coach-glyph";
 import { StarterChips, useCoachStarters } from "@/components/coach/coach-starters";
+import { AiDisclaimer } from "@/components/safety/AiDisclaimer";
 import { coachInsights } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
@@ -223,6 +224,9 @@ function DockPanel({
             <ArrowUp className="h-4 w-4" />
           </button>
         </div>
+
+        {/* The same permanent line as the coach page, under the input. */}
+        <AiDisclaimer className="-mt-1" />
 
         <StarterChips
           starters={starters}

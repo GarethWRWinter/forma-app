@@ -59,6 +59,25 @@ function clearTokens() {
   localStorage.removeItem("refresh_token");
 }
 
+/** The /auth/ calls made while signed in (each takes get_current_user in
+    app/api/v1/auth.py). A 401 from one of these is a session that expired,
+    refreshed like any other call. The consent modal sends two of them, and
+    it can sit open past the 30-minute access token while the rider reads
+    the terms: without the refresh, Agree failed on every press. */
+const SIGNED_IN_AUTH_PATHS = new Set([
+  "/auth/reaccept-terms",
+  "/auth/health-consent",
+  "/auth/resend-verification",
+]);
+
+/** Whether a 401 from `path` means "refresh the session and try again".
+    Not for the rest of /auth/, where the 401 is the answer itself: a
+    mistyped password at login. */
+export function refreshesOn401(path: string): boolean {
+  const bare = path.split("?")[0];
+  return !bare.startsWith("/auth/") || SIGNED_IN_AUTH_PATHS.has(bare);
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {}
@@ -81,7 +100,8 @@ async function request<T>(
   // mistyped password. Refreshing and bouncing to /login there swallowed the
   // "email and password don't match" message, so a rider who typed one letter
   // wrong watched the page reload with no reason given (launch audit, 4 Oct).
-  if (response.status === 401 && path.startsWith("/auth/")) {
+  // The signed-in ones (refreshesOn401) are an expired session, as anywhere.
+  if (response.status === 401 && !refreshesOn401(path)) {
     throw new ApiError(normalizeErrorMessage(await response.text()), 401);
   }
 
@@ -217,26 +237,100 @@ async function uploadFile<T>(path: string, file: File): Promise<T> {
 
 // === Auth ===
 
-export const authConfig = () =>
-  request<{ invite_required: boolean }>("/auth/config");
+export interface AuthConfig {
+  invite_required: boolean;
+  /** Where riders can join from (ISO 3166 alpha-2). The server enforces the
+      same list on sign-up; the form only reads it. Codes, or code and name. */
+  allowed_countries?: (string | { code: string; name?: string | null })[];
+}
+
+export const authConfig = () => request<AuthConfig>("/auth/config");
+
+/** The published terms or privacy policy, word for word, with the stamp
+    the consent rows carry (GET /auth/legal/{doc}). */
+export interface LegalDocument {
+  version: string;
+  doc_version: string;
+  text: string;
+}
+export const legalDocument = (doc: "terms" | "privacy") =>
+  request<LegalDocument>(`/auth/legal/${doc}`);
+
+export interface RegisterInput {
+  email: string;
+  password: string;
+  fullName?: string;
+  inviteCode?: string;
+  /** YYYY-MM-DD. Forma is for adults, 18 and over. */
+  dateOfBirth: string;
+  /** ISO 3166 alpha-2, e.g. "GB". Picks the emergency numbers the coach gives. */
+  country: string;
+  /** Box 1: terms and risk acknowledgement. */
+  termsAccepted: boolean;
+  /** Box 2: health data (UK GDPR Art 9), separate from box 1. */
+  healthConsent: boolean;
+  /** The exact label text of each box, recorded word for word in consent_events. */
+  termsTextShown: string;
+  healthTextShown: string;
+}
+
+/** Date of birth and country for an account made before either was asked
+    (the beta riders), sent with the terms in the re-acceptance modal. */
+export interface ProfileConsentInput {
+  /** YYYY-MM-DD. */
+  dateOfBirth: string;
+  /** ISO 3166 alpha-2, e.g. "GB". */
+  country: string;
+}
+
+/** POST /auth/reaccept-terms body. date_of_birth and country only travel
+    when the modal asked for them, so a rider who already gave both is never
+    sent through the age and country checks again. */
+export function reacceptTermsBody(
+  textShown: string,
+  profile?: ProfileConsentInput
+): { text_shown: string; date_of_birth?: string; country?: string } {
+  if (!profile) return { text_shown: textShown };
+  return {
+    text_shown: textShown,
+    date_of_birth: profile.dateOfBirth,
+    country: profile.country,
+  };
+}
 
 export const auth = {
-  register: (
-    email: string,
-    password: string,
-    fullName?: string,
-    inviteCode?: string,
-    healthConsent: boolean = false
-  ) =>
+  register: (input: RegisterInput) =>
     request<{ id: string; email: string }>("/auth/register", {
       method: "POST",
       body: JSON.stringify({
-        email,
-        password,
-        full_name: fullName,
-        invite_code: inviteCode,
-        health_consent: healthConsent,
+        email: input.email,
+        password: input.password,
+        full_name: input.fullName,
+        invite_code: input.inviteCode,
+        date_of_birth: input.dateOfBirth,
+        country: input.country,
+        terms_accepted: input.termsAccepted,
+        health_consent: input.healthConsent,
+        terms_text_shown: input.termsTextShown,
+        health_text_shown: input.healthTextShown,
       }),
+    }),
+
+  /** Agree to the current terms after they change (the re-acceptance modal).
+      `profile` goes too when /users/me says needs_profile_consent: the
+      server checks the age and the country as sign-up does, refuses an
+      under-18 or a country it doesn't serve, and records the age row. */
+  reacceptTerms: (textShown: string, profile?: ProfileConsentInput) =>
+    request<{ ok: boolean; terms_version: string }>("/auth/reaccept-terms", {
+      method: "POST",
+      body: JSON.stringify(reacceptTermsBody(textShown, profile)),
+    }),
+
+  /** Box 2, for an account that never ticked it (the beta riders). */
+  giveHealthConsent: (textShown: string) =>
+    request<{ ok: boolean; privacy_version: string }>("/auth/health-consent", {
+      method: "POST",
+      body: JSON.stringify({ text_shown: textShown }),
     }),
 
   login: async (email: string, password: string, rememberMe: boolean = true) => {
@@ -303,6 +397,19 @@ export interface UserProfile {
   coach_name: string;
   coach_avatar: string;
   coach_tone: string;
+  /** False when the rider last agreed to an older terms version (or never did). */
+  terms_current?: boolean;
+  /** False when the rider never ticked box 2, the consent to use their
+      health details (every beta account). Asked before any health question. */
+  health_consent_current?: boolean;
+  terms_version?: string | null;
+  country?: string | null;
+  /** ISO date (YYYY-MM-DD), or null for accounts made before it was asked. */
+  date_of_birth?: string | null;
+  /** True when the account has no date of birth or no country on file (the
+      beta riders joined before either was asked). The re-acceptance modal
+      then asks for both with the terms, and the health questions wait. */
+  needs_profile_consent?: boolean;
 }
 
 export const users = {
@@ -324,6 +431,24 @@ export const users = {
 
   /** GDPR portability: everything we hold on you, as JSON. */
   exportMyData: () => request<Record<string, unknown>>("/users/me/export"),
+
+  /** The same archive, saved to the rider's downloads as `filename`
+      (forma-export-YYYY-MM-DD.json). The consent modal's "Download my data"
+      uses it, so a rider who won't agree to new terms can still take a copy. */
+  saveMyData: async (filename: string): Promise<void> => {
+    const archive = await request<Record<string, unknown>>("/users/me/export");
+    const blob = new Blob([JSON.stringify(archive, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
 
   /** GDPR erasure: locks the account now, purges after the retention window. */
   deleteMyAccount: () => request<void>("/users/me", { method: "DELETE" }),
@@ -615,6 +740,10 @@ export const metrics = {
 export interface TrainingPlan {
   id: string;
   name: string;
+  goal_event_id?: string | null;
+  /** The gate the plan was written under ("easy" when it was kept easy),
+      where the server says. lib/safetyPrompts falls back to the phases. */
+  built_level?: string | null;
   start_date: string;
   end_date: string;
   status: string;
@@ -809,9 +938,171 @@ export const training = {
     request<PlanReviewResult | null>("/training/review", { method: "POST" }),
 };
 
+// === Safety ===
+
+/** How hard the rider may be asked to ride today. */
+export type SafetyAllowed = "none" | "easy" | "all";
+export type ScreeningTier = "none" | "easy_only" | "hold_all";
+
+/** How a hold lifts (safety_service.lift_kind). "doctor": a declared
+    clearance. "fever_self": the rider says the fever has gone. "head_injury":
+    its own declaration, never the general clearance: a doctor has checked
+    them since and they've had no symptoms for 24 hours. That leaves easy
+    riding until two weeks after the injury, and no racing or group riding
+    until SafetyState.no_racing_or_group_until. "expires": ends by itself at
+    expires_at. "layoff": the easy start after a break. "admin_only": an
+    under-18 account or a hold set by hand. */
+export type SafetyLiftKind =
+  | "doctor"
+  | "fever_self"
+  | "head_injury"
+  | "expires"
+  | "layoff"
+  | "admin_only";
+
+export interface SafetyHold {
+  id: string;
+  level: "easy_only" | "hold_all";
+  reason: string;
+  red_flag: string | null;
+  /** "screening" and "admin" holds can't be marked a mistake. */
+  source: "screening" | "detector" | "coach_tool" | "layoff" | "admin";
+  opened_at: string;
+  /** Read only through components/safety, which owns what each kind offers. */
+  lift_kind?: SafetyLiftKind;
+  /** ISO datetime an "expires" hold ends by itself. */
+  expires_at?: string | null;
+}
+
+export interface SafetyState {
+  allowed: SafetyAllowed;
+  hold: SafetyHold | null;
+  screening: {
+    tier: ScreeningTier;
+    version: string;
+    clearance_confirmed: boolean;
+    limits: string | null;
+  } | null;
+  /** ISO date: hard sessions and the FTP test wait until this day. */
+  layoff_gate_until: string | null;
+  /** ISO date: after a head injury, no racing or group riding until this
+      day (the graded return), even once a doctor has cleared the hold. Null
+      or absent when no head injury holds it back. */
+  no_racing_or_group_until?: string | null;
+  ride_mode_ack: boolean;
+  ftp: number | null;
+  /** ERG never holds the trainer above erg_cap x FTP. */
+  erg_cap: number;
+  /** Under "easy", no step asks for more than easy_cap x FTP. */
+  easy_cap?: number;
+  /** Highest step allowed per session type, as a fraction of FTP. */
+  ceilings: Record<string, number>;
+  /** Every limit a clinician set that still stands, oldest first. */
+  limits?: { id: string; text: string; by: string | null; recorded_at: string }[];
+}
+
+export type ScreeningQuestion = "q1" | "q2" | "q3" | "q4" | "q5" | "q6" | "q7" | "q8";
+
+export interface ScreeningResult {
+  tier: ScreeningTier;
+  message: string;
+  extra_lines: string[];
+  safety: SafetyState;
+}
+
+/** GET /onboarding/screening: the question set and the latest answers. */
+export interface ScreeningRecord {
+  version: string;
+  heading: string;
+  intro: string;
+  questions: { id: ScreeningQuestion; text: string }[];
+  long_break_question: string;
+  clearance_text: string;
+  answers: Record<ScreeningQuestion, boolean> | null;
+  long_break: boolean | null;
+  tier: ScreeningTier | null;
+  answered_at: string | null;
+  answered_version: string | null;
+  clearance_confirmed: boolean;
+  clearance_by: string | null;
+  clearance_limits: string | null;
+  /** Never answered, a new question set, a year old, or a red flag since. */
+  rescreen_due: boolean;
+}
+
+export interface RideSessionStartPayload {
+  workout_id: string | null;
+  /** SHA-256 hex of the steps the trainer was given. */
+  steps_hash: string;
+  ftp: number;
+  erg: boolean;
+  max_target_watts: number | null;
+}
+
+export const safety = {
+  getState: () => request<SafetyState>("/users/me/safety-state"),
+
+  /** The rider declares a doctor (or midwife, or physio) has cleared them. */
+  confirmClearance: (by: string, limits?: string) =>
+    request<SafetyState>("/users/me/safety/clearance", {
+      method: "POST",
+      body: JSON.stringify({ by, limits: limits || null }),
+    }),
+
+  /** The rider says their fever has gone: the hold becomes a week of easy
+      riding that ends by itself. */
+  liftFever: (holdId: string) =>
+    request<SafetyState>("/users/me/safety/fever-lift", {
+      method: "POST",
+      body: JSON.stringify({ hold_id: holdId }),
+    }),
+
+  /** The rider says a doctor has checked them since they hit their head and
+      they've had no symptoms for 24 hours: the hold becomes easy riding
+      until two weeks after the injury, with no racing or group riding
+      before day 21 (SafetyState.no_racing_or_group_until). */
+  liftHeadInjury: (holdId: string, by: string, limits?: string) =>
+    request<SafetyState>("/users/me/safety/head-injury-lift", {
+      method: "POST",
+      body: JSON.stringify({ hold_id: holdId, by, limits: limits || null }),
+    }),
+
+  /** "This was a mistake" on the hold banner (detector false positives). */
+  markMistake: (holdId: string) =>
+    request<SafetyState>("/users/me/safety/mistake", {
+      method: "POST",
+      body: JSON.stringify({ hold_id: holdId }),
+    }),
+
+  acknowledge: (kind: "ride_mode", textShown: string) =>
+    request<{ ok: boolean }>("/users/me/acknowledgements", {
+      method: "POST",
+      body: JSON.stringify({ kind, text_shown: textShown }),
+    }),
+
+  recordSessionStart: (payload: RideSessionStartPayload) =>
+    request<{ ok: boolean }>("/users/me/ride-session-starts", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+};
+
 // === Onboarding ===
 
 export const onboarding = {
+  /** The eight health questions, plus the training question about a long break. */
+  submitScreening: (payload: {
+    answers: Record<ScreeningQuestion, boolean>;
+    long_break: boolean;
+  }) =>
+    request<ScreeningResult>("/onboarding/screening", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  /** The latest answers, and whether the questions are due again. */
+  getScreening: () => request<ScreeningRecord>("/onboarding/screening"),
+
   getStatus: () =>
     request<{ completed: boolean; primary_goal: string | null }>("/onboarding/status"),
 
@@ -1147,6 +1438,22 @@ export interface ChatAttachment {
   summary?: ChatAttachmentSummary | null;
 }
 
+/**
+ * One SSE chunk from sendMessage / sendVoiceMessage.
+ *
+ * "safety" arrives before any of the coach's text when the message hit an
+ * emergency or crisis red flag. Its text is fixed (not written by the model)
+ * and should be shown as a card the rider can't miss.
+ */
+export type ChatStreamChunk =
+  | { type: "text"; content: string }
+  | { type: "status"; content: string }
+  | { type: "audio"; content: string; sentence_index: number }
+  | { type: "safety"; kind: "emergency" | "crisis"; text: string }
+  | { type: "proposal_created" }
+  | { type: "plan_updated" }
+  | { type: "done" };
+
 export const chat = {
   getSessions: (includeArchived?: boolean) =>
     request<ChatSession[]>(
@@ -1454,10 +1761,16 @@ async function downloadFile(path: string, filename: string): Promise<void> {
   }
 
   if (!response.ok) {
-    throw new ApiError(
-      `Download failed: ${response.statusText}`,
-      response.status
-    );
+    // The server explains a refusal (no FTP yet, or a session the rider's
+    // safety state rules out) in a plain sentence; pass it on.
+    let message = "That download didn't work. Try again in a minute.";
+    try {
+      const body = await response.json();
+      if (typeof body?.detail === "string" && body.detail.trim()) message = body.detail;
+    } catch {
+      // Not JSON: keep the general line.
+    }
+    throw new ApiError(message, response.status);
   }
 
   const blob = await response.blob();

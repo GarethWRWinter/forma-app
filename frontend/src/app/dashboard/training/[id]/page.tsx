@@ -14,7 +14,7 @@ import {
   ChevronDown,
   RefreshCw,
 } from "lucide-react";
-import { training, exports_ } from "@/lib/api";
+import { training, exports_, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { formatDuration, cn } from "@/lib/utils";
 import { STEPS, SERIES } from "@/lib/palette";
@@ -45,6 +45,7 @@ export default function WorkoutDetailPage() {
   const coachName = user?.coach_name || "Forma";
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const { data: workout, isLoading } = useQuery({
     queryKey: ["workout", workoutId],
@@ -72,6 +73,7 @@ export default function WorkoutDetailPage() {
   const handleDownload = async (format: string) => {
     if (!workout) return;
     setDownloading(format);
+    setDownloadError(null);
     setShowExportMenu(false);
     try {
       const fn =
@@ -85,6 +87,9 @@ export default function WorkoutDetailPage() {
       await fn(workoutId, workout.title);
     } catch (e) {
       console.error("Download failed:", e);
+      setDownloadError(
+        e instanceof ApiError ? e.message : "That download didn't work. Try again in a minute."
+      );
     } finally {
       setDownloading(null);
     }
@@ -210,6 +215,11 @@ export default function WorkoutDetailPage() {
             )}
           </div>
         </div>
+        {downloadError && (
+          <p role="alert" className="mt-3 border-l-2 border-vb-red pl-3 text-sm text-vb-text">
+            {downloadError}
+          </p>
+        )}
       </div>
 
       {/* Planned vs Actual, shown when a ride has been linked to this workout */}

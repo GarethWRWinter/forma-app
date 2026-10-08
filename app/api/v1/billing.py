@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_current_user
 from app.config import settings
-from app.core.exceptions import BadRequestException
+from app.core.exceptions import BadRequestException, ForbiddenException
 from app.database import get_db
 from app.models.user import User
 from app.services import billing_service
@@ -16,6 +16,14 @@ from app.services import billing_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/billing", tags=["billing"])
+
+# An account held as possibly under 18 can't pay, or turn renewal back on in
+# the portal, while it waits for review (billing_service.AccountOnHold).
+MINOR_BILLING_REFUSAL = (
+    "This account is on hold because Forma is for adults, 18 and over, so it can't "
+    "start or change a membership. If you think that's wrong, email "
+    "gareth@ridewithforma.com."
+)
 
 
 @router.get("/status")
@@ -47,6 +55,8 @@ def start_checkout(
         )
     try:
         url = billing_service.create_checkout_session(db, current_user)
+    except billing_service.AccountOnHold:
+        raise ForbiddenException(detail=MINOR_BILLING_REFUSAL)
     except Exception:
         logger.exception("Checkout session failed for user %s", current_user.id)
         raise BadRequestException(
@@ -64,6 +74,8 @@ def open_portal(
         raise BadRequestException(detail="Membership isn't open yet.")
     try:
         url = billing_service.create_portal_session(db, current_user)
+    except billing_service.AccountOnHold:
+        raise ForbiddenException(detail=MINOR_BILLING_REFUSAL)
     except Exception:
         logger.exception("Portal session failed for user %s", current_user.id)
         raise BadRequestException(

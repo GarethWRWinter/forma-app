@@ -256,6 +256,9 @@ class ProposalDecisionResponse(BaseModel):
     # Same number under the name the app reads. One decision, one count, so a
     # rider is never told two different stories about what just moved.
     changes_applied: int = 0
+    # Changes the safety gate left out (a hold, an uncleared health answer,
+    # the layoff gate), so the message never claims nothing needed changing.
+    held_back: int = 0
     message: str = ""
 
 
@@ -300,9 +303,12 @@ def accept_plan_proposal(
     """Apply a proposal to the plan. This is the only path that turns a
     proposal into real workouts, so a decided proposal is refused rather than
     applied twice."""
-    from app.services.plan_review_service import apply_proposal
+    from app.services.plan_review_service import apply_proposal, gate_changes
 
     proposal = _get_pending_proposal(db, current_user, proposal_id)
+    # The same gate apply_proposal runs, asked first so the rider is told
+    # what it left out rather than that nothing needed changing.
+    _, held = gate_changes(db, current_user, list(proposal.changes or []))
     try:
         changed = apply_proposal(db, current_user, proposal)
     except ValueError as e:
@@ -313,12 +319,21 @@ def accept_plan_proposal(
         status=_plain_str(proposal.status) or "accepted",
         workouts_changed=changed,
         changes_applied=changed,
-        message=(
-            f"{changed} session{'' if changed == 1 else 's'} updated."
-            if changed
-            else "Nothing needed changing on the calendar."
-        ),
+        held_back=len(held),
+        message=_accept_message(changed, len(held)),
     )
+
+
+def _accept_message(changed: int, held: int) -> str:
+    updated = f"{changed} session{'' if changed == 1 else 's'} updated."
+    if held:
+        left_out = (
+            "1 change was left out, because hard sessions are on hold for now."
+            if held == 1
+            else f"{held} changes were left out, because hard sessions are on hold for now."
+        )
+        return f"{updated} {left_out}" if changed else f"Nothing changed. {left_out}"
+    return updated if changed else "Nothing needed changing on the calendar."
 
 
 @router.post("/training/proposals/{proposal_id}/decline", response_model=ProposalDecisionResponse)

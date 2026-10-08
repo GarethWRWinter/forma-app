@@ -6,13 +6,13 @@ What Forma does today and where each control lives. Relay instructions using the
 
 Forma is invite-only while the founding hundred fills. Registration needs an invite code: one shared code, a single word, capped at a hundred uses. There is no public launch date; never promise one.
 
-To join: the invite link (app.ridewithforma.com/register?invite=...) fills the code in. Otherwise app.ridewithforma.com, then Get started, then Invite code, Full name (optional), Email, Password (at least 8 characters), then Create account. A wrong, used-up or expired code is refused with "That invite code doesn't work"; the fix is to reply to the invite email. A valid invite assigns a founding number, 1 to 100, never reissued.
+To join: the invite link (app.ridewithforma.com/register?invite=...) fills the code in. Otherwise app.ridewithforma.com, then Get started, then Invite code, Full name (optional), Email, Password (at least 8 characters), Date of birth (18 or over), Where you live (the UK or an EU country; the US and Canada can't join yet), then two separate boxes under the Before you join notice: the first agrees to the terms, the second lets Forma use the health details the rider shares. Both are needed. Then Create account. A wrong, used-up or expired code is refused with "That invite code doesn't work"; the fix is to reply to the invite email. A valid invite assigns a founding number, 1 to 100, never reissued.
 
 Forma is a web app only. There is no App Store or Play Store app, and none is promised.
 
-Onboarding follows: What are we aiming at?, Tell me about race day (event riders only), How much bike is in your life? (hours, years, Which days can hurt?), The engine, roughly (FTP and weight, both optional), Meet Forma (How I talk to you, optional coach name), then Start training, which writes the first plan. If that fails, the screen offers Write the plan again, then Go to my dashboard; build later from Goal, then Build my season.
+Onboarding follows: What are we aiming at?, Tell me about race day (event riders only), How much bike is in your life? (hours, years, Which days can hurt?), A few health questions first (see Safety and responsibility), The engine, roughly (FTP and weight, both optional), Meet Forma (How I talk to you, optional coach name), then Start training, which writes the first plan. If that fails, the screen offers Write the plan again, then Go to my dashboard; build later from Goal, then Build my season.
 
-A verification email, "One click to confirm your email", follows; the link lasts 24 hours. Unverified riders are not locked out; a banner at the top of every page offers Resend the link. Confirming matters for two things: password resets, and the coach's check-in emails, which only go to confirmed addresses.
+A sign-up email, "Welcome to Forma: confirm your email", follows with the confirm link and a record of what the rider agreed to; the link lasts 24 hours. Resend the link sends a shorter one, "One click to confirm your email". Unverified riders are not locked out; a banner at the top of every page offers Resend the link. Confirming matters for two things: password resets, and the coach's check-in emails, which only go to confirmed addresses.
 
 Navigation. The sidebar (menu icon on a phone): Today, Coach, Rides, Form, Goal, Brain, Palmarès, Settings. Form opens the page headed Performance; Goal opens the training plan. The Goals list has no sidebar entry: Goal, then All goals, or Settings, then Goals, then Full goals page.
 
@@ -113,18 +113,34 @@ Export: Settings, then Data out, then Download my data. The JSON file holds acco
 
 Delete: Settings, then Data out, then Delete my account, type the account email, then Delete it. The rider is logged out at once, the account closes, and Strava and Dropbox connections are removed immediately. Remaining data is purged after 30 days. It cannot be undone; take the download first. It does not stop payments: cancel in Manage billing first.
 
+## Safety and responsibility
+
+Forma's coach is AI. Chat replies, plans and plan changes, briefings, debriefs and coach emails are written by an AI model, and no person checks them message by message before the rider sees them. It can be wrong. It is not medical advice, and Forma is not an emergency service: in an emergency, call 999 in the UK, 112 in the EU, 911 in the US. The line under the chat box says the same. Forma is for adults, 18 and over.
+
+No one at Forma reads chats as they happen. A rider in trouble needs a person or a phone line, never a wait for Forma.
+
+Fixed safety messages. Some safety messages in chat are fixed text, not the AI: a card that appears above the reply when a rider mentions certain symptoms (chest pain, fainting, a head injury, a fever, words of crisis, heat), and lines added to a reply when it leaves out something the safety rules require. If the AI's reply fails in that moment, the rider gets a complete fixed reply instead. The check matches words, so it can miss things or misread them; a rider who was misread can dismiss the notice it opened.
+
+The health questions. Onboarding asks eight yes or no questions, headed A few health questions first. A yes never stops anyone joining; it changes how the plan starts. Settings, then Health shows the answers and holds the clearance: the rider ticks "A doctor (or my midwife or physio) has assessed me and cleared me for hard training", adds anything they were told to avoid if there is something, and confirms. Forma does not check a clearance; the rider declares it. Anything they were told to avoid is a hard limit for the coach.
+
+Holds. A hold comes from a health answer, from something said in chat (chest pain, fainting, a head injury, fever, an injury, a pregnancy, a medicine, a long break, or saying they're under 18), or from the coach. Easy riding only means hard sessions wait and easy riding is fine if they feel well. Riding on hold means no riding at all until a doctor has checked them over. While a hold is open a notice sits at the top of the dashboard pages. Saying anything in chat never lifts a hold, and the coach can never lift one. The notice's I've been cleared button is the way a doctor's clearance lifts it: it records who cleared them and anything they said to avoid. Its This was a mistake button is only for a chat hold that misread the rider's words, such as "my chest strap died"; the coach never suggests it, and a rider whose doctor already knows about something uses I've been cleared instead. A hold from the health answers is not a mistake to dismiss: the rider changes the answers in Settings, then Health instead. A hold for being under 18 can't be lifted by the rider. A break the rider tells the coach about shows as Easing back in: it keeps the first weeks back to easy riding, and a break for illness, injury, surgery, a heart problem, concussion or pregnancy means seeing a doctor first. After four weeks or more off the bike, hard sessions and the FTP test wait for two weeks of easy riding (four weeks after three months off); when that comes from the ride history, it lifts by itself.
+
+Ride mode. The first time, a notice headed Before your first ride with Forma needs Understood, let's ride. The rider is always in charge: ease off, Pause or Stop at any time. Pause drops the trainer to light resistance (40 percent of FTP). Stop releases the resistance at once, before asking whether to save. ERG never holds more than 130 percent of FTP; harder sprints run with ERG off, against the rider's own effort. Stop at once for chest pain, faintness, dizziness or unusual breathlessness, and call 999 if it doesn't settle quickly. The FTP test in Settings stays closed while a hold or the return from a break applies.
+
+Who is responsible. If a rider asks whether Forma is responsible or liable if they are hurt, or about their legal rights, give no legal opinion either way. It is covered in the terms at ridewithforma.com/terms, and questions about them go to gareth@ridewithforma.com. Then follow SAFETY LAW rule 6.
+
 ## Who sees what
 
-Gareth, the founder, may read coaching conversations to improve the product. Say so plainly if a rider asks who can see their chats.
+Gareth, the founder, may read coaching conversations to improve the product. Say so plainly if a rider asks who can see their chats, and only then. When the safety check spots words of crisis, or a rider who may be under 18, Gareth is emailed a short excerpt so he can check the coach's reply later; that is not a live watch. Never mention it in a crisis reply or to a rider who may be under 18, and never promise that anyone at Forma will contact the rider.
 
 ## When the coach writes first
 
-If a rider goes quiet partway through setting up (no goal, no rides connected, no first ride, no plan, or the first week of the plan), the coach emails them after 1, 3 and 7 quiet days at that step, once each, with the one next step. Only confirmed email addresses get these. Replies to the email reach Gareth's inbox, not the coach; to answer the coach, use Coach in the app.
+If a rider goes quiet partway through setting up (no goal, no rides connected, no first ride, no plan, or the first week of the plan), the coach emails them after 1, 3 and 7 quiet days at that step, once each, with the one next step. Only confirmed email addresses get these. Each one ends by saying it was written by the AI coach, can be wrong and isn't medical advice, and that replying "stop" ends them. Replies to the email reach Gareth's inbox, not the coach; to answer the coach, use Coach in the app.
 
 ## When something breaks
 
 - Cannot log in ("That email and password don't match."): Forgotten password?. The link lasts one hour; check spam. A reset signs out every device.
-- A message did not send ("That one didn't reach me", "Sorry, I had trouble connecting"): send it again.
+- A reply did not finish ("I couldn't finish a reply just now", "Sorry, I had trouble connecting"): send the message again in a moment. A safety reply is never one of these: after chest pain, fainting, a head injury or words of crisis, the coach never asks for the message again.
 - A Wahoo ride is missing: Settings, then Data in, then Fetch missing rides. If the card says Needs reconnecting, follow the Wahoo section.
 - An import stopped: Retry import or Try again. Skipped rides are never duplicated.
 - "No ride files in this zip": no .fit, .gpx or .tcx inside, or a Garmin zip of zips (unzip once first).
@@ -132,7 +148,7 @@ If a rider goes quiet partway through setting up (no goal, no rides connected, n
 - "I can't reach your numbers right now": wait a minute and refresh. "Something broke, and it wasn't you.": Try again. "This road does not exist.": Back to the dashboard.
 - Membership message: Settings, then Membership, then Join Forma or Manage billing.
 - "There's already a Forma account with that email": log in, or reset the password from the login page.
-- If the answer is not in this document, say so plainly and give gareth@ridewithforma.com.
+- If the answer is not in this document, say so plainly and give gareth@ridewithforma.com. Health, safety and responsibility questions never fall back to this: they follow Safety and responsibility above and the SAFETY LAW.
 
 ## Not yet documented
 

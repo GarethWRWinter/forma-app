@@ -39,11 +39,17 @@ Write plain British English. Contractions are normal. No em dashes, no en
 dashes (use full stops or colons, never a comma between two sentences). No exclamation marks. No metaphors
 or flourish: say the literal thing. No "it's not X, it's Y" constructions. Never
 open a sentence with Here's. Nothing that could sit in any fitness app's email.
-Never invent a feature, a number or a fact that is not in the context. Never
-mention this is automated. You are the coach, writing in the first person; you
-are not Gareth, the founder, and never sign as him. If you use a training term
+Never invent a feature, a number or a fact that is not in the context. If it
+comes up, say plainly that you are Forma's AI coach. Never claim to be a
+person. You are the coach, writing in the first person; you are not Gareth,
+the founder, and never sign as him. If you use a training term
 (FTP, TSS, Z2 and the like), say what it means in plain words in the same
 sentence. Make the decision for them: one step, not a menu of options.
+
+Read `safety` in the context before anything else. If allowed_intensity is
+anything other than "all", any riding you mention is easy riding by feel, with
+no targets, no intervals and no tests. Treat any doctor_limits as hard limits.
+Never play down anything in `safety`.
 
 Shape, at most 170 words:
 1. Open with something specific from their own words or goal, so it is
@@ -60,6 +66,61 @@ Return exactly this format:
 Subject: <five to eight plain words, no punctuation at the end>
 
 <body>"""
+
+
+def _medical_restriction(db: Session, user_id: str) -> bool:
+    """Whether a hold other than the easy start after a break, or a health
+    answer still waiting for a doctor's clearance, limits this rider."""
+    from app.services import safety_service
+    from app.services.plan_review_service import live_holds
+
+    if any(
+        h.source != "layoff" and h.red_flag != "layoff" for h in live_holds(db, user_id)
+    ):
+        return True
+    screening = safety_service.latest_screening(db, user_id)
+    return (
+        screening is not None
+        and screening.tier != "none"
+        and screening.clearance_confirmed_at is None
+    )
+
+
+def speak_first_block(db: Session, user: User | str, *, training: bool = True) -> str | None:
+    """Why the coach must not raise anything with this rider unprompted right
+    now, or None when it may. Outreach emails, initiative cards and pre-ride
+    briefings all ask this one question.
+
+    "minor": the account is held as possibly under 18. Nothing goes to it.
+    "wellbeing": the rider wrote words of hopelessness or worse in the last
+    14 days. Nothing presses them.
+    "safety" (only when `training`, for anything that nudges towards riding):
+    nothing at all may be prescribed today, or a hold or an uncleared health
+    answer limits them. The layoff gate on its own does not block: easy riding
+    is exactly what it prescribes, so the nudge goes out with the safety
+    state in its brief.
+    "unknown": the safety state could not be read. Fails closed."""
+    from app.services import safety_screen, safety_service
+    from app.services.plan_review_service import minor_hold_open
+
+    uid = user if isinstance(user, str) else user.id
+    try:
+        if minor_hold_open(db, uid):
+            return "minor"
+        quiet = safety_screen.wellbeing_quiet_until(db, uid)
+        if quiet is not None and quiet > datetime.utcnow():
+            return "wellbeing"
+        if not training:
+            return None
+        allowed = safety_service.allowed_intensity(db, user)
+        if allowed == "all":
+            return None
+        if allowed == "none" or _medical_restriction(db, uid):
+            return "safety"
+        return None
+    except Exception:
+        logger.exception("Reading the safety state before writing first failed (user=%s)", uid)
+        return "unknown"
 
 
 def _threshold_due(quiet_days: int) -> int | None:
@@ -109,6 +170,13 @@ def due_riders(db: Session, now: datetime | None = None) -> list[tuple[User, dic
         threshold = _threshold_due(state["quiet_days"])
         if threshold is None or _already_sent(db, user.id, state["stage"], threshold):
             continue
+        # Every check-in pushes towards riding. Not to an account that may be
+        # a child's, not to a rider in the quiet window after crisis words,
+        # and not to a rider a hold or a health answer keeps off hard riding.
+        block = speak_first_block(db, user, training=True)
+        if block:
+            logger.debug("Outreach held back for %s: %s", user.id, block)
+            continue
         out.append((user, state, threshold))
     return out
 
@@ -144,6 +212,23 @@ def _rider_brief(db: Session, user: User, state: dict) -> dict:
             "their_why": goal.why,
             "who_they_are_becoming": goal.becoming,
         }
+    # What the rider may ride today, read like every other coach surface
+    # reads it (SAFETY LAW rule 7). A failed read is said as unknown.
+    try:
+        from app.services.safety_screen import coach_safety_context
+
+        safety = coach_safety_context(db, user)
+        # The state, not the emergency numbers: a check-in email is no place
+        # for them, and only riders with no medical restriction get one.
+        for key in ("numbers", "triage_region", "country"):
+            safety.pop(key, None)
+        brief["safety"] = safety
+    except Exception:
+        logger.exception("Safety context for outreach failed (user=%s)", user.id)
+        brief["safety"] = {
+            "allowed_intensity": "unknown",
+            "means": "The safety state could not be read. Suggest nothing above easy riding.",
+        }
     return brief
 
 
@@ -159,9 +244,18 @@ def compose(db: Session, user: User, state: dict) -> tuple[str, str]:
     )
     text = response_text(resp).strip()
     subject, body = _split(text, fallback_subject=state["next_action"]["title"])
-    # Every check-in says how to stop them; the privacy policy promises it.
-    body = body.rstrip() + "\n\nIf you'd rather I didn't check in by email, reply \"stop\" and I won't."
-    return subject, body
+    # Every check-in says it was written by AI and how to stop them; the
+    # privacy policy promises the second, the EU AI Act the first.
+    return subject, body.rstrip() + "\n\n" + email_footer(coach)
+
+
+def email_footer(coach: str = "Forma") -> str:
+    """The footer on every coach email (plan section D)."""
+    who = "Forma, your AI coach" if coach == "Forma" else f"{coach}, your AI coach in Forma"
+    return (
+        f"Written by {who}. It can be wrong and isn't medical advice. "
+        'Reply "stop" and the coach won\'t email you again.'
+    )
 
 
 def _split(text: str, fallback_subject: str) -> tuple[str, str]:

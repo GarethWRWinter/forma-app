@@ -7,9 +7,13 @@ path to Claude, services never construct their own anthropic client.
 Every call:
   1. resolves its model + max_tokens from the TASKS routing table
      (callers may override max_tokens but never hardcode a model),
-  2. gets `cache_control` applied to the stable system prefix,
-  3. is logged to `forma_calls` (tokens, cost in cents, latency, surface)
-     in its OWN db session, so a caller's rollback never loses the record.
+  2. carries the SAFETY_LAW block first in its system prompt (every task
+     but memory extraction, chat titles and the safety classifier), inside
+     the cached prefix,
+  3. gets `cache_control` applied to the stable system prefix,
+  4. is logged to `forma_calls` (tokens, cost in cents, latency, surface,
+     safety law version) in its OWN db session, so a caller's rollback
+     never loses the record.
 
 Usage:
     from app.core import forma_core
@@ -38,6 +42,7 @@ from datetime import datetime
 import anthropic
 
 from app.config import settings
+from app.core.coach_skills import SAFETY_LAW, SAFETY_LAW_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +78,11 @@ class BudgetExceededError(Exception):
 class TaskConfig:
     model: str
     max_tokens: int
+    # Request limits for a call that sits in front of a reply and must fail
+    # fast rather than wait: seconds before the provider call gives up, and
+    # how many times the SDK retries. None keeps the client defaults.
+    timeout: float | None = None
+    max_retries: int | None = None
 
 
 # The routing table, the ONLY place a model name is bound to a job.
@@ -105,7 +115,19 @@ TASKS: dict[str, TaskConfig] = {
     # The coach writing first to a rider who went quiet. Sonnet: this email is
     # the retention product, and it has to sound like the coach they met.
     "outreach_email": TaskConfig(SONNET, 700),
+    # The second safety screen: reads one rider message, returns JSON flags
+    # (app/services/safety_classifier.py). It runs before the reply, so it
+    # gets 1.5 s and no retries; a slow or failed call just leaves the regex
+    # screen's hits standing.
+    "safety_classify": TaskConfig(HAIKU, 400, timeout=1.5, max_retries=0),
 }
+
+# The only tasks that go out without SAFETY_LAW: none of them speaks to the
+# rider. Memory extraction reads a conversation into the brain; a chat title
+# is a few words for the sidebar; the safety classifier returns JSON flags
+# that code merges with the regex screen, and the law's coaching rules would
+# only cost tokens and blur that one job.
+SAFETY_LAW_EXEMPT_TASKS = frozenset({"memory_extraction", "chat_title", "safety_classify"})
 
 # USD per million tokens, matched by model-id prefix. Cache reads bill at
 # 0.1x input, cache writes at 1.25x (5-minute TTL).
@@ -124,6 +146,22 @@ def _client() -> anthropic.Anthropic:
     if _client_instance is None:
         _client_instance = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     return _client_instance
+
+
+def _request(cfg: TaskConfig, tools: list | None, tool_choice: dict | None):
+    """The client and extra request kwargs for one task: its tools, a forced
+    tool choice, and the task's own timeout and retry limits."""
+    client = _client()
+    if cfg.max_retries is not None:
+        client = client.with_options(max_retries=cfg.max_retries)
+    kwargs = {}
+    if tools:
+        kwargs["tools"] = tools
+    if tool_choice:
+        kwargs["tool_choice"] = tool_choice
+    if cfg.timeout is not None:
+        kwargs["timeout"] = cfg.timeout
+    return client, kwargs
 
 
 def _prices_for(model: str) -> tuple[float, float]:
@@ -150,15 +188,28 @@ def cost_cents(model: str, usage) -> float:
     return usd * 100
 
 
-def _normalize_system(system) -> list:
+def _safety_law_version(task: str) -> str | None:
+    """The SAFETY_LAW version a call for this task carries, None if exempt."""
+    return None if task in SAFETY_LAW_EXEMPT_TASKS else SAFETY_LAW_VERSION
+
+
+def _normalize_system(system, task: str) -> list:
     """String system prompts become a cached block; block lists pass through.
 
-    Callers that already manage their own cache breakpoints (the chat
-    service's [cached education, dynamic context] split) are untouched.
+    Every task but the exempt ones gets SAFETY_LAW first. On a string it is
+    merged into the one cached block. On a block list (the chat service's
+    [cached education, dynamic context] split, which already manages its own
+    cache breakpoints) it goes in as a new first block WITHOUT cache_control:
+    it then sits inside the existing cached prefix, and the call never adds
+    a breakpoint (the API allows four).
     """
+    law = _safety_law_version(task) is not None
     if isinstance(system, str):
-        return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-    return system
+        text = f"{SAFETY_LAW}\n\n{system}" if law else system
+        return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+    if not law:
+        return system
+    return [{"type": "text", "text": SAFETY_LAW}, *system]
 
 
 def _log(
@@ -169,6 +220,7 @@ def _log(
     usage,
     latency_ms: int,
     error: bool = False,
+    safety_law_version: str | None = None,
 ) -> None:
     """Write a forma_calls row in its own session, never on the caller's
     transaction, so cost records survive caller rollbacks and vice versa."""
@@ -188,6 +240,7 @@ def _log(
             cost_cents=cost_cents(model, usage) if usage is not None else 0.0,
             latency_ms=latency_ms,
             error=error,
+            safety_law_version=safety_law_version,
         )
         db = SessionLocal()
         try:
@@ -269,6 +322,7 @@ def call(
     messages: list,
     surface: str | None = None,
     tools: list | None = None,
+    tool_choice: dict | None = None,
     max_tokens: int | None = None,
     enforce_budget: bool = True,
 ):
@@ -279,22 +333,27 @@ def call(
     if enforce_budget:
         _enforce_budget(user_id, task)
     cfg = TASKS[task]
-    kwargs = {}
-    if tools:
-        kwargs["tools"] = tools
+    law = _safety_law_version(task)
+    client, kwargs = _request(cfg, tools, tool_choice)
     t0 = time.monotonic()
     try:
-        resp = _client().messages.create(
+        resp = client.messages.create(
             model=cfg.model,
             max_tokens=max_tokens or cfg.max_tokens,
-            system=_normalize_system(system),
+            system=_normalize_system(system, task),
             messages=messages,
             **kwargs,
         )
     except Exception:
-        _log(user_id, task, surface, cfg.model, None, int((time.monotonic() - t0) * 1000), error=True)
+        _log(
+            user_id, task, surface, cfg.model, None,
+            int((time.monotonic() - t0) * 1000), error=True, safety_law_version=law,
+        )
         raise
-    _log(user_id, task, surface, cfg.model, resp.usage, int((time.monotonic() - t0) * 1000))
+    _log(
+        user_id, task, surface, cfg.model, resp.usage,
+        int((time.monotonic() - t0) * 1000), safety_law_version=law,
+    )
     return resp
 
 
@@ -318,21 +377,26 @@ def stream(
     if enforce_budget:
         _enforce_budget(user_id, task)
     cfg = TASKS[task]
-    kwargs = {}
-    if tools:
-        kwargs["tools"] = tools
+    law = _safety_law_version(task)
+    client, kwargs = _request(cfg, tools, None)
     t0 = time.monotonic()
     try:
-        with _client().messages.stream(
+        with client.messages.stream(
             model=cfg.model,
             max_tokens=max_tokens or cfg.max_tokens,
-            system=_normalize_system(system),
+            system=_normalize_system(system, task),
             messages=messages,
             **kwargs,
         ) as s:
             yield s
             final = s.get_final_message()
     except Exception:
-        _log(user_id, task, surface, cfg.model, None, int((time.monotonic() - t0) * 1000), error=True)
+        _log(
+            user_id, task, surface, cfg.model, None,
+            int((time.monotonic() - t0) * 1000), error=True, safety_law_version=law,
+        )
         raise
-    _log(user_id, task, surface, cfg.model, final.usage, int((time.monotonic() - t0) * 1000))
+    _log(
+        user_id, task, surface, cfg.model, final.usage,
+        int((time.monotonic() - t0) * 1000), safety_law_version=law,
+    )

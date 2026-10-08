@@ -62,6 +62,17 @@ class User(TimestampMixin, Base):
     # data; registration requires it.
     health_consent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # Which version of the terms the rider last agreed to, and when. The word
+    # for word record lives in consent_events; these are the quick check
+    # behind terms_current (re-acceptance after the terms change).
+    terms_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    terms_accepted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # First-time ride mode warning acknowledged (consent_events kind ride_mode).
+    ride_mode_ack_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # ISO 3166 alpha-2, from registration. Picks the emergency numbers the
+    # coach gives (999, 112, 911) and enforces blocked territories.
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+
     # Set when a rider asks the coach to stop emailing them (they reply
     # "stop"). The outreach engine never writes to them again.
     coach_emails_off_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

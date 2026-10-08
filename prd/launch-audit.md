@@ -43,6 +43,8 @@ be. **LATER** is logged and left.
 - [ ] E2 MUST. The coach asks before it assumes (location, availability, equipment) and never invents data.
 - [ ] E3 SHOULD. Decisions are made for the rider ("do this today") with the reason in one line.
 - [ ] E4 SHOULD. Medical and safety boundaries hold (injury, chest pain, eating disorders).
+- [ ] E5 MUST. The safety red team is re-run against the live model and no reply is rated unsafe (launch gate 5f). The same run checks the safety classifier: the round 4 sweep (303 ordinary and 84 red-flag messages: ROUND4_ORDINARY and ROUND4_MISSED in tests/test_safety_screen.py) through the live classifier, and its latency in forma_calls (task safety_classify) mostly under its 1.5 s limit.
+- [ ] E6 MUST. Ride mode on a real Kickr: ERG never above the cap, sprints above it run with ERG released, Pause eases the trainer and Stop releases it at once (gate 5f).
 
 ## F. New-rider journey, end to end, as someone who is not Gareth
 
@@ -89,12 +91,15 @@ be. **LATER** is logged and left.
 - [ ] J5 SHOULD. Deleted-account purge is scheduled.
 - [ ] J6 SHOULD. Per-rider cost cap holds and alerts.
 - [ ] J7 SHOULD. Vercel deploy step is in the release ritual, or automated.
+- [ ] J8 MUST. The safeguarding protocol runs from day one: the review list works against production, and one dry run of the Stripe form of the tool matches the rider's page in Stripe.
 
 ## K. Security
 
 - [ ] K1 MUST. One rider cannot read another rider's data (isolation tests pass against the current code).
 - [ ] K2 MUST. No secrets in git; admin endpoints locked to `ADMIN_EMAILS`.
 - [ ] K3 SHOULD. Rate limits on auth, waitlist and coach endpoints.
+- [ ] K4 MUST. FORMA_EDGE_SECRET is set on Vercel and Railway, so a direct call to Railway with a forged x-vercel-id can't choose its own address (gate 5f).
+- [ ] K5 MUST. ip-check: https://app.ridewithforma.com/api/v1/auth/ip-check, opened in a browser, shows your own address with via_edge true, and a direct call to Railway shows via_edge false (gate 5f). Only after K4: until the secret is set on Railway, ip-check always answers client_ip null and via_edge null. That is on purpose (it would otherwise show a forger that forging works), not a fault.
 
 ## L. Everything works on a phone
 
@@ -149,3 +154,19 @@ re-checked on production unless it says otherwise.
 | K2 secrets | PASS. WAHOO_WEBHOOK_TOKEN is NOT set: OPEN, Gareth |
 | K3 rate limits | FIXED. Keyed on the proxy-seen address; voice behind paywall and limited |
 | L1 phone | PASS on landing; app checked at 375px in earlier sessions |
+
+## Update, 8 October 2026
+
+The safety system was built and re-verified on 8 October with the model
+mocked. What still has to be proved on the live system is launch gate 5f,
+tracked here as E5, E6, K4 and K5.
+
+| Item | Result |
+| --- | --- |
+| E4 safety boundaries | BUILT. Red-flag check, holds, fixed replies and founder alerts, with tests. Live-model proof is E5 |
+| E5 red team on the live model | OPEN. Gareth |
+| E6 Kickr test | OPEN. Gareth, on his own Kickr |
+| J8 safeguarding routine | OPEN. Review tool written; the Stripe form of the command needs one confirmed dry run |
+| K3 rate limits | REOPENED until K4 and K5 pass. A forged x-vercel-id got round every address limit, and the keying has not been checked on a real request |
+| K4 edge secret | OPEN. Gareth sets FORMA_EDGE_SECRET on Vercel (and redeploys the frontend), then on Railway |
+| K5 ip-check | OPEN. Gareth opens the ip-check through the app after K4. Before K4 it shows nulls by design |

@@ -144,6 +144,36 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
        and DECIDE marks for Gareth. Publish at ridewithforma.com/privacy and /terms
        (the register page already links there). Health-data consent is live at
        registration.
+5f. [ ] **LAUNCH GATE: Safety system (built 8 Oct 2026):** red team re-run with
+       the live model and no reply rated unsafe; Kickr test of ERG cap, sprint
+       release, pause and stop; FORMA_EDGE_SECRET set on Vercel and Railway;
+       ip-check confirmed on a real request. The build was tested with the model
+       mocked, so the red team runs again against the production model, every
+       reply read and rated. On the Kickr, in ride mode: ERG never holds above
+       130% of FTP (or the rider's lower safety cap), a sprint above it runs with
+       ERG released, Pause eases the trainer to 40% of FTP, and Stop releases it
+       at once. Without the edge secret, a direct call to Railway with a forged
+       x-vercel-id picks its own address and gets round every rate limit
+       (registration, invite codes, the waitlist). Use 32 or more random
+       characters, the same value on both. Set it on Vercel and redeploy the
+       frontend first, then on Railway: the other order puts every rider in
+       Vercel's one bucket until the frontend catches up. Then the ip-check:
+       open https://app.ridewithforma.com/api/v1/auth/ip-check in a browser
+       and client_ip must be your own address with via_edge true; the same path
+       called straight at Railway must show via_edge false. If client_ip is one
+       of Vercel's addresses, every rider shares one bucket: doors stay shut
+       until it's fixed. Before the secret is set on Railway, ip-check always
+       shows client_ip null and via_edge null: that is by design, not a fault,
+       so run it only after the secret is on both. The red team run also puts
+       the round 4 sweep (303 ordinary and 84 red-flag messages:
+       ROUND4_ORDINARY and ROUND4_MISSED in tests/test_safety_screen.py)
+       through the live safety classifier and
+       checks its latency in forma_calls (task safety_classify): until the
+       Anthropic account has credit, every classifier call fails and the regex
+       check runs alone. From the day doors open, the daily routine is
+       prd/legal/safeguarding-protocol.md: the review list every morning and
+       every alert checked within 24 hours. Doors do not open with any of the
+       four unchecked.
 5e. [x] **Backups (7 Oct 2026).** Railway's scheduled backups need the Pro plan,
        so they run free instead: nightly encrypted dumps by GitHub Actions in the
        private repo GarethWRWinter/forma-db-backups (5 days kept), plus a weekly

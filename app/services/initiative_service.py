@@ -199,6 +199,7 @@ def pending_initiative(db: Session, user_id: str) -> CoachInitiative | None:
             i.status = "expired"
             i.decided_at = datetime.utcnow()
         db.commit()
+    retire_blocked(db, user_id)
     return (
         db.query(CoachInitiative)
         .filter(
@@ -208,6 +209,57 @@ def pending_initiative(db: Session, user_id: str) -> CoachInitiative | None:
         .order_by(CoachInitiative.created_at.desc())
         .first()
     )
+
+
+# Findings about how the rider trained. Under a hold they press towards the
+# riding the hold rules out, so they are neither raised nor left standing.
+TRAINING_KINDS = frozenset({"ride_insight"})
+
+
+def retire_blocked(db: Session, user_id: str) -> int:
+    """Expire pending cards the rider's safety state now rules out: every
+    card for an account held as possibly under 18 or in the quiet window
+    after crisis words, and training findings under a hold. A card raised
+    before the hold opened must not stay on the dashboard. Returns how many.
+    Never raises."""
+    from app.services.outreach_service import speak_first_block
+
+    try:
+        pending = (
+            db.query(CoachInitiative)
+            .filter(
+                CoachInitiative.user_id == user_id,
+                CoachInitiative.status == "pending",
+            )
+            .all()
+        )
+        if not pending:
+            return 0
+        block = speak_first_block(db, user_id, training=True)
+        if block is None:
+            doomed = []
+        elif block == "safety":
+            doomed = [i for i in pending if i.kind in TRAINING_KINDS]
+        else:
+            doomed = pending
+        now = datetime.utcnow()
+        for i in doomed:
+            i.status = "expired"
+            i.decided_at = now
+        if doomed:
+            db.commit()
+            logger.info(
+                "Initiative: %d pending card(s) retired by the safety state (user=%s)",
+                len(doomed), user_id,
+            )
+        return len(doomed)
+    except Exception:
+        logger.exception("Retiring blocked initiatives failed (user=%s)", user_id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return 0
 
 
 def has_pending(db: Session, user_id: str) -> bool:
@@ -736,6 +788,8 @@ Rules.
   not genuinely feel, no manufactured concern, no exclamation marks.
 - British English. Never use em dashes or en dashes, use a comma or a full stop.
 - Never mention memories marked [HIDDEN]. They inform your judgement only.
+- If `safety` shows allowed_intensity other than "all", nothing you write may
+  encourage hard riding, a test or more load.
 
 Return STRICT JSON and nothing else. No markdown fence, no preamble, no
 commentary after the closing brace:
@@ -796,15 +850,28 @@ def generate(
     if has_pending(db, user.id):
         return None
 
+    # The coach does not speak first to an account that may be a child's, or
+    # to a rider in the quiet window after crisis words (wellbeing_quiet_until).
+    from app.services.outreach_service import speak_first_block
+
+    block = speak_first_block(db, user, training=True)
+    if block is not None and block != "safety":
+        return None
+    # Under a hold (or an uncleared health answer) nothing about how they
+    # trained is raised, and the check in carries no session count.
+    held = block == "safety"
+
     finding: dict | None = None
 
     if force_kind in (None, "open_loop"):
         finding = find_open_loop(db, user)
-    if finding is None and force_kind in (None, "ride_insight"):
+    if finding is None and force_kind in (None, "ride_insight") and not held:
         finding = find_ride_insight(db, user)
     if finding is None and force_kind in (None, "weekly_checkin"):
         if weekly_checkin_due(db, user):
             finding = _weekly_checkin_context(db, user)
+            if held:
+                finding.get("week", {}).pop("sessions_completed", None)
 
     if finding is None:
         return None
@@ -817,6 +884,13 @@ def generate(
     payload = dict(finding)
     payload["rider_name"] = _first_name(user)
     payload["today"] = date.today().isoformat()
+    # A card raised while a hold is open must not cheer on hard work.
+    try:
+        from app.services.safety_screen import coach_safety_context
+
+        payload["safety"] = coach_safety_context(db, user)
+    except Exception:
+        logger.exception("Safety context for initiative failed (user=%s)", user.id)
 
     # The coach must know this rider, not just this finding. An open loop about
     # a knee reads completely differently next to a goal three weeks out.

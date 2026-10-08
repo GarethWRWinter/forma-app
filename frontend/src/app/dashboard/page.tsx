@@ -11,6 +11,8 @@ import { RiderProfileRadar } from "@/components/charts/rider-profile-radar";
 import { BriefingCard } from "@/components/dashboard/briefing-card";
 import { CoachInvite } from "@/components/dashboard/coach-invite";
 import { ActivationCard } from "@/components/dashboard/activation-card";
+import { HoldBanner } from "@/components/safety/HoldBanner";
+import { RebuildPlanOffer } from "@/components/dashboard/rebuild-plan-offer";
 import { Kicker } from "@/components/ui/kicker";
 import { SectionHeader } from "@/components/ui/section-header";
 import { DataTile } from "@/components/ui/data-tile";
@@ -386,6 +388,15 @@ export default function DashboardPage() {
           {greeting}, {firstName}.
         </h1>
       </header>
+
+      {/* ============ SAFETY HOLD ============
+          Above everything the coach wants to say: while a hold is open,
+          this is the most important thing on the page. */}
+      <HoldBanner variant="card" />
+      {/* Once a clearance or a lifted hold leaves nothing holding the rider
+          back, a plan written while riding was kept easy is offered a
+          rebuild at full strength. */}
+      <RebuildPlanOffer variant="card" />
 
       {/* ============ FINISH SETUP ============
           The only way back into the wizard. It sits above the coach

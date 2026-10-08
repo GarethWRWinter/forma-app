@@ -1,6 +1,9 @@
+from datetime import date, datetime
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, EmailStr, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, EmailStr, ConfigDict, Field, computed_field, field_validator
+
+from app.config import settings
 
 # Addresses are stored and looked up lower-case. Without this, a phone that
 # capitalised the first letter at login locked a rider out of the account
@@ -14,8 +17,27 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     full_name: str | None = None
     invite_code: str | None = Field(None, max_length=24)
-    # Explicit consent to process health data (UK GDPR Article 9).
+    # Eligibility: 18 or over, and not in a blocked territory. Optional here
+    # and checked in the endpoint, so a rider who misses one gets a sentence
+    # rather than a validation error.
+    date_of_birth: date | None = None
+    country: str | None = Field(None, max_length=64)
+    # Box 1: the terms and risk acknowledgement.
+    terms_accepted: bool = False
+    # Box 2: explicit consent to process health data (UK GDPR Article 9),
+    # kept separate from box 1 (Article 7(2)).
     health_consent: bool = False
+    # The exact label text of each box, recorded word for word in
+    # consent_events. A form that sends neither is a page opened before
+    # the boxes changed.
+    terms_text_shown: str | None = Field(None, max_length=4000)
+    health_text_shown: str | None = Field(None, max_length=4000)
+
+    @field_validator("date_of_birth", mode="before")
+    @classmethod
+    def _blank_date_is_missing(cls, v):
+        # An untouched date input posts "", which is a missing date, not a bad one.
+        return None if isinstance(v, str) and not v.strip() else v
 
 
 class UserLogin(BaseModel):
@@ -28,7 +50,10 @@ class UserUpdate(BaseModel):
     full_name: str | None = None
     weight_kg: float | None = None
     height_cm: float | None = None
-    date_of_birth: str | None = None
+    # Checked against the same rules as registration: 18 or over, and a
+    # territory Forma serves. Sending null leaves them as they are.
+    date_of_birth: date | None = None
+    country: str | None = Field(None, max_length=64)
     ftp: int | None = None
     max_hr: int | None = None
     resting_hr: int | None = None
@@ -42,6 +67,11 @@ class UserUpdate(BaseModel):
     coach_name: str | None = None
     coach_avatar: str | None = None
     coach_tone: str | None = None
+
+    @field_validator("date_of_birth", mode="before")
+    @classmethod
+    def _blank_date_is_missing(cls, v):
+        return None if isinstance(v, str) and not v.strip() else v
 
 
 class UserResponse(BaseModel):
@@ -66,8 +96,29 @@ class UserResponse(BaseModel):
     coach_name: str = "Forma"
     coach_avatar: str = "m1_climber"
     coach_tone: str = "balanced"
+    country: str | None = None
+    # Settings reads it for the age-based check-up line on the FTP test.
+    date_of_birth: date | None = None
+    terms_version: str | None = None
+    # Read for health_consent_current only; never sent.
+    health_consent_at: datetime | None = Field(default=None, exclude=True)
 
     model_config = ConfigDict(from_attributes=True)
+
+    @computed_field
+    @property
+    def terms_current(self) -> bool:
+        """False once the terms have changed since the rider last agreed (or
+        they never have, like the beta accounts): the app then asks again."""
+        return self.terms_version == settings.terms_version
+
+    @computed_field
+    @property
+    def health_consent_current(self) -> bool:
+        """False when the rider has never ticked box 2, the explicit consent
+        to use their health details (UK GDPR Art 9). Every beta account joined
+        before it was asked: the app asks before any health question."""
+        return self.health_consent_at is not None
 
 
 class TokenResponse(BaseModel):

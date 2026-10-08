@@ -25,6 +25,8 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ApiError, chat, goals as goalsApi } from "@/lib/api";
+import { SafetyCard, type SafetyCardKind } from "@/components/safety/SafetyCard";
+import { AiDisclaimer } from "@/components/safety/AiDisclaimer";
 import { cn } from "@/lib/utils";
 import { CoachDot, CoachGlyph } from "@/components/ui/coach-glyph";
 import { CadenceSpinner } from "@/components/ui/cadence-spinner";
@@ -50,6 +52,17 @@ function sendFailureMessage(error: unknown): string {
     return error.message;
   }
   return "I lost the connection there. Send that again.";
+}
+
+/** A fixed safety card from the stream, or null if the chunk is malformed.
+    It arrives before the coach's text and is kept apart from it. */
+function safetyFrom(chunk: { kind?: unknown; text?: unknown }): {
+  kind: SafetyCardKind;
+  text: string;
+} | null {
+  if (chunk.kind !== "emergency" && chunk.kind !== "crisis") return null;
+  if (typeof chunk.text !== "string" || !chunk.text.trim()) return null;
+  return { kind: chunk.kind, text: chunk.text };
 }
 
 function CoachPageInner() {
@@ -78,6 +91,8 @@ function CoachPageInner() {
       created_at?: string;
       /** filenames handed over with this message, so the thread shows the swap */
       attachments?: string[];
+      /** an emergency or crisis card the server sent ahead of this reply */
+      safety?: { kind: SafetyCardKind; text: string };
     }[]
   >([]);
   const [hasEarlier, setHasEarlier] = useState(false);
@@ -192,6 +207,20 @@ function CoachPageInner() {
     };
   }, []);
 
+  // An emergency or crisis card lands on the reply being streamed, so it
+  // renders above the coach's words rather than inside them.
+  const attachSafetyCard = useCallback(
+    (card: { kind: SafetyCardKind; text: string }) => {
+      setMessages((prev) => {
+        if (!prev.length) return prev;
+        const updated = [...prev];
+        updated[updated.length - 1] = { ...updated[updated.length - 1], safety: card };
+        return updated;
+      });
+    },
+    []
+  );
+
   // Voice send handler (defined below, used by hook)
   const handleVoiceSend = useCallback(
     async (transcript: string) => {
@@ -235,7 +264,10 @@ function CoachPageInner() {
           transcript.trim(),
           handedOver.ids
         )) {
-          if (chunk.type === "status") {
+          if (chunk.type === "safety") {
+            const card = safetyFrom(chunk);
+            if (card) attachSafetyCard(card);
+          } else if (chunk.type === "status") {
             setStatus(chunk.content ?? null);
           } else if (chunk.type === "text") {
             // Text always streams fully — never interrupted
@@ -244,6 +276,7 @@ function CoachPageInner() {
             setMessages((prev) => {
               const updated = [...prev];
               updated[updated.length - 1] = {
+                ...updated[updated.length - 1],
                 role: "assistant",
                 content: assistantContent,
               };
@@ -263,6 +296,7 @@ function CoachPageInner() {
         setMessages((prev) => {
           const updated = [...prev];
           updated[updated.length - 1] = {
+            ...updated[updated.length - 1],
             role: "assistant",
             content: sendFailureMessage(error),
           };
@@ -273,6 +307,8 @@ function CoachPageInner() {
       setStreaming(false);
       setStatus(null);
       queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
+      // The red-flag check or the coach may have opened a hold this turn.
+      queryClient.invalidateQueries({ queryKey: ["safety-state"] });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [activeSessionId, streaming]
@@ -588,7 +624,10 @@ function CoachPageInner() {
         userMessage,
         handedOver.ids
       )) {
-        if (chunk.type === "status") {
+        if (chunk.type === "safety") {
+          const card = safetyFrom(chunk);
+          if (card) attachSafetyCard(card);
+        } else if (chunk.type === "status") {
           setStatus(chunk.content ?? null);
         } else if (chunk.type === "text") {
           setStatus(null);
@@ -596,6 +635,7 @@ function CoachPageInner() {
           setMessages((prev) => {
             const updated = [...prev];
             updated[updated.length - 1] = {
+              ...updated[updated.length - 1],
               role: "assistant",
               content: assistantContent,
             };
@@ -610,6 +650,7 @@ function CoachPageInner() {
       setMessages((prev) => {
         const updated = [...prev];
         updated[updated.length - 1] = {
+          ...updated[updated.length - 1],
           role: "assistant",
           content: sendFailureMessage(error),
         };
@@ -620,6 +661,8 @@ function CoachPageInner() {
     setStreaming(false);
     setStatus(null);
     queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
+    // The red-flag check or the coach may have opened a hold this turn.
+    queryClient.invalidateQueries({ queryKey: ["safety-state"] });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -886,11 +929,12 @@ function CoachPageInner() {
             )}
             {messages.map((msg, i) => {
               // A saved-empty reply renders as a ghost bubble — never show it.
-              if (
+              // A safety card on an empty reply still shows, on its own.
+              const emptyReply =
                 msg.role === "assistant" &&
                 !msg.content &&
-                !(streaming && i === messages.length - 1)
-              ) {
+                !(streaming && i === messages.length - 1);
+              if (emptyReply && !msg.safety) {
                 return null;
               }
               // Day divider: the thread reads like a training diary.
@@ -912,6 +956,17 @@ function CoachPageInner() {
                       <span className="h-px flex-1 bg-vb-border-subtle" />
                     </div>
                   )}
+                  {/* Fixed words from the server, never the model's: a card
+                      the rider can't miss, above the coach's reply. */}
+                  {msg.role === "assistant" && msg.safety && (
+                    <SafetyCard
+                      kind={msg.safety.kind}
+                      text={msg.safety.text}
+                      country={authUser?.country}
+                      className="ml-10 max-w-[90%] sm:max-w-[80%]"
+                    />
+                  )}
+                  {!emptyReply && (
                   <div
                     className={cn(
                       "flex gap-3",
@@ -1008,6 +1063,7 @@ function CoachPageInner() {
                       </div>
                     )}
                   </div>
+                  )}
                 </React.Fragment>
               );
             })}
@@ -1136,6 +1192,9 @@ function CoachPageInner() {
               <Send className="h-4 w-4" />
             </button>
           </div>
+
+          {/* Permanent, under the input: what Forma is and isn't. */}
+          <AiDisclaimer className="mt-2.5" />
         </div>
       </div>
     </div>

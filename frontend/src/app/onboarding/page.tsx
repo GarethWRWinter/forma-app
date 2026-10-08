@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState, useRef } from "react";
 import { Check, Link2, Upload, MapPin } from "lucide-react";
-import { onboarding, users, goals, training } from "@/lib/api";
+import { onboarding, users, goals, training, type ScreeningResult } from "@/lib/api";
 import { COACH_TONES } from "@/lib/coach";
 import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,21 @@ import { Kicker } from "@/components/ui/kicker";
 import { ProgressSteps } from "@/components/ui/progress-steps";
 import { CoachNote } from "@/components/ui/coach-note";
 import { Input } from "@/components/ui/input";
+import { ClearanceForm } from "@/components/safety/ClearanceForm";
+import { ReacceptTermsModal } from "@/components/safety/ReacceptTermsModal";
+import {
+  HealthQuestions,
+  LongBreakQuestion,
+  ScreeningResultNote,
+} from "@/components/safety/HealthQuestions";
+import {
+  SCREENING_TITLE,
+  completeAnswers,
+  liftedMessage,
+  screeningIntro,
+  type ScreeningAnswers,
+} from "@/components/safety/safety-rules";
+import { useApplySafetyState } from "@/components/safety/useSafetyState";
 
 const GOALS = [
   {
@@ -65,10 +80,12 @@ const PRIORITIES = [
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const { refreshUser } = useAuth();
+  const { user, refreshUser } = useAuth();
+  const applySafetyState = useApplySafetyState();
   const gpxInputRef = useRef<HTMLInputElement>(null);
 
-  // Wizard step (0=goal, 1=event details if target_event, 2=experience, 3=physical)
+  // Wizard step (0=goal, 1=event details if target_event, 2=experience,
+  // 3=health questions, 4=physical, 5=coach)
   const [step, setStep] = useState(0);
   const [goal, setGoal] = useState("");
 
@@ -86,6 +103,19 @@ export default function OnboardingPage() {
   const [weeklyHours, setWeeklyHours] = useState("6");
   const [yearsCycling, setYearsCycling] = useState("1");
   const [preference, setPreference] = useState("both");
+  // Four weeks or more off the bike lately: feeds the layoff gate. A training
+  // question, not health data, so it lives on the experience step.
+  const [longBreak, setLongBreak] = useState<boolean | undefined>(undefined);
+
+  // Health screening. Nothing is preselected, and the answers are saved on
+  // this step (not at the end) so the rider reads what they mean before the
+  // plan is written around them.
+  const [screenAnswers, setScreenAnswers] = useState<ScreeningAnswers>({});
+  const [screening, setScreening] = useState<ScreeningResult | null>(null);
+  const [screenSaving, setScreenSaving] = useState(false);
+  const [screenError, setScreenError] = useState("");
+  const [clearing, setClearing] = useState(false);
+  const [cleared, setCleared] = useState("");
 
   // Training schedule
   const [hardDays, setHardDays] = useState<number[]>([5, 6]); // Sat/Sun default
@@ -115,8 +145,9 @@ export default function OnboardingPage() {
   // Whether event step is needed
   const isEventGoal = goal === "target_event";
 
-  // Total steps: 4 normally (goal, experience, physical, coach), 5 with event details
-  const totalSteps = isEventGoal ? 5 : 4;
+  // Total steps: 5 normally (goal, experience, health, physical, coach), 6
+  // with event details
+  const totalSteps = isEventGoal ? 6 : 5;
 
   // Map display step to actual step index
   const getActualStep = (displayStep: number) => {
@@ -261,13 +292,41 @@ export default function OnboardingPage() {
     }
   };
 
-  // Progress bar calculation
-  const currentProgress = (() => {
-    if (!isEventGoal) {
-      return step === 0 ? 0 : step === 2 ? 1 : step === 3 ? 2 : 3;
+  // Progress bar calculation: without the event step, every step after the
+  // goal sits one place earlier.
+  const currentProgress = !isEventGoal && step > 0 ? step - 1 : step;
+
+  // A changed answer makes the saved result stale: it has to be sent again.
+  const resetScreening = () => {
+    setScreening(null);
+    setScreenError("");
+    setClearing(false);
+    setCleared("");
+  };
+
+  const submitScreening = async () => {
+    const answers = completeAnswers(screenAnswers);
+    if (!answers) {
+      setScreenError("Answer all eight with a yes or a no.");
+      return;
     }
-    return step;
-  })();
+    setScreenSaving(true);
+    setScreenError("");
+    try {
+      const result = await onboarding.submitScreening({
+        answers,
+        long_break: longBreak === true,
+      });
+      applySafetyState(result.safety);
+      setScreening(result);
+    } catch (err) {
+      setScreenError(
+        err instanceof Error ? err.message : "Your answers didn't save. Try again."
+      );
+    } finally {
+      setScreenSaving(false);
+    }
+  };
 
   const fieldLabel = "mb-1.5 block text-sm font-medium text-vb-text";
   const chip = (selected: boolean) =>
@@ -619,21 +678,119 @@ export default function OnboardingPage() {
                   })}
                 </div>
               </div>
+
+              <div className="border-t border-vb-border-subtle pt-2">
+                <LongBreakQuestion
+                  value={longBreak}
+                  onChange={(v) => {
+                    setLongBreak(v);
+                    // long_break travels with the screening, so a saved
+                    // result no longer matches once this changes.
+                    resetScreening();
+                  }}
+                />
+                <p className="text-xs text-vb-text-dim">
+                  After a break I start you on steady riding for a couple of
+                  weeks before the hard sessions come back.
+                </p>
+              </div>
             </div>
 
             <div className="mt-8 flex gap-3">
               <Button variant="ghost" onClick={handleBack} className="px-6">
                 Back
               </Button>
-              <Button onClick={() => setStep(3)} className="flex-1">
+              <Button
+                onClick={() => setStep(3)}
+                disabled={longBreak === undefined}
+                className="flex-1"
+              >
                 Continue <Arrow />
               </Button>
             </div>
           </div>
         )}
 
-        {/* Step 3: Physical stats */}
+        {/* Step 3: Health questions */}
         {step === 3 && (
+          <div className="f-rise">
+            <Kicker>Your health</Kicker>
+            <h2 className="f-display mt-2 text-3xl text-vb-text">{SCREENING_TITLE}</h2>
+            <p className="mt-2 text-sm text-vb-text-dim">{screeningIntro(user?.country)}</p>
+
+            <HealthQuestions
+              answers={screenAnswers}
+              onAnswer={(id, v) => {
+                setScreenAnswers((prev) => ({ ...prev, [id]: v }));
+                resetScreening();
+              }}
+              className="mt-6"
+            />
+
+            {screening && (
+              <ScreeningResultNote
+                result={screening}
+                coachName={coachName.trim() || "Forma"}
+                className="mt-6"
+              />
+            )}
+
+            {/* Under any yes: a rider who has already been cleared says so
+                here, and the hold lifts before the plan is written. */}
+            {screening && screening.tier !== "none" && (
+              <div className="mt-4 rounded-sm border border-vb-border-subtle bg-vb-surface p-4">
+                {cleared ? (
+                  <p className="text-sm text-vb-text">{cleared}</p>
+                ) : clearing ? (
+                  <ClearanceForm
+                    onCancel={() => setClearing(false)}
+                    onDone={(next) => {
+                      setClearing(false);
+                      setCleared(liftedMessage(next));
+                    }}
+                  />
+                ) : (
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-sm text-vb-text-dim">
+                      Already seen a doctor about this?
+                    </p>
+                    <Button size="sm" variant="ghost" onClick={() => setClearing(true)}>
+                      I&apos;ve been cleared
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {screenError && (
+              <p className="mt-4 border-l-2 border-vb-red pl-3 text-sm text-vb-text">
+                {screenError}
+              </p>
+            )}
+
+            <div className="mt-8 flex gap-3">
+              <Button variant="ghost" onClick={() => setStep(2)} className="px-6">
+                Back
+              </Button>
+              {screening ? (
+                <Button onClick={() => setStep(4)} className="flex-1">
+                  Continue <Arrow />
+                </Button>
+              ) : (
+                <Button
+                  onClick={submitScreening}
+                  disabled={screenSaving || !completeAnswers(screenAnswers)}
+                  className="flex-1"
+                >
+                  {screenSaving ? "Saving…" : <>Save my answers <Arrow /></>}
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: Physical stats */}
+        {step === 4 && (
           <div className="f-rise">
             <Kicker>The numbers</Kicker>
             <h2 className="f-display mt-2 text-3xl text-vb-text">
@@ -680,18 +837,18 @@ export default function OnboardingPage() {
             )}
 
             <div className="mt-8 flex gap-3">
-              <Button variant="ghost" onClick={() => setStep(2)} className="px-6">
+              <Button variant="ghost" onClick={() => setStep(3)} className="px-6">
                 Back
               </Button>
-              <Button onClick={() => setStep(4)} className="flex-1">
+              <Button onClick={() => setStep(5)} className="flex-1">
                 Next, meet Forma <Arrow />
               </Button>
             </div>
           </div>
         )}
 
-        {/* Step 4: Meet your coach, any face, any name, any tone */}
-        {step === 4 && (
+        {/* Step 5: Meet your coach, any face, any name, any tone */}
+        {step === 5 && (
           <div className="f-rise">
             <Kicker dot flamme>Your coach</Kicker>
             <h2 className="f-display mt-2 text-3xl text-vb-text">
@@ -813,7 +970,7 @@ export default function OnboardingPage() {
               </Button>
             ) : (
               <div className="mt-8 flex gap-3">
-                <Button variant="ghost" onClick={() => setStep(3)} className="px-6">
+                <Button variant="ghost" onClick={() => setStep(4)} className="px-6">
                   Back
                 </Button>
                 <Button
@@ -834,6 +991,10 @@ export default function OnboardingPage() {
           </div>
         )}
       </div>
+      {/* An account made before the boxes were asked (a beta rider part way
+          through) agrees to the terms and gives box 2 before the health
+          questions, which the server refuses without it. */}
+      <ReacceptTermsModal />
     </div>
   );
 }

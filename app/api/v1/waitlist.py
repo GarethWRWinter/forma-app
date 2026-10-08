@@ -50,6 +50,16 @@ class JoinBody(BaseModel):
     # in it undercuts the whole promise of the list.
     name: str | None = Field(None, max_length=80)
     ref: str | None = Field(None, max_length=16)
+    # Sent by the register page for riders in a country Forma can't serve yet.
+    country: str | None = Field(None, max_length=64)
+
+
+def _country_code(raw: str | None) -> str | None:
+    """A two-letter code, upper-cased ("UK" read as "GB"), or None."""
+    code = (raw or "").strip().upper()
+    if code == "UK":
+        code = "GB"
+    return code if len(code) == 2 and code.isalpha() else None
 
 
 class GoalBody(BaseModel):
@@ -138,6 +148,7 @@ async def join_waitlist(
     email = body.email.lower().strip()
     name = (body.name or "").strip() or None
     ref = (body.ref or "").strip().upper()
+    country = _country_code(body.country)
     entry = db.query(WaitlistEntry).filter(WaitlistEntry.email == email).first()
     if entry is None:
         referred_by = None
@@ -162,7 +173,9 @@ async def join_waitlist(
             # An unknown code is dropped in silence. The place is still held,
             # and a link someone mistyped never becomes an error on the page.
             referred_by = ref if credited else None
-        entry = WaitlistEntry(email=email, name=name, referred_by=referred_by)
+        entry = WaitlistEntry(
+            email=email, name=name, referred_by=referred_by, country=country
+        )
         db.add(entry)
         db.commit()
         db.refresh(entry)
@@ -176,10 +189,14 @@ async def join_waitlist(
                 "WAITLIST JOIN: %s (%s) is number %s and is owed Letter 0",
                 email, name or "no name", pos,
             )
-    elif name and not entry.name:
+    elif (name and not entry.name) or (country and not entry.country):
         # Someone who joined before the form asked for a name, coming back with
         # one. Take it: it costs nothing and it makes their next letter better.
-        entry.name = name
+        # The same for a country the register page now sends.
+        if name and not entry.name:
+            entry.name = name
+        if country and not entry.country:
+            entry.country = country
         db.commit()
     return _held(db, entry)
 
@@ -226,13 +243,13 @@ def export_waitlist_csv(db: Session = Depends(get_db)):
     w = csv.writer(buf)
     w.writerow(
         ["position", "name", "email", "goal", "referrals", "code",
-         "referred_by", "letter0_sent", "joined"]
+         "referred_by", "letter0_sent", "joined", "country"]
     )
     for i, r in enumerate(rows, start=1):
         w.writerow(
             [i, r.name or "", r.email, r.goal or "", r.referrals, r.code,
              r.referred_by or "", "yes" if r.letter0_sent else "no",
-             r.created_at.strftime("%Y-%m-%d")]
+             r.created_at.strftime("%Y-%m-%d"), r.country or ""]
         )
     return Response(
         content=buf.getvalue(),
@@ -260,6 +277,7 @@ def list_waitlist(db: Session = Depends(get_db)):
                 "referred_by": r.referred_by,
                 "referrals": r.referrals,
                 "goal": r.goal,
+                "country": r.country,
             }
             for r in rows
         ],

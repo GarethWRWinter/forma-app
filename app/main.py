@@ -39,10 +39,27 @@ logging.basicConfig(
 )
 
 
+def check_legal_docs() -> list[str]:
+    """Log, as critical, any published terms or privacy file the app couldn't
+    read. Run at startup, after Sentry is set up, so the alert reaches Sentry
+    and not only the host's logs: the error logged while the settings load
+    comes before Sentry exists. Consent rows recorded meanwhile are stamped
+    "#missing". Returns the missing versions."""
+    missing = settings.missing_legal_docs()
+    if missing:
+        logger.critical(
+            "LEGAL DOCUMENT MISSING at startup: %s. Commit and deploy prd/legal/published/ "
+            "with the code; consent rows are stamped #missing until then.",
+            ", ".join(missing),
+        )
+    return missing
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     # --- Startup ---
+    check_legal_docs()
     # A placeholder signing key means every user's JWT is forgeable.
     if "change-me" in settings.secret_key:
         logger.critical(

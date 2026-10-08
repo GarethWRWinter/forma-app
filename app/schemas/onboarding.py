@@ -50,6 +50,65 @@ class OnboardingResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# --- Health screening ---
+
+class ScreeningAnswers(BaseModel):
+    """A yes (true) or no (false) to each of the eight health questions.
+    Every one is required: a missing answer is not a no."""
+    q1: bool
+    q2: bool
+    q3: bool
+    q4: bool
+    q5: bool
+    q6: bool
+    q7: bool
+    q8: bool
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ScreeningSubmit(BaseModel):
+    """The health step's answers, plus the experience step's training
+    question: four weeks or more off the bike in the past three months."""
+    answers: ScreeningAnswers
+    long_break: bool
+
+
+class ScreeningResult(BaseModel):
+    """What the rider sees after answering, and the gate it produced."""
+    tier: str = Field(..., description="none, easy_only or hold_all")
+    message: str
+    extra_lines: list[str]
+    safety: dict = Field(..., description="The same shape as GET /users/me/safety-state")
+
+
+class ScreeningQuestionText(BaseModel):
+    id: str
+    text: str
+
+
+class ScreeningRecord(BaseModel):
+    """The current question set and the rider's latest answers (Settings,
+    then Health). answers is null until they have answered."""
+    version: str
+    heading: str
+    intro: str
+    questions: list[ScreeningQuestionText]
+    long_break_question: str
+    clearance_text: str
+    answers: dict[str, bool] | None = None
+    long_break: bool | None = None
+    tier: str | None = None
+    answered_at: datetime | None = None
+    answered_version: str | None = None
+    clearance_confirmed: bool = False
+    clearance_by: str | None = None
+    clearance_limits: str | None = None
+    rescreen_due: bool = Field(
+        ..., description="Never answered, a new question set, a year old, or a red flag since"
+    )
+
+
 # --- Goal Events ---
 
 class GoalEventCreate(BaseModel):

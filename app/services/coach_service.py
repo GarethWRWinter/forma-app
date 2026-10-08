@@ -5,24 +5,34 @@ Assembles rider context, manages chat sessions, and streams
 responses via Claude API with SSE.
 """
 
+import asyncio
 import base64
+import concurrent.futures
+import inspect
 import json
 import logging
 import re
+import threading
+import time
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 logger = logging.getLogger(__name__)
 
 import anthropic  # kept for anthropic.APIError handling; calls go via forma_core
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from collections import Counter
 
 from app.core import forma_core
+from app.core.constants import RAMP_RATE_WARNING_THRESHOLD, TSB_OVERTRAINING_THRESHOLD
 from app.core.formulas import rider_profile_scores, rider_type_profile, w_per_kg as calc_w_per_kg
 from app.models.chat import ChatMessage, ChatRole, ChatSession
-from app.models.training import Workout, WorkoutStatus
+from app.models.safety import SafetyEvent
+from app.models.training import Workout, WorkoutStatus, WorkoutType
 from app.models.user import User
+from app.services import safety_screen, safety_service
 from app.services.metrics_service import (
     get_all_time_power_profile,
     get_current_fitness,
@@ -32,7 +42,9 @@ from app.services.metrics_service import (
 )
 from app.services.onboarding_service import get_goals, get_onboarding_response
 from app.services.activation_service import activation_state
-from app.services.plan_service import get_plans, get_workouts_by_date
+from app.services.plan_service import get_plans, get_workouts_by_date, sync_hold_marks
+# The injury and under-eating rules have one definition, shared with proposals.
+from app.services.plan_review_service import open_hold_for as _open_hold_for
 from app.services.ride_service import get_rides
 from app.services.zone_service import get_zones
 from app.core.llm_utils import StreamHumanizer, humanize, response_text
@@ -42,14 +54,14 @@ from app.core.llm_utils import StreamHumanizer, humanize, response_text
 from app.core.coach_skills import compose_education
 
 # App-specific playbook: data triggers, plan tools, debrief protocol, format.
-COACH_APP_PLAYBOOK = """## Proactive Coaching Triggers
+COACH_APP_PLAYBOOK = f"""## Proactive Coaching Triggers
 
 When you see concerning patterns in the rider's data or conversation, proactively address them:
 
-- **Overtraining risk**: TSB below -25 → suggest recovery, probe for symptoms (fatigue, irritability, poor sleep, elevated resting HR)
-- **High ramp rate**: CTL increasing >7 TSS/week → warn about injury and illness risk, suggest a recovery week
+- **Overtraining risk**: TSB below {TSB_OVERTRAINING_THRESHOLD} → suggest recovery, probe for symptoms (fatigue, irritability, poor sleep, elevated resting HR)
+- **High ramp rate**: CTL increasing more than {RAMP_RATE_WARNING_THRESHOLD:g} a week → warn about injury and illness risk, suggest a recovery week
 - **Low compliance**: <70% of planned workouts completed → explore barriers with curiosity, not judgment. Are the workouts too hard? Too long? Is life getting in the way?
-- **FTP plateau**: No improvement in 8+ weeks → suggest an FTP test, a training approach change, or explore whether recovery/nutrition/sleep is the limiter
+- **FTP plateau**: No improvement in 8+ weeks → suggest an FTP test (only when `safety.allowed_intensity` is "all": never under a hold, an uncleared health-screen yes or a layoff gate), a training approach change, or explore whether recovery/nutrition/sleep is the limiter
 - **Excessive intensity**: Too many Zone 4-5 days without Zone 1-2 recovery → recommend easy days and explain why
 - **Race approaching**: Event within 14 days → shift to taper advice, race-day planning, mental preparation, and pacing strategy
 - **Life stress signals**: Rider mentions work pressure, relationship issues, poor sleep, or general fatigue → acknowledge impact and adjust training expectations
@@ -65,6 +77,10 @@ You have tools to modify the rider's training plan directly. Use them when the c
 - **add_workout**: Add a new session to the plan.
 - **skip_workout**: Mark a workout as skipped.
 - **propose_plan_change**: Put a reasoned proposal in front of the rider. This one changes NOTHING by itself. It is how you raise a change the rider has not asked for.
+- **apply_safety_hold**: Hold hard work (easy_only) or all riding (hold_all) the moment a SAFETY LAW red flag calls for it. It applies at once, with no card for the rider to approve.
+- **flag_for_review**: Flag the conversation for Gareth's review (crisis, a rider under 18, or anything else safety-related he should see).
+
+The plan tools obey the rider's `safety` state. Under a hold, an uncleared health-screen yes or a layoff gate they refuse anything above what it allows, and tell you why. Pass that on plainly and offer the easy version or a skip. Under an injury hold they refuse to put any ride in place of a session: skip it instead. After a rider has talked about eating very little or losing weight fast, they refuse anything that adds training for 28 days. A completed session is the record of what the rider rode, so they never change, move or skip one. Changing a session's type rebuilds its steps to match; describe the session as the tool result says it is now, and never say you've changed something before the tool has done it.
 
 **When the plan itself looks wrong** (not one session, the shape of the block):
 - Do not edit it quietly, and do not settle for a passing remark you hope they act on. Call `propose_plan_change` with what you have noticed, why it matters against their goal and their numbers, and the concrete sessions you would change.
@@ -75,6 +91,7 @@ You have tools to modify the rider's training plan directly. Use them when the c
 - The rider asks to change their plan ("Can we swap Tuesday and Thursday?", "I want to skip tomorrow's session", "Add a recovery ride on Friday")
 - You recommend a change and the rider agrees ("Let's do that", "Sounds good, make the change")
 - Always confirm with the rider before making changes, describe what you'll do, then act
+- The exception is safety: call apply_safety_hold and flag_for_review straight away, never as a question (SAFETY LAW rule 3)
 
 **When NOT to use tools:**
 - General discussion about training philosophy or future plans
@@ -103,7 +120,7 @@ When a rider has recently completed a goal event, proactively offer to debrief:
 - When a rider is struggling, lead with empathy before solutions
 - Explain training ideas in plain, literal words. Use an analogy only when the plain explanation won't land
 - The first time you use a training term with a rider who is new to it (FTP, TSS, IF, NP, CTL, ATL, TSB, ERG, Z2, VO2 max and the like), say what it means in plain words in the same sentence, e.g. "your FTP, roughly the most power you can hold for an hour"
-- Make the decision for the rider: say what to do and why in one line, rather than handing them a list of options to choose from
+- Make the decision for the rider: say what to do and why in one line, rather than handing them a list of options to choose from. Medical questions go to a professional. On safety, decide conservatively.
 """
 
 # Forma's full education (app/core/coach_skills.py) + the app playbook.
@@ -144,6 +161,8 @@ Rules:
 - While the stage is below `plan`, every reply ends with that one next step,
   in plain words, with the exact navigation from `next_action.instruction`.
   Never end with "next time we talk" or "when you're ready". Say what to do.
+  The exception is a reply under the SAFETY LAW: that one ends with the
+  safety net, and the next step waits for another day.
 - At stage `plan`, tell them to build it now: Goal, then Build my season. You
   cannot write a whole plan from the chat (your plan tools change the current
   week only), so never offer to.
@@ -322,6 +341,11 @@ def _build_rider_context(
         except Exception:
             pass
     context["profile"] = profile
+
+    # ── 1b. Safety: the hold, the health screen, any doctor's limits, the
+    # layoff gate and the country for the emergency numbers. SAFETY LAW rule
+    # 7 reads this before anything is prescribed, so it sits near the top.
+    context["safety"] = safety_screen.coach_safety_context(db, user)
 
     # ── 2. Onboarding context (goals & motivation) ──
     try:
@@ -986,6 +1010,70 @@ COACH_TOOLS = [
             "required": ["observation", "rationale", "changes"],
         },
     },
+    {
+        "name": "apply_safety_hold",
+        "description": (
+            "Put a safety hold on the rider's training. It applies AT ONCE, with no card for "
+            "the rider to approve. Call it the moment a SAFETY LAW red flag rules riding out "
+            "(hold_all: chest symptoms, fainting or near-fainting, a head injury, fever or "
+            "illness below the neck, a rider under 18) or rules hard work out (easy_only: an "
+            "injury or worrying pain, pregnancy or a baby in the past year, a medicine or "
+            "condition without a doctor's clearance, a return after four weeks or more off). "
+            "Never ask first and never offer it as a proposal: call it, then tell the rider "
+            "what you have done and how it lifts, in the words the result gives you. A hold "
+            "covers the whole plan, ride mode and briefings. Telling you in chat never lifts "
+            "it, you can never lift it yourself, and a lower level never replaces a higher one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "level": {
+                    "type": "string",
+                    "enum": ["easy_only", "hold_all"],
+                    "description": "easy_only: recovery and endurance riding only, no tests. hold_all: no riding at all.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "One plain, kind line the rider may see on their hold notice, e.g. 'Chest tightness on Tuesday's ride'. No diagnosis.",
+                },
+                "red_flag": {
+                    "type": "string",
+                    "enum": [
+                        "chest_pain", "palpitations", "fainting", "head_injury", "fever",
+                        "injury", "pregnancy", "medication", "condition", "restriction",
+                        "layoff", "heat", "minor", "crisis", "other",
+                    ],
+                    "description": "Which red flag this is.",
+                },
+                "days_off": {
+                    "type": "integer",
+                    "description": "layoff only: roughly how many days the rider has been off the bike, if they said. It sets how long the easy start lasts.",
+                },
+            },
+            "required": ["level", "reason", "red_flag"],
+        },
+    },
+    {
+        "name": "flag_for_review",
+        "description": (
+            "Flag this conversation for Gareth, Forma's founder, to review. Use reason "
+            "'crisis' for any sign of hopelessness, self-harm or suicide (SAFETY LAW rule 4), "
+            "'minor' when the rider may be under 18 (rule 2n), and 'safety' for anything else "
+            "about the rider's safety he should see. It changes nothing for the rider. Never "
+            "mention it to the rider, and never promise that anyone at Forma will contact them."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "enum": ["crisis", "minor", "safety"]},
+                "note": {
+                    "type": "string",
+                    "description": "One or two sentences for Gareth: what the rider said and what you did about it.",
+                },
+            },
+            "required": ["reason", "note"],
+        },
+    },
 ]
 
 
@@ -1010,7 +1098,124 @@ _READ_ONLY_TOOLS = {"analyse_ride", "find_ride"}
 # Tools that leave the plan itself untouched. Proposing a change is a question
 # put to the rider, not an edit: the plan does not move until they approve, so
 # telling the app the plan changed here would be a lie the calendar exposes.
-_NO_PLAN_CHANGE_TOOLS = _READ_ONLY_TOOLS | {"propose_plan_change"}
+_NO_PLAN_CHANGE_TOOLS = _READ_ONLY_TOOLS | {"propose_plan_change", "flag_for_review"}
+
+
+# ── The safety gate on the plan tools ───────────────────────────────────────
+
+
+def _type_value(value) -> str | None:
+    return None if value is None else str(getattr(value, "value", value))
+
+
+def _intensity_refusal(db: Session, user: User, candidate: dict, on_date: date) -> str | None:
+    """Why a session cannot go in (or stay in) the plan on that day, worded
+    for the coach to pass on, or None when it can.
+
+    One gate for every path that prescribes effort: allowed_intensity reads
+    the open hold, the health screen and the layoff gate."""
+    allowed = safety_service.allowed_intensity(db, user, on_date)
+    if safety_service.workout_allowed(candidate, allowed):
+        return None
+
+    if allowed == "all":
+        peak = round(safety_service.max_step_pct(candidate) * 100)
+        return (
+            f"Not changed. This session's steps ask for {peak}% of FTP, more than a "
+            f"{candidate.get('workout_type')} session should. Change its workout_type so "
+            "the steps are rebuilt to match, or skip it."
+        )
+
+    why = []
+    try:
+        state = safety_service.safety_state(db, user)
+        hold = state.get("hold")
+        if hold:
+            why.append(f"a {hold['level']} safety hold is open ({hold['reason']})")
+        screening = state.get("screening")
+        if screening and screening["tier"] != "none" and not screening["clearance_confirmed"]:
+            why.append("their health screen needs a doctor's clearance first")
+        if state.get("layoff_gate_until") and on_date < date.fromisoformat(state["layoff_gate_until"]):
+            why.append(
+                "they are coming back from four weeks or more off, so hard sessions wait "
+                f"until {state['layoff_gate_until']}"
+            )
+    except Exception:
+        logger.exception("Reading the safety state for a refusal failed (user=%s)", user.id)
+    reason = "; ".join(why) or "the rider's safety state rules it out"
+
+    if allowed == "none":
+        return (
+            f"Not changed: {reason}. Until the rider confirms a doctor has cleared them, "
+            "nothing can go in the plan except rest. Skip the session instead, and tell the "
+            "rider why in plain words. Never offer a way round the hold."
+        )
+    return (
+        f"Not changed: {reason}. Only recovery and endurance riding, with no step above "
+        "75% of FTP, can go in the plan on that day. Offer the easy version (workout_type "
+        "recovery or endurance) or skip it, and tell the rider why in plain words."
+    )
+
+
+# The words the coach passes on when a plan tool would prescribe a ride on
+# an injury (SAFETY LAW 2e): the session goes, and the pain-free rule is the
+# limit until a physio has seen it.
+_INJURY_REFUSAL = (
+    "Not changed: an injury hold is open. Under SAFETY LAW 2e you never put a ride you "
+    "prescribe in place of a session on an injury, and you don't add one. Skip the "
+    "session instead (skip_workout), or make it a rest day, and tell the rider: \"If you "
+    "ride, keep it completely pain-free, flat, light gear, high cadence, and stop at the "
+    "first twinge. Until a physio has seen it, that's the limit.\""
+)
+
+_RESTRICTION_REFUSAL = (
+    "Not changed: in the last 28 days the rider said something about eating very little "
+    "or losing weight fast (SAFETY LAW 2h), so their training can't go up from chat: no "
+    "added sessions, and nothing longer, harder or with more TSS. Keep the session as it "
+    "is or make it easier, and tell the rider plainly why, with no numbers about food or "
+    "weight."
+)
+
+
+# Already ridden: the record of what the rider did. No chat tool rewrites it
+# (the same rule apply_proposal keeps for an accepted proposal).
+_COMPLETED_REFUSAL = (
+    "Not changed: '{title}' on {day} is already ridden, and a completed session is the "
+    "record of what the rider did, so it never changes. If they want a session like it, "
+    "add a new one with add_workout."
+)
+
+
+def _completed(workout) -> bool:
+    return _type_value(workout.status) == WorkoutStatus.completed.value
+
+
+def _completed_refusal(workout) -> str:
+    return _COMPLETED_REFUSAL.format(title=workout.title, day=workout.scheduled_date)
+
+
+def _rider_holds_line(hold) -> str:
+    """What the coach tells the rider after a hold goes on: what it covers and
+    how it lifts, in the one sentence served from code."""
+    if getattr(hold, "red_flag", None) == "minor":
+        return (
+            "The account is on hold: no coaching or training content of any kind. Say "
+            "nothing about how it lifts, and never mention a flag, a review or anyone at "
+            "Forma. The app ends your reply with a fixed line about the account closing "
+            "and refunds, so don't write one of your own."
+        )
+    lift = safety_screen.lift_sentence(hold)
+    how = (
+        f'Say how it lifts in exactly these words: "{lift}"'
+        if lift else "The rider can't lift this one: say nothing about how it lifts."
+    )
+    return (
+        "It covers the whole plan, ride mode and briefings. " + how
+        + " Telling you in chat lifts nothing, you can never lift it yourself, and never "
+        "mention the This was a mistake button."
+        + (" No riding of any kind until then." if hold.level == "hold_all" else
+           " Easy riding by feel is fine if they feel well.")
+    )
 
 
 def _tool_status(db: Session, user: User, name: str, tool_input: dict) -> str | None:
@@ -1036,6 +1241,17 @@ def _tool_status(db: Session, user: User, name: str, tool_input: dict) -> str | 
     return _TOOL_STATUS.get(name)
 
 
+def _resync_hold_marks(db: Session, user: User) -> None:
+    """Put the on-hold labels back to match the gate after a chat edit: a
+    rewritten description loses its label, and a moved session may now sit
+    inside or outside an easy window. Best effort: never fails the edit."""
+    try:
+        sync_hold_marks(db, user.id)
+    except Exception:
+        logger.exception("Marking held sessions after a chat edit failed (user=%s)", user.id)
+        db.rollback()
+
+
 def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> str:
     """
     Execute a coach tool and return a result string for Claude.
@@ -1044,6 +1260,8 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
     a confirmation message that Claude uses in its follow-up response.
     """
     if tool_name == "update_workout":
+        from app.services import plan_review_service as prs
+
         workout = (
             db.query(Workout)
             .filter(Workout.id == tool_input["workout_id"], Workout.user_id == user.id)
@@ -1051,23 +1269,79 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
         )
         if not workout:
             return "Error: Workout not found."
+        if _completed(workout):
+            return _completed_refusal(workout)
+
+        current_type = _type_value(workout.workout_type)
+        new_type = tool_input.get("workout_type") or current_type
+        try:
+            new_type = WorkoutType(new_type).value
+        except ValueError:
+            return f"Error: unknown workout_type '{new_type}'."
+        try:
+            new_date = (
+                date.fromisoformat(tool_input["scheduled_date"])
+                if tool_input.get("scheduled_date") else workout.scheduled_date
+            )
+        except ValueError:
+            return "Error: scheduled_date must be YYYY-MM-DD."
+
+        # A changed type changes what the trainer does: the steps are rebuilt
+        # from the template plan generation would use (the session-type bug:
+        # a VO2max session relabelled "recovery" kept its VO2max intervals).
+        retyped = new_type != current_type
+        template = None
+        if retyped:
+            template = prs.template_for(
+                new_type,
+                tool_input.get("planned_duration_seconds") or workout.planned_duration_seconds,
+            )
+        # The gate runs on every edit it lets through: a skipped or modified
+        # session put back in the plan is prescribed again.
+        rule = prs.plan_rule_refusal(db, user, "update_workout", new_type, workout, tool_input)
+        if rule == "injury":
+            return _INJURY_REFUSAL
+        if rule == "restriction":
+            return _RESTRICTION_REFUSAL
+        refusal = _intensity_refusal(
+            db, user,
+            prs.candidate_for(new_type, template, None if retyped else workout),
+            new_date,
+        )
+        if refusal:
+            return refusal
 
         if "title" in tool_input:
             workout.title = tool_input["title"]
         if "description" in tool_input:
             workout.description = tool_input["description"]
-        if "workout_type" in tool_input:
-            workout.workout_type = tool_input["workout_type"]
-        if "scheduled_date" in tool_input:
-            workout.scheduled_date = date.fromisoformat(tool_input["scheduled_date"])
-        if "planned_duration_seconds" in tool_input:
-            workout.planned_duration_seconds = tool_input["planned_duration_seconds"]
-        if "planned_tss" in tool_input:
-            workout.planned_tss = tool_input["planned_tss"]
+        workout.scheduled_date = new_date
+        if retyped:
+            workout.workout_type = new_type
+            prs.rebuild_steps(db, workout, template, user.ftp)
+            if "title" not in tool_input:
+                workout.title = template["name"] if template else "Rest day"
+            if "description" not in tool_input:
+                workout.description = (
+                    template.get("description") if template else "No riding today."
+                )
+        else:
+            if "planned_duration_seconds" in tool_input:
+                workout.planned_duration_seconds = tool_input["planned_duration_seconds"]
+            if "planned_tss" in tool_input:
+                workout.planned_tss = tool_input["planned_tss"]
 
         workout.status = WorkoutStatus.modified
         db.commit()
-        return f"Updated workout '{workout.title}' on {workout.scheduled_date}."
+        _resync_hold_marks(db, user)
+        result = f"Updated workout '{workout.title}' on {workout.scheduled_date}."
+        if retyped:
+            result += (
+                f" Its type is now {new_type}, so its steps were rebuilt from "
+                f"{prs.template_summary(template)}. That is what ride mode will run: "
+                "describe it to the rider as exactly that, not as anything you asked for."
+            )
+        return result
 
     elif tool_name == "swap_workout_date":
         wa = (
@@ -1082,26 +1356,70 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
         )
         if not wa or not wb:
             return "Error: One or both workouts not found."
+        for done in (wa, wb):
+            if _completed(done):
+                return _completed_refusal(done)
+
+        for moving, landing_on in ((wa, wb.scheduled_date), (wb, wa.scheduled_date)):
+            if _type_value(moving.status) == WorkoutStatus.skipped.value:
+                continue  # a skipped session prescribes nothing wherever it sits
+            refusal = _intensity_refusal(
+                db, user,
+                {"workout_type": _type_value(moving.workout_type), "steps": list(moving.steps)},
+                landing_on,
+            )
+            if refusal:
+                return refusal
 
         wa.scheduled_date, wb.scheduled_date = wb.scheduled_date, wa.scheduled_date
         db.commit()
+        _resync_hold_marks(db, user)
         return f"Swapped dates: '{wa.title}' now on {wa.scheduled_date}, '{wb.title}' now on {wb.scheduled_date}."
 
     elif tool_name == "add_workout":
+        from app.services import plan_review_service as prs
+
+        try:
+            day = date.fromisoformat(tool_input["scheduled_date"])
+        except (KeyError, ValueError):
+            return "Error: scheduled_date must be YYYY-MM-DD."
+        try:
+            wtype = WorkoutType(tool_input.get("workout_type")).value
+        except ValueError:
+            return f"Error: unknown workout_type '{tool_input.get('workout_type')}'."
+        template = prs.template_for(wtype, tool_input.get("planned_duration_seconds"))
+        rule = prs.plan_rule_refusal(db, user, "add_workout", wtype)
+        if rule == "injury":
+            return _INJURY_REFUSAL
+        if rule == "restriction":
+            return _RESTRICTION_REFUSAL
+        refusal = _intensity_refusal(db, user, prs.candidate_for(wtype, template), day)
+        if refusal:
+            return refusal
+
         workout = Workout(
             user_id=user.id,
-            scheduled_date=date.fromisoformat(tool_input["scheduled_date"]),
+            scheduled_date=day,
             title=tool_input["title"],
             description=tool_input.get("description"),
-            workout_type=tool_input["workout_type"],
+            workout_type=wtype,
             planned_duration_seconds=tool_input.get("planned_duration_seconds"),
             planned_tss=tool_input.get("planned_tss"),
             status=WorkoutStatus.planned,
         )
         db.add(workout)
+        db.flush()
+        # Real steps, built the way plan generation builds them, so ride mode
+        # runs a session that matches its type.
+        prs.rebuild_steps(db, workout, template, user.ftp)
         db.commit()
+        _resync_hold_marks(db, user)
         db.refresh(workout)
-        return f"Added workout '{workout.title}' on {workout.scheduled_date} (ID: {workout.id})."
+        return (
+            f"Added workout '{workout.title}' on {workout.scheduled_date} (ID: {workout.id}). "
+            f"Its steps come from {prs.template_summary(template)}. Describe it to the rider "
+            "as exactly that."
+        )
 
     elif tool_name == "skip_workout":
         workout = (
@@ -1111,6 +1429,8 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
         )
         if not workout:
             return "Error: Workout not found."
+        if _completed(workout):
+            return _completed_refusal(workout)
 
         workout.status = WorkoutStatus.skipped
         db.commit()
@@ -1455,6 +1775,20 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
         changes = _validate_changes(
             changes if isinstance(changes, list) else [], upcoming_ids, today
         )
+        from app.services.plan_review_service import gate_changes
+
+        changes, held = gate_changes(db, user, changes)
+        if held and not changes:
+            return (
+                "Nothing was filed. Every change you proposed is ruled out by the rider's "
+                "safety state (see `safety` in the context): under a hold, an uncleared "
+                "health-screen yes or a layoff gate, only recovery and endurance riding (or "
+                "skips, under hold_all) can be proposed; under an injury hold, no ride goes "
+                "in place of a session (skip it instead); and for 28 days after they talked "
+                "about eating very little or losing weight fast, nothing may add training. "
+                "Tell the rider why, plainly, and propose the easy version or a skip if it "
+                "still helps."
+            )
         if not changes:
             return (
                 "Nothing was filed, because none of those changes were usable. "
@@ -1498,8 +1832,13 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
                 "there is nothing for them to approve yet."
             )
 
+        held_note = (
+            f" {len(held)} of your changes were left out because the rider's safety state "
+            "rules them out; do not present them."
+            if held else ""
+        )
         return (
-            f"Proposal filed with {len(changes)} change(s) (ID: {proposal.id}). "
+            f"Proposal filed with {len(changes)} change(s) (ID: {proposal.id}).{held_note} "
             "NOTHING in the rider's plan has changed, and nothing will until they "
             "approve it. Now make the case to them in your own voice, in a few "
             "plain sentences: what you noticed, why it matters for their goal with "
@@ -1508,6 +1847,110 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
             "page. If they say yes in words, point them at the card rather than "
             "editing the sessions yourself, so the change is applied once and they "
             "can see exactly what they agreed to. Never speak as though it is done."
+        )
+
+    elif tool_name == "apply_safety_hold":
+        level = tool_input.get("level")
+        reason = (tool_input.get("reason") or "").strip()
+        red_flag = (tool_input.get("red_flag") or "other").strip()[:40] or "other"
+        if level not in safety_service.HOLD_LEVELS:
+            return "Error: level must be easy_only or hold_all. Call it again."
+        if not reason:
+            return "Error: give a one-line reason the rider will see. Call it again."
+        if red_flag == "minor":
+            level = "hold_all"  # an under-18 account gets nothing, whatever was asked
+        # A break the rider tells you about isn't a symptom: the app shows it as
+        # easing back in, not as a medical hold.
+        source = "layoff" if red_flag == "layoff" else "coach_tool"
+        ends = None
+        if red_flag == "layoff":
+            # It ends by itself (a clearance never lifts it): two weeks, four
+            # after three months or more off, and four when the length isn't
+            # known.
+            days_off = tool_input.get("days_off")
+            if not isinstance(days_off, (int, float)) or isinstance(days_off, bool) or days_off <= 0:
+                days_off = safety_screen.layoff_days_from(reason)
+            ends = safety_service.layoff_hold_ends(days_off)
+        before = safety_service.current_hold(db, user.id)
+        minor_before = (
+            safety_service.minor_hold(db, user) if red_flag == "minor" else None
+        )
+        try:
+            hold = safety_service.open_hold(
+                db, user, level, reason, source, red_flag=red_flag,
+                expires_at=ends, commit=False,
+            )
+            # The age the rider gave goes on at the end of the turn, from their
+            # own words (_keep_exchange).
+            db.add(SafetyEvent(
+                user_id=user.id, kind=red_flag, source="coach_tool",
+                matched=reason[:200], hold_id=hold.id,
+            ))
+            db.commit()
+        except Exception:
+            logger.exception("apply_safety_hold failed (user=%s)", user.id)
+            db.rollback()
+            return (
+                "The hold did not save. Tell the rider plainly what they must not do until "
+                "a doctor has seen them, exactly as the SAFETY LAW says, and that the app "
+                "could not record the hold. Do not prescribe anything."
+            )
+        if red_flag == "minor" and minor_before is None:
+            # No further renewal is taken before Gareth reviews the account.
+            _stop_renewal_for_minor(user)
+        if before is not None and before.id == hold.id:
+            return (
+                f"A {hold.level} hold was already open ({hold.reason}), and it stays in "
+                f"force; nothing more was needed. {_rider_holds_line(hold)}"
+            )
+        try:
+            # Label the planned sessions "On hold" to match a new full hold.
+            sync_hold_marks(db, user.id)
+        except Exception:
+            logger.exception("Marking held sessions failed (user=%s)", user.id)
+            db.rollback()
+        # Each concern keeps its own hold, so a lower one can open under a
+        # higher one. The coach is told what governs now, never "easy riding
+        # is fine" while a full hold stands.
+        try:
+            governing = safety_service.current_hold(db, user.id) or hold
+        except Exception:
+            logger.exception("Reading the governing hold failed (user=%s)", user.id)
+            governing = hold
+        if governing.id != hold.id:
+            return (
+                f"A {governing.level} hold was already open ({governing.reason}), and it "
+                f"stays in force. This concern is recorded as its own {hold.level} hold "
+                "under it, so it still applies once the other lifts. "
+                f"{_rider_holds_line(governing)}"
+            )
+        return f"Hold applied now: {hold.level}. {_rider_holds_line(hold)}"
+
+    elif tool_name == "flag_for_review":
+        reason = (tool_input.get("reason") or "safety").strip()[:40] or "safety"
+        note = (tool_input.get("note") or "").strip()
+        alert = reason in safety_screen.ALERT_KINDS and not safety_screen.recently_flagged(
+            db, user.id, reason
+        )
+        try:
+            event = SafetyEvent(
+                user_id=user.id, kind=reason, source="coach_tool",
+                matched=(note or reason)[:200],
+            )
+            db.add(event)
+            db.commit()
+        except Exception:
+            logger.exception("flag_for_review failed (user=%s)", user.id)
+            db.rollback()
+            event = None
+        if alert:
+            safety_screen.alert_founder(
+                reason, user, note or reason, [event.id] if event is not None else []
+            )
+        return (
+            "Flagged for review. Carry on with the rider as the SAFETY LAW says. Never tell "
+            "them anyone at Forma will contact them, and don't mention the flag unless they "
+            "ask who sees their chats."
         )
 
     return f"Error: Unknown tool '{tool_name}'."
@@ -1626,6 +2069,956 @@ def _build_messages(session: ChatSession, max_messages: int = 20) -> list[dict]:
     ]
 
 
+def _assistant_replied(db: Session, user: User, session: ChatSession | None) -> bool:
+    """Whether the coach has replied in this chat (or, with no chat given, to
+    this rider at all). Only this file writes assistant messages."""
+    query = (
+        db.query(ChatMessage.id)
+        .join(ChatSession, ChatMessage.session_id == ChatSession.id)
+        .filter(ChatSession.user_id == user.id, ChatMessage.role == ChatRole.assistant)
+    )
+    if session is not None:
+        query = query.filter(ChatMessage.session_id == session.id)
+    return query.first() is not None
+
+
+def _first_reply_intro(
+    db: Session, user: User, session: ChatSession | None = None
+) -> str | None:
+    """The opening words of the coach's first reply in each chat, or None
+    after that. Anthropic's usage policy asks for the disclosure at the start
+    of every chat, and EU AI Act art. 50 at the first interaction, so a new
+    chat says it again even to a rider the coach has known for months. With
+    no chat given, it is the rider's first reply ever."""
+    try:
+        if _assistant_replied(db, user, session):
+            return None
+    except Exception:
+        # Saying it once too often costs nothing; leaving it out costs the
+        # disclosure.
+        logger.exception("First-reply check failed (user=%s)", user.id)
+    name = (getattr(user, "coach_name", None) or "Forma").strip() or "Forma"
+    if name == "Forma":
+        return "I'm Forma, your AI coach."
+    return f"I'm {name}, your AI coach in Forma."
+
+
+def _intro_for(db: Session, user: User, session: ChatSession) -> tuple[str | None, bool]:
+    """The chat's disclosure (or None) and whether the coach has ever replied
+    to this rider before, in any chat."""
+    intro = _first_reply_intro(db, user, session)
+    if intro is None:
+        return None, True
+    try:
+        known = _assistant_replied(db, user, None)
+    except Exception:
+        logger.exception("Earlier-reply check failed (user=%s)", user.id)
+        known = False
+    return intro, known
+
+
+def _turn_notes(
+    screen: "safety_screen.ScreenResult", intro: str | None, recall: str | None,
+    known: bool = False,
+) -> str | None:
+    """The uncached per-turn block: the red-flag context first, then the
+    first-reply note, then semantic recall."""
+    parts = []
+    if screen.context_line:
+        parts.append(screen.context_line)
+    if intro:
+        if known:
+            parts.append(
+                "This is your first reply in a new chat with a rider you have coached "
+                f'before. The app has already opened it with the words "{intro}" Carry '
+                "straight on from there with a new sentence, and do not introduce "
+                "yourself again."
+            )
+        else:
+            parts.append(
+                "This is your first ever reply to this rider. The app has already "
+                f'opened it with the words "{intro}" Carry straight on from there with '
+                "a new sentence, and do not introduce yourself again."
+            )
+    if recall:
+        parts.append(recall)
+    return "\n\n".join(parts) or None
+
+
+def _snapshot(rider_context: str, screen: "safety_screen.ScreenResult") -> dict | None:
+    snapshot = json.loads(rider_context) if rider_context else None
+    if snapshot is not None and screen.cards:
+        # What the rider was shown above this reply, for the record.
+        snapshot["safety_cards"] = [kind for kind, _ in screen.cards]
+    return snapshot
+
+
+def _sse_text(content: str) -> str:
+    return f'data: {json.dumps({"type": "text", "content": content})}\n\n'
+
+
+def _reply_guard(
+    db: Session, user: User, screen: "safety_screen.ScreenResult", since: datetime
+) -> "safety_screen.ReplyGuard":
+    """The sentence-by-sentence check on this reply (safety_screen.ReplyGuard),
+    reading the rider's hold live so a claim is checked against the truth."""
+    return safety_screen.ReplyGuard(
+        screen,
+        getattr(user, "country", None),
+        lambda: safety_service.current_hold(db, user.id),
+        since=since,
+    )
+
+
+def _flush_after_failure(
+    guard: "safety_screen.ReplyGuard", scrub: StreamHumanizer, after: str = ""
+) -> str:
+    """What the reply check still holds when the model call fails part way:
+    the last sentences, any line the SAFETY LAW requires, or, in a safety
+    turn where nothing had reached the rider, the whole fixed reply."""
+    try:
+        out = guard.feed(scrub.flush()) + guard.flush()
+    except Exception:
+        logger.exception("Flushing the reply check after a failure failed")
+        return ""
+    if out.strip() and after and not after[-1].isspace() and not out[0].isspace():
+        out = "\n\n" + out
+    return out
+
+
+def _reply_after_failure(
+    guard: "safety_screen.ReplyGuard",
+    scrub: StreamHumanizer,
+    so_far: str,
+    screen: "safety_screen.ScreenResult",
+) -> str:
+    """What the rider gets when the model call fails.
+
+    A red-flag turn never hears "send it again": the message arrived, the
+    card is up and any hold is on, and a rider with chest pain or in crisis
+    needs to act, not retry. They get whatever was already written plus the
+    lines the law requires, or the whole fixed reply (fallback_reply). An
+    ordinary turn gets an honest line after anything already written."""
+    out = _flush_after_failure(guard, scrub, after=so_far)
+    if screen.hits and (so_far + out).strip():
+        return out
+    sep = "\n\n" if (so_far + out).strip() else ""
+    return out + sep + safety_screen.REPLY_FAILED_MESSAGE
+
+
+# A failed turn with no red flag in it is recorded with this as `matched`.
+NO_RED_FLAG = "none"
+
+# A failed model call is tried once more after this pause, unless trying
+# again can't help (over the rider's budget, or the account out of credit).
+MODEL_RETRY_BACKOFF_SECONDS = 0.5
+
+# More than this many failed turns across all riders inside the window means
+# the provider or the account is down, not one rider's bad luck: Gareth is
+# emailed. Each reason is emailed at most once an hour.
+OUTAGE_FAILED_TURNS = 3
+OUTAGE_WINDOW_MINUTES = 10
+OPS_ALERT_INTERVAL = timedelta(hours=1)
+_ops_alerted_at: dict[str, datetime] = {}
+_ops_lock = threading.Lock()
+
+
+def _credit_exhausted(error: BaseException | None) -> bool:
+    """The Anthropic account has run out of credit: every reply fails until
+    it is topped up, so the first failure is enough to tell Gareth."""
+    return error is not None and "credit balance is too low" in str(error).lower()
+
+
+def _worth_retrying(error: BaseException) -> bool:
+    if isinstance(error, forma_core.BudgetExceededError):
+        return False
+    return not _credit_exhausted(error)
+
+
+def _call_with_retry(**kwargs):
+    """forma_core.call, tried once more after a short pause on a failure a
+    second try might get past."""
+    try:
+        return forma_core.call(**kwargs)
+    except Exception as e:
+        if not _worth_retrying(e):
+            raise
+        logger.warning(
+            "Coach call failed, trying once more (user=%s task=%s): %s",
+            kwargs.get("user_id"), kwargs.get("task"), e,
+        )
+    time.sleep(MODEL_RETRY_BACKOFF_SECONDS)
+    return forma_core.call(**kwargs)
+
+
+def _claim_ops_alert(reason: str, now: datetime) -> bool:
+    """True for the first alert of this kind in the last hour, and records it."""
+    with _ops_lock:
+        last = _ops_alerted_at.get(reason)
+        if last is not None and now - last < OPS_ALERT_INTERVAL:
+            return False
+        _ops_alerted_at[reason] = now
+        return True
+
+
+def _alert_on_outage(
+    db: Session, user: User, error: BaseException | None, event: SafetyEvent | None
+) -> None:
+    """Tell Gareth when replies are failing for everyone: on the first failure
+    when the account is out of credit, otherwise when more than three turns
+    fail inside ten minutes. One email per reason per hour. Never raises."""
+    now = datetime.utcnow()
+    if _credit_exhausted(error):
+        reason = "credit"
+        excerpt = (
+            "The Anthropic account's credit balance is too low, so the coach can't "
+            "reply to anyone. Chat replies, briefings and emails all fail until the "
+            "account is topped up. Riders with a red flag still get the fixed safety reply."
+        )
+    else:
+        try:
+            failed = (
+                db.query(func.count(SafetyEvent.id))
+                .filter(
+                    SafetyEvent.kind == "reply_failed",
+                    SafetyEvent.created_at >= now - timedelta(minutes=OUTAGE_WINDOW_MINUTES),
+                )
+                .scalar()
+            ) or 0
+        except Exception:
+            logger.exception("Counting failed replies failed")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return
+        if failed <= OUTAGE_FAILED_TURNS:
+            return
+        reason = "outage"
+        cause = f"{type(error).__name__}: {str(error)[:160]}" if error is not None else "unknown"
+        excerpt = (
+            f"{failed} coach replies failed in the last {OUTAGE_WINDOW_MINUTES} minutes, "
+            f"across all riders. Last error: {cause}"
+        )
+    if not _claim_ops_alert(reason, now):
+        return
+    try:
+        safety_screen.alert_founder(
+            f"reply_failed_{reason}", user, excerpt, [event.id] if event is not None else []
+        )
+    except Exception:
+        logger.exception("Sending the failed-replies alert failed")
+
+
+def _record_reply_failure(
+    db: Session,
+    user: User,
+    screen: "safety_screen.ScreenResult",
+    message_id: str | None,
+    error: BaseException | None = None,
+    source: str = "chat",
+) -> None:
+    """Write down every turn whose model reply failed, red flag or not, so an
+    outage leaves a record. Tell Gareth about an urgent red-flag turn (one
+    email per rider per half hour, naming the red flags, never what the rider
+    wrote), and about an outage or an empty credit balance. Never raises."""
+    flagged = bool(screen.hits)
+    event = None
+    recent = False
+    try:
+        db.rollback()  # the failure may have left the session mid-transaction
+        if flagged:
+            recent = (
+                db.query(SafetyEvent.id)
+                .filter(
+                    SafetyEvent.user_id == user.id,
+                    SafetyEvent.kind == "reply_failed",
+                    SafetyEvent.matched != NO_RED_FLAG,
+                    SafetyEvent.created_at >= datetime.utcnow() - timedelta(minutes=30),
+                )
+                .first()
+                is not None
+            )
+        event = SafetyEvent(
+            user_id=user.id,
+            kind="reply_failed",
+            source=(source or "chat")[:20],
+            message_id=message_id,
+            matched=", ".join(sorted(screen.kinds))[:200] if flagged else NO_RED_FLAG,
+        )
+        db.add(event)
+        db.commit()
+    except Exception:
+        logger.exception("Recording a failed reply failed (user=%s)", user.id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        event = None
+    if (
+        event is not None
+        and flagged
+        and not recent
+        and any(h.severity in _ALERT_SEVERITIES for h in screen.hits)
+    ):
+        safety_screen.alert_founder(
+            "reply_failed",
+            user,
+            f"Red flags: {', '.join(sorted(screen.kinds))}. The coach's reply failed, so "
+            "the rider got the fixed safety reply.",
+            [event.id],
+        )
+    _alert_on_outage(db, user, error, event)
+
+
+def _keep_exchange(
+    db: Session, user: User, since: datetime, rider_message: str, reply: str
+) -> None:
+    """Put the rider's words and the coach's final reply on every safety
+    record this turn made (the red-flag check's, the coach's own holds and
+    flags, a failed red-flag reply), because chat messages go with the account
+    and the safety record stays. A failed turn with no red flag keeps
+    nothing. Then retire any initiative card the new safety state rules out.
+    Never raises."""
+    try:
+        events = (
+            db.query(SafetyEvent)
+            .filter(SafetyEvent.user_id == user.id, SafetyEvent.created_at >= since)
+            .all()
+        )
+        kept = [
+            e for e in events
+            if not (e.kind == "reply_failed" and e.matched == NO_RED_FLAG)
+        ]
+        if not kept:
+            return
+        if hasattr(SafetyEvent, "rider_message") and hasattr(SafetyEvent, "coach_reply"):
+            ages = hasattr(SafetyEvent, "stated_age")
+            for e in kept:
+                e.rider_message = rider_message
+                e.coach_reply = reply
+                # How long an under-18 record is kept turns on the age the
+                # rider gave (safety_service.minor_retention_until), read by
+                # the detector from their own words.
+                if ages and e.kind == "minor" and e.stated_age is None:
+                    e.stated_age = _stated_age(rider_message)
+            db.commit()
+    except Exception:
+        logger.exception("Keeping the exchange on the safety record failed (user=%s)", user.id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return
+    try:
+        from app.services.initiative_service import retire_blocked
+
+        retire_blocked(db, user.id)
+    except Exception:
+        logger.exception("Retiring initiatives after a red flag failed (user=%s)", user.id)
+
+
+# A failed reply in a turn with one of these is worth an email to Gareth.
+_ALERT_SEVERITIES = frozenset({"emergency", "crisis", "urgent", "minor"})
+
+
+def _child_account(
+    db: Session, user: User, screen: "safety_screen.ScreenResult"
+) -> bool:
+    """Whether this account may belong to someone under 18: they said so in
+    this message, or it is already held for it. Forma is for adults, so such
+    an account gets the fixed adults-only reply and nothing else: no model
+    call, no memory, no title (SAFETY LAW 2n; UK GDPR and the ICO Children's
+    Code). A failed lookup reads as not held, so a database hiccup never tells
+    every adult they're too young; this message's own words still count."""
+    if "minor" in screen.kinds:
+        return True
+    try:
+        return _open_hold_for(db, user, "minor") is not None
+    except Exception:
+        logger.exception("Checking for an under-18 hold failed (user=%s)", user.id)
+        return False
+
+
+# How every reply to an account held as possibly under 18 ends: what happens
+# next, and the way back for an adult the check misread (S7). The review is
+# scripts/review_safety_event.py: --close-minor or --lift-hold.
+MINOR_CLOSING_FACT = (
+    "This account is on hold and will be closed, and anything you've paid will be "
+    "refunded."
+)
+MINOR_CLOSING_MISTAKE = (
+    "If you're 18 or over and this was a mistake, email gareth@ridewithforma.com "
+    "and I'll sort it out."
+)
+MINOR_CLOSING = f"{MINOR_CLOSING_FACT} {MINOR_CLOSING_MISTAKE}"
+
+_ADULTS_ONLY = "Forma is for adults, 18 and over, so I can't coach you or build you a plan."
+
+# What the fixed reply is built against: only that the account is held as
+# under 18 matters to the words, never another hold's lifting rules.
+_MINOR_HOLD_FOR_REPLY = SimpleNamespace(
+    red_flag="minor", level="hold_all", source="detector", opened_at=None, expires_at=None,
+)
+
+
+def _minor_closing(crisis: bool) -> str:
+    """The closing for an under-18 reply. In a crisis turn the mistake line
+    is left out: the crisis law points a rider to people and numbers, never
+    to anyone at Forma, and the next turn carries it."""
+    return MINOR_CLOSING_FACT if crisis else MINOR_CLOSING
+
+
+def _child_reply(guard: "safety_screen.ReplyGuard") -> str:
+    """The fixed reply to an account that may be a child's: the adults-only
+    words, whatever emergency or crisis lines this message still needs, then
+    the closing (MINOR_CLOSING) where the hold statement goes, which is last
+    unless crisis paragraphs follow it."""
+    crisis = "crisis" in guard.kinds
+    try:
+        reply = safety_screen.fallback_reply(
+            set(guard.kinds) | {"minor"}, guard.country, _MINOR_HOLD_FOR_REPLY,
+            matched=guard.matched, message=guard.message, severity=guard.severity,
+            shown=getattr(guard, "_shown", ""),
+        )
+    except Exception:
+        logger.exception("Building the under-18 reply failed")
+        reply = None
+    paragraphs = (reply or _ADULTS_ONLY).split("\n\n")
+    closing = _minor_closing(crisis)
+    try:
+        statement = safety_screen.hold_statement(_MINOR_HOLD_FOR_REPLY)
+    except Exception:
+        statement = None
+    if statement and statement in paragraphs:
+        paragraphs[paragraphs.index(statement)] = closing
+    elif closing not in paragraphs:
+        paragraphs.append(closing)
+    return "\n\n".join(paragraphs)
+
+
+def _run_in_background(fn, *args) -> None:
+    """Run a slow outside call (Stripe) off the reply's path. Tests replace
+    this to run it inline."""
+    threading.Thread(target=fn, args=args, daemon=True, name="forma-minor-billing").start()
+
+
+def _stop_renewal_for_minor(user: User) -> None:
+    """A hold for possibly being under 18 has just opened: stop any Stripe
+    subscription renewing before Gareth reviews it (billing_service). Best
+    effort, off the reply's path, never raises; the review tool cancels it
+    outright and refunds."""
+    try:
+        from app.services import billing_service
+
+        snapshot = SimpleNamespace(
+            id=user.id, stripe_customer_id=getattr(user, "stripe_customer_id", None)
+        )
+        if not (snapshot.stripe_customer_id and billing_service.is_configured()):
+            return
+        _run_in_background(billing_service.stop_renewal_for_review, snapshot)
+    except Exception:
+        logger.exception("Stopping renewal for an under-18 hold failed (user=%s)", user.id)
+
+
+def _minor_hold_opened_since(db: Session, user: User, since: datetime) -> bool:
+    """Whether this account's under-18 hold opened at or after `since`."""
+    try:
+        hold = safety_service.minor_hold(db, user)
+    except Exception:
+        logger.exception("Reading the under-18 hold failed (user=%s)", user.id)
+        return False
+    opened = getattr(hold, "opened_at", None)
+    return opened is not None and opened >= since
+
+
+def _after_child_turn(db: Session, user: User, since: datetime) -> None:
+    """After a fixed under-18 reply: when this turn's message opened the
+    hold, stop the subscription renewing."""
+    if _minor_hold_opened_since(db, user, since):
+        _stop_renewal_for_minor(user)
+
+
+def _minor_closing_for_turn(
+    db: Session, user: User, since: datetime, reply: str, crisis: bool
+) -> str:
+    """The closing to add when the coach itself put the account on hold for
+    being possibly under 18 during this turn (apply_safety_hold), so that
+    reply ends like every later one. Empty when there's nothing to add."""
+    if not _minor_hold_opened_since(db, user, since):
+        return ""
+    closing = _minor_closing(crisis)
+    if closing in reply:
+        return ""
+    return ("\n\n" if reply.strip() else "") + closing
+
+
+def _stated_age(text: str) -> int | None:
+    """The age the rider gave, read by the detector, when it can read one."""
+    try:
+        age = safety_screen.stated_age_from(text or "")
+    except Exception:
+        logger.exception("Reading a stated age failed")
+        return None
+    return age if isinstance(age, int) and not isinstance(age, bool) else None
+
+
+# ── The second check on the rider's words (the safety classifier) ──────────
+#
+# The regex check runs first, and any emergency or crisis card it brings goes
+# out at once. Then a small model (app.services.safety_classifier) reads the
+# message, with the rider's last two messages for context, and its verdict is
+# merged with the regex's: it can add a red flag the regex missed ("life
+# isn't worth living") or set aside one the regex misread ("hay fever"). The
+# merged hits are acted on exactly as the regex's always have been
+# (safety_screen.screen_message): holds, records, alerts, the SAFETY CONTEXT
+# line and any card it adds, all before a word of the model's reply. A
+# missing, slow or failing classifier leaves the regex's result exactly as
+# it was: it can never break or hold up a chat for longer than its wait.
+#
+# The classifier module's interface, as this wiring calls it:
+#   classify_safety(text, recent, country, user_id=..., surface=...) -> a
+#       ClassifierResult (ok=False when it has nothing to say: a timeout, an
+#       error, the budget); recent is the rider's earlier messages, oldest
+#       first;
+#   merge(regex_hits, result) -> the hits to act on, as safety_screen.Hit,
+#       with a regex hit it sets aside simply left out (the regex's own hits
+#       when the result is not ok).
+# It never gets the database session: it runs on a thread of its own.
+
+# The classifier stops itself at 1.5 s; the chat waits a little longer than
+# that for it, and then goes on without it.
+CLASSIFIER_WAIT_SECONDS = 2.0
+# What a SafetyEvent records as its source when the classifier found it.
+CLASSIFIER_SOURCE = "classifier"
+# How many of the rider's earlier messages the classifier reads for context.
+CLASSIFIER_CONTEXT_MESSAGES = 2
+# Card styles that go out the moment the regex finds them, with no wait.
+_CARDS_AT_ONCE = frozenset({"emergency", "crisis"})
+# At most this many classifier calls in flight: one that hangs past its own
+# timeout can never pile up threads. A turn that finds them all busy goes on
+# with the regex alone.
+_classifier_slots = threading.BoundedSemaphore(8)
+
+
+def _load_classifier():
+    """(classify_safety, merge) from the classifier module, or None when it
+    isn't there or isn't usable. Imported late, so a broken classifier
+    module can never stop the chat from loading."""
+    try:
+        from app.services import safety_classifier
+    except ImportError:
+        logger.debug("No safety classifier module: the regex check runs alone")
+        return None
+    except Exception:
+        logger.exception("Importing the safety classifier failed")
+        return None
+    classify = getattr(safety_classifier, "classify_safety", None)
+    merge = getattr(safety_classifier, "merge", None)
+    if not (callable(classify) and callable(merge)):
+        logger.error("The safety classifier has no classify_safety or merge")
+        return None
+    return classify, merge
+
+
+def _card_chunk(style: str, text: str, name: str | None) -> dict:
+    chunk = {"type": "safety", "kind": style, "text": text}
+    if name:
+        chunk["card"] = name
+    return chunk
+
+
+def _regex_first(user: User, text: str) -> tuple[list, list[tuple[str, str, str]]]:
+    """The regex's own hits, and the emergency and crisis cards they bring as
+    (style, text, name): pure, with no database and no model, so the cards
+    reach the rider at once. Acting on the hits waits for the classifier."""
+    try:
+        hits = safety_screen._detect(text)
+    except Exception:
+        logger.exception("Red-flag detection failed (user=%s)", user.id)
+        return [], []
+    try:
+        cards = [
+            card for card in safety_screen._cards_for(hits, getattr(user, "country", None))
+            if card[0] in _CARDS_AT_ONCE
+        ]
+    except Exception:
+        logger.exception("Choosing the red-flag cards failed (user=%s)", user.id)
+        cards = []
+    return hits, cards
+
+
+def _skip_classifier(db: Session, user: User, regex_hits: list) -> bool:
+    """An account that may be a child's gets the fixed adults-only reply and
+    no model call at all, the classifier included (SAFETY LAW 2n): one held
+    as possibly under 18, or one whose message the regex reads as under 18
+    (unless the quiet window after Forma lifted such a hold by hand applies,
+    when the turn is an ordinary one)."""
+    try:
+        if _open_hold_for(db, user, "minor") is not None:
+            return True
+    except Exception:
+        logger.exception("Checking for an under-18 hold failed (user=%s)", user.id)
+    if not any(h.kind == "minor" for h in regex_hits):
+        return False
+    try:
+        return safety_service.minor_quiet_until(db, user) is None
+    except Exception:
+        logger.exception("Checking the under-18 quiet window failed (user=%s)", user.id)
+        return True
+
+
+def _recent_rider_words(db: Session, session: ChatSession, current_id: str) -> list[str]:
+    """The rider's last messages in this chat before this one, oldest first,
+    for the classifier to read this one against."""
+    try:
+        rows = (
+            db.query(ChatMessage.content)
+            .filter(
+                ChatMessage.session_id == session.id,
+                ChatMessage.role == ChatRole.user,
+                ChatMessage.id != current_id,
+            )
+            .order_by(ChatMessage.created_at.desc())
+            .limit(CLASSIFIER_CONTEXT_MESSAGES)
+            .all()
+        )
+    except Exception:
+        logger.exception("Reading the rider's earlier messages failed (session=%s)", session.id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return []
+    return [content for (content,) in reversed(rows) if content]
+
+
+def _ask_classifier(
+    classify, text: str, recent: list[str], country: str | None, user_id: str,
+    surface: str,
+) -> concurrent.futures.Future | None:
+    """Start the classifier on a thread of its own and hand back its future,
+    or None when too many calls are still in flight."""
+    if not _classifier_slots.acquire(blocking=False):
+        logger.warning("Safety classifier skipped: too many calls in flight (user=%s)", user_id)
+        return None
+    future: concurrent.futures.Future = concurrent.futures.Future()
+
+    def run():
+        try:
+            verdict = classify(text, recent, country, user_id=user_id, surface=surface)
+            if inspect.iscoroutine(verdict):
+                verdict = asyncio.run(verdict)
+            settle, outcome = future.set_result, verdict
+        except Exception as e:
+            settle, outcome = future.set_exception, e
+        finally:
+            _classifier_slots.release()
+        try:
+            settle(outcome)
+        except concurrent.futures.InvalidStateError:
+            pass  # the turn has stopped waiting for it
+
+    threading.Thread(target=run, daemon=True, name="forma-safety-classifier").start()
+    return future
+
+
+def _classifier_request(
+    db: Session, user: User, session: ChatSession, current_id: str, text: str,
+    regex_hits: list, surface: str,
+):
+    """(merge, future) for this turn's second opinion, or None when there
+    is none to ask for."""
+    if _skip_classifier(db, user, regex_hits):
+        return None
+    found = _load_classifier()
+    if found is None:
+        return None
+    classify, merge = found
+    recent = _recent_rider_words(db, session, current_id)
+    try:
+        future = _ask_classifier(
+            classify, text, recent, getattr(user, "country", None), user.id, surface
+        )
+    except Exception:
+        logger.exception("Starting the safety classifier failed (user=%s)", user.id)
+        return None
+    return (merge, future) if future is not None else None
+
+
+async def _second_opinion(
+    db: Session, user: User, session: ChatSession, current_id: str, text: str,
+    regex_hits: list, surface: str = "coach",
+):
+    """(merge, verdict) from the classifier, or None. Waits without blocking
+    the event loop, so the cards already sent reach the rider meanwhile."""
+    request = _classifier_request(db, user, session, current_id, text, regex_hits, surface)
+    if request is None:
+        return None
+    merge, future = request
+    try:
+        verdict = await asyncio.wait_for(asyncio.wrap_future(future), CLASSIFIER_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning("Safety classifier timed out: the regex check stands (user=%s)", user.id)
+        return None
+    except Exception:
+        logger.exception("Safety classifier failed: the regex check stands (user=%s)", user.id)
+        return None
+    return None if verdict is None else (merge, verdict)
+
+
+def _second_opinion_sync(
+    db: Session, user: User, session: ChatSession, current_id: str, text: str,
+    regex_hits: list, surface: str = "coach",
+):
+    """_second_opinion for the non-streaming path."""
+    request = _classifier_request(db, user, session, current_id, text, regex_hits, surface)
+    if request is None:
+        return None
+    merge, future = request
+    try:
+        verdict = future.result(timeout=CLASSIFIER_WAIT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        logger.warning("Safety classifier timed out: the regex check stands (user=%s)", user.id)
+        return None
+    except Exception:
+        logger.exception("Safety classifier failed: the regex check stands (user=%s)", user.id)
+        return None
+    return None if verdict is None else (merge, verdict)
+
+
+def _rule_severities() -> dict[str, str]:
+    """Every kind the check knows, with the severity its rule gives it."""
+    known = {rule.kind: rule.severity for rule in safety_screen.RULES}
+    for kind in safety_screen.SOFT_KINDS:
+        known.setdefault(kind, "info")
+    return known
+
+
+def _as_hit(item, known: dict[str, str]):
+    """One merged hit as a safety_screen.Hit, or None for a kind the check
+    doesn't know (it could be acted on in no defined way)."""
+    if isinstance(item, safety_screen.Hit):
+        hit = item
+    else:
+        get = item.get if isinstance(item, dict) else (lambda k: getattr(item, k, None))
+        kind = get("kind")
+        if not isinstance(kind, str) or kind not in known:
+            return None
+        age = get("stated_age")
+        hit = safety_screen.Hit(
+            kind,
+            str(get("matched") or kind).strip()[:200] or kind,
+            get("severity") if get("severity") in safety_screen.SEVERITIES else known[kind],
+            age if isinstance(age, int) and not isinstance(age, bool) else None,
+            new_event=get("new_event") is True,
+        )
+    return hit if hit.kind in known else None
+
+
+def _is_card_at_once(kind: str) -> bool:
+    name = safety_screen.CARD_FOR_KIND.get(kind)
+    return name is not None and safety_screen.CARD_STYLE.get(name) in _CARDS_AT_ONCE
+
+
+def _merged_hits(merge, regex_hits: list, verdict) -> list | None:
+    """The hits to act on after the classifier's verdict, or None when they
+    are the regex's own. The classifier never takes back an emergency or
+    crisis reading (its card is already on the rider's screen) or an
+    under-18 one (Forma reviews those by hand)."""
+    merged = merge(list(regex_hits), verdict)
+    if merged is None:
+        return None
+    merged = getattr(merged, "hits", merged)
+    known = _rule_severities()
+    for hit in regex_hits:
+        known.setdefault(hit.kind, hit.severity)
+    hits, kinds = [], set()
+    for item in merged:
+        hit = _as_hit(item, known)
+        if hit is not None and hit.kind not in kinds:
+            hits.append(hit)
+            kinds.add(hit.kind)
+    for hit in regex_hits:
+        if hit.kind not in kinds and (hit.kind == "minor" or _is_card_at_once(hit.kind)):
+            hits.append(hit)
+            kinds.add(hit.kind)
+    return None if hits == list(regex_hits) else hits
+
+
+def _screen_message_on(hits: list):
+    """safety_screen.screen_message, acting on these hits in place of the
+    regex's own: the same code, so the merged hits are acted on exactly as
+    the regex's are."""
+    return lambda *a, **k: safety_screen.screen_message(*a, hits=list(hits), **k)
+
+
+def _mark_classifier_events(db: Session, result, kinds: set[str]) -> None:
+    """Record that the classifier, not the regex, found these kinds."""
+    ids = [result.event_ids[k] for k in kinds if k in result.event_ids]
+    if not ids:
+        return
+    try:
+        for event in db.query(SafetyEvent).filter(SafetyEvent.id.in_(ids)):
+            event.source = CLASSIFIER_SOURCE
+        db.commit()
+    except Exception:
+        logger.exception("Marking the classifier's red flags failed")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def _keep_shown_cards(result, shown: list[tuple[str, str, str]]) -> None:
+    """Every card already on the rider's screen stays in the result, in the
+    order it was shown, so the reply check, the SAFETY CONTEXT line and the
+    record all know about it. (Only a second emergency card the classifier
+    brought, a chest card after a head one, can leave one out.)"""
+    names = list(result.card_names or [None] * len(result.cards))
+    missing = [card for card in shown if card[2] not in names]
+    if not missing:
+        return
+    result.cards = [(style, text) for style, text, _ in missing] + list(result.cards)
+    result.card_names = [name for _, _, name in missing] + names
+    if result.context_line:
+        result.context_line += "".join(
+            f'\nThe app has already shown the rider this {style} card above your reply: '
+            f'"{text}" Your reply still puts safety first. Do not repeat the card word '
+            "for word."
+            for style, text, _ in missing
+        )
+
+
+def _classifier_minor_flag(verdict, text: str):
+    """The classifier's own under-18 flag on this message, about the rider
+    and current, whose quote is really in it, or None. merge() adds an
+    under-18 hit only with a stated age under 18 (a hold needs one); inside
+    the quiet window after a lift, where nothing is held, an admission with
+    no age ("my dad set this account up") still goes to Gareth."""
+    if verdict is None or getattr(verdict, "ok", False) is not True:
+        return None
+    message = safety_screen._normalise(text)
+    for flag in getattr(verdict, "flags", ()) or ():
+        if (
+            getattr(flag, "kind", None) == "minor"
+            and getattr(flag, "about_rider", None) is True
+            and getattr(flag, "current", None) is True
+        ):
+            quote = safety_screen._normalise(str(getattr(flag, "quote", "") or "")).strip()
+            if quote and quote in message:
+                return flag
+    return None
+
+
+def _admission_after_lift(
+    db: Session, user: User, text: str, hits: list, result, verdict,
+    regex_kinds: set[str], *, message_id: str | None, source: str,
+) -> None:
+    """After Forma lifts an under-18 hold by hand, the under-18 rule opens no
+    hold for MINOR_QUIET_DAYS (screen_message drops the hit). An admission
+    in that window ("I'm actually 15", "I'm in year 10", "my dad set this
+    account up") is still recorded and still emails Gareth, so he decides
+    rather than the rider's words: no hold, no card, no adults-only reply."""
+    if "minor" in result.kinds:
+        return
+    hit = next((h for h in hits if h.kind == "minor"), None)
+    from_classifier = hit is not None and "minor" not in regex_kinds
+    if hit is None:
+        flag = _classifier_minor_flag(verdict, text)
+        if flag is None:
+            return
+        age = getattr(verdict, "stated_age", None)
+        hit = safety_screen.Hit(
+            "minor", str(flag.quote).strip()[:200], "minor",
+            age if isinstance(age, int) and not isinstance(age, bool) and 0 < age < 18 else None,
+        )
+        from_classifier = True
+    try:
+        quiet = safety_service.minor_quiet_until(db, user)
+        if quiet is None:
+            return
+        alert = not safety_screen.recently_flagged(db, user.id, "minor")
+        fields = dict(
+            user_id=user.id,
+            kind="minor",
+            source=(CLASSIFIER_SOURCE if from_classifier else source or "chat")[:20],
+            message_id=message_id,
+            matched=hit.matched[:200],
+            card_shown=None,
+            hold_id=None,
+        )
+        if hit.stated_age is not None and hasattr(SafetyEvent, "stated_age"):
+            fields["stated_age"] = hit.stated_age
+        event = SafetyEvent(**fields)
+        db.add(event)
+        db.commit()
+    except Exception:
+        logger.exception("Recording an under-18 admission after a lift failed (user=%s)", user.id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return
+    if alert:
+        safety_screen.alert_founder(
+            "minor", user,
+            "No hold opened: you lifted an under-18 hold on this account by hand, so "
+            f"the under-18 rule stays quiet until {quiet.day} {quiet:%B %Y}. Please "
+            f"decide whether to close it. They wrote: {text}",
+            [event.id],
+        )
+
+
+def _screen_turn(
+    db: Session, user: User, text: str, regex_hits: list, opinion,
+    shown: list[tuple[str, str, str]], *, message_id: str | None, source: str,
+):
+    """Act on this turn's red flags: the regex's hits merged with the
+    classifier's verdict when there is one (opinion is (merge, verdict)),
+    exactly as screen_message acts on the regex's. Never raises."""
+    hits = verdict = None
+    if opinion is not None:
+        merge, verdict = opinion
+        try:
+            hits = _merged_hits(merge, regex_hits, verdict)
+        except Exception:
+            logger.exception("Merging the safety classifier's verdict failed (user=%s)", user.id)
+    result = None
+    if hits is not None:
+        try:
+            result = _screen_message_on(hits)(
+                db, user, text, message_id=message_id, source=source
+            )
+        except Exception:
+            logger.exception("Acting on the merged red flags failed (user=%s)", user.id)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            hits = None
+    if result is None:
+        result = safety_screen.screen_message(
+            db, user, text, message_id=message_id, source=source
+        )
+    acted_on = regex_hits if hits is None else hits
+    regex_kinds = {h.kind for h in regex_hits}
+    _mark_classifier_events(db, result, {h.kind for h in acted_on} - regex_kinds)
+    _keep_shown_cards(result, shown)
+    _admission_after_lift(
+        db, user, text, acted_on, result, verdict, regex_kinds,
+        message_id=message_id, source=source,
+    )
+    return result
+
+
+def _cards_after(result, shown: list[tuple[str, str, str]]) -> list[dict]:
+    """The SSE payloads for the cards not already sent: the fever and heat
+    warnings, and any card the classifier added."""
+    sent = {name for _, _, name in shown}
+    return [chunk for chunk in result.card_chunks() if chunk.get("card") not in sent]
+
+
 async def stream_response(
     db: Session, user: User, session: ChatSession, user_message: str,
     attachment_ids: list[str] | None = None,
@@ -1641,12 +3034,47 @@ async def stream_response(
     rider's ride history until the rider asks for them to be saved.
 
     Yields SSE-formatted chunks:
+        data: {"type": "safety", "kind": "emergency"|"crisis"|"warning", "text": "..."}
+                                          -- the fixed red-flag cards, before any text
         data: {"type": "text", "content": "..."}
         data: {"type": "plan_updated"}   -- signals frontend to refresh training data
         data: {"type": "done"}
     """
     # Save user message
-    add_user_message(db, session, user_message)
+    turn_started = datetime.utcnow()
+    user_msg = add_user_message(db, session, user_message)
+
+    # The red-flag check runs before anything else. The regex's emergency and
+    # crisis cards reach the rider at once; then the classifier's verdict is
+    # merged in and acted on, and any card still to show goes out before a
+    # word of the model's reply (SAFETY LAW, plan section E).
+    regex_hits, shown = _regex_first(user, user_message)
+    for style, card, name in shown:
+        yield f"data: {json.dumps(_card_chunk(style, card, name))}\n\n"
+    opinion = await _second_opinion(db, user, session, user_msg.id, user_message, regex_hits)
+    screen = _screen_turn(
+        db, user, user_message, regex_hits, opinion, shown,
+        message_id=user_msg.id, source="chat",
+    )
+    for chunk in _cards_after(screen, shown):
+        yield f"data: {json.dumps(chunk)}\n\n"
+    safety_screen.alert_founder_for(screen, user, user_message)
+    intro, known = _intro_for(db, user, session)
+    guard = _reply_guard(db, user, screen, turn_started)
+
+    if _child_account(db, user, screen):
+        # Fixed words only: nothing more of a child's data reaches the model,
+        # the memory or the title.
+        reply = _child_reply(guard)
+        if intro:
+            yield _sse_text(intro + " ")
+        yield _sse_text(reply)
+        saved = f"{intro} {reply}" if intro else reply
+        add_assistant_message(db, session, saved, None, 0)
+        _keep_exchange(db, user, turn_started, user_message, saved)
+        _after_child_turn(db, user, turn_started)
+        yield f'data: {json.dumps({"type": "done"})}\n\n'
+        return
 
     # Build context
     rider_context = _build_rider_context(db, user, attachment_ids)
@@ -1658,7 +3086,9 @@ async def stream_response(
         f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
         f"{dossier_block}"
         f"Today's date: {date.today().isoformat()}",
-        volatile=_relevant_memories(db, user, user_message),
+        volatile=_turn_notes(
+            screen, intro, _relevant_memories(db, user, user_message), known
+        ),
     )
 
     # Build message history
@@ -1668,7 +3098,13 @@ async def stream_response(
     full_response = ""
     tokens_used = 0
     plan_was_updated = False
+    reply_failed = False
     scrub = StreamHumanizer()
+
+    if intro:
+        yield f'data: {json.dumps({"type": "text", "content": intro + " "})}\n\n'
+
+    _text = _sse_text
 
     try:
         # Agentic loop, keeps going while Claude wants to call tools
@@ -1676,30 +3112,46 @@ async def stream_response(
         for _ in range(max_iterations):
             # After a tool round the model starts a fresh sentence. Without a
             # break it glues on: "waiting for time to appear.Filed." (2 Sep).
-            if _needs_round_break(full_response):
-                full_response += "\n\n"
-                yield f'data: {json.dumps({"type": "text", "content": chr(10) * 2})}\n\n'
-            with forma_core.stream(
-                user_id=user.id,
-                task="chat",
-                surface="coach",
-                system=system,
-                messages=messages,
-                tools=COACH_TOOLS,
-            ) as stream:
-                for event in stream:
-                    if event.type == "content_block_delta":
-                        if hasattr(event.delta, "text"):
-                            clean = scrub.feed(event.delta.text)
-                            if clean:
-                                full_response += clean
-                                yield f'data: {json.dumps({"type": "text", "content": clean})}\n\n'
+            out = guard.round_break()
+            if out:
+                full_response += out
+                yield _text(out)
+            # One more try after a short pause when the call fails before
+            # any words arrive: nothing has reached the rider or the reply
+            # check, so a second try can't repeat or garble anything.
+            for attempt in (1, 2):
+                heard = False
+                try:
+                    with forma_core.stream(
+                        user_id=user.id,
+                        task="chat",
+                        surface="coach",
+                        system=system,
+                        messages=messages,
+                        tools=COACH_TOOLS,
+                    ) as stream:
+                        for event in stream:
+                            if event.type == "content_block_delta":
+                                if hasattr(event.delta, "text"):
+                                    heard = True
+                                    # Every sentence passes the reply check on
+                                    # its way to the rider (ReplyGuard).
+                                    out = guard.feed(scrub.feed(event.delta.text))
+                                    if out:
+                                        full_response += out
+                                        yield _text(out)
 
-                final = stream.get_final_message()
-                tokens_used += (
-                    final.usage.input_tokens + final.usage.output_tokens
-                    if final.usage else 0
-                )
+                        final = stream.get_final_message()
+                    break
+                except Exception as e:
+                    if attempt == 2 or heard or not _worth_retrying(e):
+                        raise
+                    logger.warning("Coach chat call failed, trying once more (user=%s): %s", user.id, e)
+                    await asyncio.sleep(MODEL_RETRY_BACKOFF_SECONDS)
+            tokens_used += (
+                final.usage.input_tokens + final.usage.output_tokens
+                if final.usage else 0
+            )
 
             # Check if Claude wants to use tools
             tool_use_blocks = [
@@ -1711,11 +3163,19 @@ async def stream_response(
                 # No tool calls, we're done
                 break
 
+            # The model has stopped to act. What it wrote is complete, but a
+            # claim that it has already acted waits for the tool's result.
+            out = guard.feed(scrub.flush()) + guard.before_tools()
+            if out:
+                full_response += out
+                yield _text(out)
+
             # Execute tool calls and build tool_result messages
             # Append assistant message with all content blocks
             messages.append({"role": "assistant", "content": final.content})
 
             tool_results = []
+            ran = []
             for tool_block in tool_use_blocks:
                 label = _tool_status(db, user, tool_block.name, tool_block.input)
                 if label:
@@ -1723,6 +3183,7 @@ async def stream_response(
                 result_text = _execute_tool(
                     db, user, tool_block.name, tool_block.input
                 )
+                ran.append((tool_block.name, result_text))
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_block.id,
@@ -1736,6 +3197,10 @@ async def stream_response(
                     plan_was_updated = True
 
             messages.append({"role": "user", "content": tool_results})
+            out = guard.after_tools(ran)
+            if out:
+                full_response += out
+                yield _text(out)
 
             # Signal frontend that training plan was modified
             if plan_was_updated:
@@ -1743,24 +3208,43 @@ async def stream_response(
 
             # Loop continues. Claude will respond to the tool results
 
-        tail = scrub.flush()
-        if tail:
-            full_response += tail
-            yield f'data: {json.dumps({"type": "text", "content": tail})}\n\n'
+        out = guard.feed(scrub.flush()) + guard.flush()
+        if out:
+            full_response += out
+            yield _text(out)
 
     except forma_core.BudgetExceededError:
-        full_response = forma_core.QUOTA_MESSAGE
-        yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
+        if screen.hits:
+            # The quota never stands between a rider and the safety answer:
+            # fixed words cost nothing.
+            out = _flush_after_failure(guard, scrub, after=full_response)
+            if out:
+                full_response += out
+                yield _text(out)
+        if not full_response.strip():
+            full_response = forma_core.QUOTA_MESSAGE
+            yield _text(full_response)
     except Exception as e:
         # ANY failure, provider error, timeout, tool bug, must never leave
         # the rider staring at an empty bubble. Log the real cause; the rider
-        # gets something honest and human.
+        # gets something honest, and in a red-flag turn, the fixed safety
+        # reply: a failure must never cost the emergency number.
         logger.exception("Coach chat stream failed: %s", e)
-        error_msg = "That one didn't reach me. Give it a second and send it again."
-        # Don't double up if some text already streamed before the failure.
-        if not full_response.strip():
-            full_response = error_msg
-            yield f'data: {json.dumps({"type": "text", "content": error_msg})}\n\n'
+        reply_failed = True
+        out = _reply_after_failure(guard, scrub, full_response, screen)
+        if out:
+            full_response += out
+            yield _text(out)
+        _record_reply_failure(db, user, screen, user_msg.id, error=e, source="chat")
+
+    # The coach put the account on hold as possibly under 18 this turn: the
+    # reply ends as every later one will.
+    out = _minor_closing_for_turn(
+        db, user, turn_started, full_response, "crisis" in screen.kinds
+    )
+    if out:
+        full_response += out
+        yield _text(out)
 
     # The model can spend its whole token budget before any prose reaches
     # the rider (a truncated tool call streams zero text and raises nothing).
@@ -1772,8 +3256,9 @@ async def stream_response(
         )
         yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
 
-    context_snapshot = json.loads(rider_context) if rider_context else None
-    add_assistant_message(db, session, full_response, context_snapshot, tokens_used)
+    saved = f"{intro} {full_response}" if intro else full_response
+    add_assistant_message(db, session, saved, _snapshot(rider_context, screen), tokens_used)
+    _keep_exchange(db, user, turn_started, user_message, saved)
 
     # Final plan_updated signal if tools were used (in case frontend missed it)
     if plan_was_updated:
@@ -1783,22 +3268,20 @@ async def stream_response(
 
     # Memory extraction, write this exchange into the brain (Pillar 2).
     # Runs after the client has received `done`, so it never delays the stream.
-    try:
-        from app.services.memory_service import extract_memories
+    # A failed turn has nothing worth remembering, only the failure.
+    if not reply_failed:
+        try:
+            from app.services.memory_service import extract_memories
 
-        extract_memories(
-            db,
-            user,
-            f"Rider: {user_message}\n\nForma: {full_response}",
-            source="chat",
-            source_ref=session.id,
-        )
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).exception(
-            "Memory extraction after chat failed (user=%s)", user.id
-        )
+            extract_memories(
+                db,
+                user,
+                f"Rider: {user_message}\n\nForma: {full_response}",
+                source="chat",
+                source_ref=session.id,
+            )
+        except Exception:
+            logger.exception("Memory extraction after chat failed (user=%s)", user.id)
 
     # Name the thread from its content while it still wears the default name.
     maybe_autotitle_session(db, user, session)
@@ -1906,11 +3389,33 @@ async def stream_voice_response(
     from app.services.voice_service import is_voice_enabled, text_to_speech
 
     # Save user message
-    add_user_message(db, session, user_message)
+    turn_started = datetime.utcnow()
+    user_msg = add_user_message(db, session, user_message)
 
-    # Build context
-    rider_context = _build_rider_context(db, user, attachment_ids)
-    dossier_block = _dossier_block(db, user)
+    # The red-flag check, exactly as in stream_response: the regex's
+    # emergency and crisis cards at once, the classifier's verdict merged in,
+    # and every other card before any text.
+    regex_hits, shown = _regex_first(user, user_message)
+    for style, card, name in shown:
+        yield f"data: {json.dumps(_card_chunk(style, card, name))}\n\n"
+    opinion = await _second_opinion(
+        db, user, session, user_msg.id, user_message, regex_hits, "coach_voice"
+    )
+    screen = _screen_turn(
+        db, user, user_message, regex_hits, opinion, shown,
+        message_id=user_msg.id, source="chat_voice",
+    )
+    for chunk in _cards_after(screen, shown):
+        yield f"data: {json.dumps(chunk)}\n\n"
+    safety_screen.alert_founder_for(screen, user, user_message)
+    intro, known = _intro_for(db, user, session)
+    guard = _reply_guard(db, user, screen, turn_started)
+    child = _child_account(db, user, screen)
+
+    # Build context (none for an account that may be a child's: the reply
+    # is fixed words and nothing more of their data goes anywhere)
+    rider_context = "" if child else _build_rider_context(db, user, attachment_ids)
+    dossier_block = "" if child else _dossier_block(db, user)
 
     # Build system prompt with voice mode addendum + per-message recall
     system = _system_blocks(
@@ -1919,7 +3424,10 @@ async def stream_voice_response(
         f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
         f"{dossier_block}"
         f"Today's date: {date.today().isoformat()}",
-        volatile=_relevant_memories(db, user, user_message),
+        volatile=_turn_notes(
+            screen, intro, None if child else _relevant_memories(db, user, user_message),
+            known,
+        ),
     )
 
     # Build message history
@@ -1932,58 +3440,93 @@ async def stream_voice_response(
     tokens_used = 0
     voice_enabled = is_voice_enabled()
     plan_was_updated = False
+    reply_failed = False
     scrub = StreamHumanizer()
 
+    # A rider in voice mode may not be looking at the screen: the card is
+    # spoken too, before anything else.
+    if voice_enabled:
+        for _, card_text in screen.cards:
+            try:
+                audio_b64 = base64.b64encode(await text_to_speech(card_text)).decode("utf-8")
+                yield f'data: {json.dumps({"type": "audio", "content": audio_b64, "sentence_index": sentence_index})}\n\n'
+                sentence_index += 1
+            except Exception as tts_err:
+                logger.warning("TTS failed for a safety card: %s", tts_err)
+
+    if intro:
+        sentence_buffer = intro + " "
+        yield f'data: {json.dumps({"type": "text", "content": intro + " "})}\n\n'
+
+    async def emit(text: str):
+        """Send checked text to the rider, and speak each sentence it completes."""
+        nonlocal full_response, sentence_buffer, sentence_index
+        if not text:
+            return
+        full_response += text
+        sentence_buffer += text
+        yield f'data: {json.dumps({"type": "text", "content": text})}\n\n'
+        if not voice_enabled:
+            return
+        while _SENTENCE_END.search(sentence_buffer):
+            match = _SENTENCE_END.search(sentence_buffer)
+            complete_sentence = sentence_buffer[:match.end()].strip()
+            sentence_buffer = sentence_buffer[match.end():]
+            if complete_sentence and len(complete_sentence) > 5:
+                try:
+                    audio_b64 = base64.b64encode(
+                        await text_to_speech(complete_sentence)
+                    ).decode("utf-8")
+                    yield f'data: {json.dumps({"type": "audio", "content": audio_b64, "sentence_index": sentence_index})}\n\n'
+                    sentence_index += 1
+                except Exception:
+                    pass
+
     try:
-        # Agentic loop, keeps going while Claude wants to call tools
-        max_iterations = 5
+        # Agentic loop, keeps going while Claude wants to call tools. An
+        # account that may be a child's never reaches the model.
+        max_iterations = 0 if child else 5
+        if child:
+            async for chunk in emit(_child_reply(guard)):
+                yield chunk
+            _after_child_turn(db, user, turn_started)
         for _ in range(max_iterations):
-            with forma_core.stream(
-                user_id=user.id,
-                task="chat_voice",  # shorter max_tokens, conciseness matters
-                surface="coach_voice",
-                system=system,
-                messages=messages,
-                tools=COACH_TOOLS,
-            ) as stream:
-                for event in stream:
-                    if event.type == "content_block_delta":
-                        if hasattr(event.delta, "text"):
-                            text = scrub.feed(event.delta.text)
-                            if not text:
-                                continue
-                            full_response += text
-                            sentence_buffer += text
+            async for chunk in emit(guard.round_break()):
+                yield chunk
+            # One more try when the call fails before any words arrive, as in
+            # stream_response.
+            for attempt in (1, 2):
+                heard = False
+                try:
+                    with forma_core.stream(
+                        user_id=user.id,
+                        task="chat_voice",  # shorter max_tokens, conciseness matters
+                        surface="coach_voice",
+                        system=system,
+                        messages=messages,
+                        tools=COACH_TOOLS,
+                    ) as stream:
+                        for event in stream:
+                            if event.type == "content_block_delta":
+                                if hasattr(event.delta, "text"):
+                                    heard = True
+                                    # Checked a sentence at a time, then sent and spoken.
+                                    async for chunk in emit(
+                                        guard.feed(scrub.feed(event.delta.text))
+                                    ):
+                                        yield chunk
 
-                            # Yield text chunk
-                            yield f'data: {json.dumps({"type": "text", "content": text})}\n\n'
-
-                            # Check for complete sentences and convert to audio
-                            if voice_enabled:
-                                while _SENTENCE_END.search(sentence_buffer):
-                                    match = _SENTENCE_END.search(sentence_buffer)
-                                    end_pos = match.end()
-                                    complete_sentence = sentence_buffer[:end_pos].strip()
-                                    sentence_buffer = sentence_buffer[end_pos:]
-
-                                    if complete_sentence and len(complete_sentence) > 5:
-                                        try:
-                                            audio_bytes = await text_to_speech(
-                                                complete_sentence
-                                            )
-                                            audio_b64 = base64.b64encode(
-                                                audio_bytes
-                                            ).decode("utf-8")
-                                            yield f'data: {json.dumps({"type": "audio", "content": audio_b64, "sentence_index": sentence_index})}\n\n'
-                                            sentence_index += 1
-                                        except Exception:
-                                            pass
-
-                final = stream.get_final_message()
-                tokens_used += (
-                    final.usage.input_tokens + final.usage.output_tokens
-                    if final.usage else 0
-                )
+                        final = stream.get_final_message()
+                    break
+                except Exception as e:
+                    if attempt == 2 or heard or not _worth_retrying(e):
+                        raise
+                    logger.warning("Coach voice call failed, trying once more (user=%s): %s", user.id, e)
+                    await asyncio.sleep(MODEL_RETRY_BACKOFF_SECONDS)
+            tokens_used += (
+                final.usage.input_tokens + final.usage.output_tokens
+                if final.usage else 0
+            )
 
             # Check if Claude wants to use tools
             tool_use_blocks = [
@@ -1994,10 +3537,14 @@ async def stream_voice_response(
             if not tool_use_blocks or final.stop_reason != "tool_use":
                 break
 
+            async for chunk in emit(guard.feed(scrub.flush()) + guard.before_tools()):
+                yield chunk
+
             # Execute tool calls
             messages.append({"role": "assistant", "content": final.content})
 
             tool_results = []
+            ran = []
             for tool_block in tool_use_blocks:
                 label = _tool_status(db, user, tool_block.name, tool_block.input)
                 if label:
@@ -2005,6 +3552,7 @@ async def stream_voice_response(
                 result_text = _execute_tool(
                     db, user, tool_block.name, tool_block.input
                 )
+                ran.append((tool_block.name, result_text))
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_block.id,
@@ -2018,14 +3566,20 @@ async def stream_voice_response(
                     plan_was_updated = True
 
             messages.append({"role": "user", "content": tool_results})
+            async for chunk in emit(guard.after_tools(ran)):
+                yield chunk
             if plan_was_updated:
                 yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
 
-        tail = scrub.flush()
-        if tail:
-            full_response += tail
-            sentence_buffer += tail
-            yield f'data: {json.dumps({"type": "text", "content": tail})}\n\n'
+        if not child:
+            async for chunk in emit(guard.feed(scrub.flush()) + guard.flush()):
+                yield chunk
+            # The coach put the account on hold as possibly under 18 this
+            # turn: the reply ends, and is spoken, as every later one will be.
+            async for chunk in emit(_minor_closing_for_turn(
+                db, user, turn_started, full_response, "crisis" in screen.kinds
+            )):
+                yield chunk
 
         # Handle any remaining text in buffer
         if voice_enabled and sentence_buffer.strip() and len(
@@ -2043,15 +3597,24 @@ async def stream_voice_response(
                 logger.warning("TTS failed (text continues): %s", tts_err)
 
     except forma_core.BudgetExceededError:
-        full_response = forma_core.QUOTA_MESSAGE
-        yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
-    except Exception as e:
-        # Never leave the rider with silence AND an empty bubble.
-        logger.exception("Coach voice stream failed: %s", e)
-        error_msg = "That one didn't reach me. Give it a second and send it again."
+        if screen.hits:
+            # The quota never stands between a rider and the safety answer.
+            async for chunk in emit(_flush_after_failure(guard, scrub, after=full_response)):
+                yield chunk
         if not full_response.strip():
-            full_response = error_msg
-            yield f'data: {json.dumps({"type": "text", "content": error_msg})}\n\n'
+            full_response = forma_core.QUOTA_MESSAGE
+            yield _sse_text(full_response)
+    except Exception as e:
+        # Never leave the rider with silence AND an empty bubble. A red-flag
+        # turn gets the fixed safety reply, spoken as well as shown.
+        logger.exception("Coach voice stream failed: %s", e)
+        reply_failed = True
+        try:
+            async for chunk in emit(_reply_after_failure(guard, scrub, full_response, screen)):
+                yield chunk
+        except Exception:
+            logger.exception("Sending the reply after a voice failure failed")
+        _record_reply_failure(db, user, screen, user_msg.id, error=e, source="chat_voice")
 
     # A rider's message must NEVER sit unanswered in the history (the
     # truncated-tool-call case streams zero text and raises nothing).
@@ -2062,29 +3625,33 @@ async def stream_voice_response(
         )
         yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
 
-    context_snapshot = json.loads(rider_context) if rider_context else None
-    add_assistant_message(db, session, full_response, context_snapshot, tokens_used)
+    saved = f"{intro} {full_response}" if intro else full_response
+    add_assistant_message(
+        db, session, saved, None if child else _snapshot(rider_context, screen), tokens_used
+    )
+    _keep_exchange(db, user, turn_started, user_message, saved)
 
     if plan_was_updated:
         yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
 
     yield f'data: {json.dumps({"type": "done"})}\n\n'
 
+    if child:
+        return
+
     # Memory extraction, voice conversations feed the brain too (Pillar 2).
-    try:
-        from app.services.memory_service import extract_memories
+    # A failed turn has nothing worth remembering, only the failure.
+    if not reply_failed:
+        try:
+            from app.services.memory_service import extract_memories
 
-        extract_memories(
-            db, user,
-            f"Rider: {user_message}\n\nForma: {full_response}",
-            source="chat", source_ref=session.id,
-        )
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).exception(
-            "Memory extraction after voice chat failed (user=%s)", user.id
-        )
+            extract_memories(
+                db, user,
+                f"Rider: {user_message}\n\nForma: {full_response}",
+                source="chat", source_ref=session.id,
+            )
+        except Exception:
+            logger.exception("Memory extraction after voice chat failed (user=%s)", user.id)
 
     # Name the thread from its content while it still wears the default name.
     maybe_autotitle_session(db, user, session)
@@ -2095,40 +3662,81 @@ def get_non_streaming_response(
 ) -> str:
     """
     Non-streaming version for simpler integrations.
-    Returns the full response text.
+    Returns the full response text, with any red-flag card at the top (there
+    is no separate channel to send it on).
     """
-    add_user_message(db, session, user_message)
+    turn_started = datetime.utcnow()
+    user_msg = add_user_message(db, session, user_message)
+
+    # The red-flag check, with the classifier's verdict merged in, as in
+    # stream_response. With no separate channel, every card goes at the top.
+    regex_hits, shown = _regex_first(user, user_message)
+    opinion = _second_opinion_sync(db, user, session, user_msg.id, user_message, regex_hits)
+    screen = _screen_turn(
+        db, user, user_message, regex_hits, opinion, shown,
+        message_id=user_msg.id, source="chat_sync",
+    )
+    safety_screen.alert_founder_for(screen, user, user_message)
+    intro, known = _intro_for(db, user, session)
+    guard = _reply_guard(db, user, screen, turn_started)
+
+    def _with_cards(text: str) -> str:
+        body = f"{intro} {text}" if intro else text
+        return "\n\n".join([card for _, card in screen.cards] + [body])
+
+    if _child_account(db, user, screen):
+        # Fixed words only, as in stream_response.
+        reply = _with_cards(_child_reply(guard))
+        add_assistant_message(db, session, reply, None, 0)
+        _keep_exchange(db, user, turn_started, user_message, reply)
+        _after_child_turn(db, user, turn_started)
+        return reply
 
     rider_context = _build_rider_context(db, user)
 
     system = _system_blocks(
         user,
         f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
-        f"Today's date: {date.today().isoformat()}"
+        f"Today's date: {date.today().isoformat()}",
+        volatile=_turn_notes(screen, intro, None, known),
     )
 
     messages = _build_messages(session)
 
     try:
-        response = forma_core.call(
+        response = _call_with_retry(
             user_id=user.id,
             task="chat_sync",
             surface="coach",
             system=system,
             messages=messages,
         )
-    except forma_core.BudgetExceededError:
-        add_assistant_message(db, session, forma_core.QUOTA_MESSAGE, None, 0)
-        return forma_core.QUOTA_MESSAGE
+    except Exception as e:
+        # A red-flag turn still gets the fixed safety reply, quota or not;
+        # anything else gets the quota message or an honest retry line.
+        failed = not isinstance(e, forma_core.BudgetExceededError)
+        if failed:
+            logger.exception("Coach non-streaming call failed: %s", e)
+        text = guard.flush() if screen.hits else ""
+        if not text.strip():
+            text = forma_core.QUOTA_MESSAGE if not failed else safety_screen.REPLY_FAILED_MESSAGE
+        reply = _with_cards(text)
+        add_assistant_message(db, session, reply, None, 0)
+        if failed:
+            _record_reply_failure(db, user, screen, user_msg.id, error=e, source="chat_sync")
+        _keep_exchange(db, user, turn_started, user_message, reply)
+        return reply
 
-    content = humanize(response_text(response))
+    # The same sentence-by-sentence check as the streamed reply.
+    content = guard.feed(humanize(response_text(response))) + guard.flush()
     tokens_used = (
         response.usage.input_tokens + response.usage.output_tokens
         if response.usage else 0
     )
 
-    context_snapshot = json.loads(rider_context) if rider_context else None
-    add_assistant_message(db, session, content, context_snapshot, tokens_used)
+    content = _with_cards(content)
+    add_assistant_message(db, session, content, _snapshot(rider_context, screen), tokens_used)
+    _keep_exchange(db, user, turn_started, user_message, content)
 
     # Memory extraction, every conversational surface writes to the brain.
     try:
@@ -2140,10 +3748,6 @@ def get_non_streaming_response(
             source="chat", source_ref=session.id,
         )
     except Exception:
-        import logging
-
-        logging.getLogger(__name__).exception(
-            "Memory extraction after non-streaming chat failed (user=%s)", user.id
-        )
+        logger.exception("Memory extraction after non-streaming chat failed (user=%s)", user.id)
 
     return content

@@ -13,7 +13,7 @@ else the coach wants it asks for. No invented bedtimes.
 
 import json
 import logging
-from datetime import date as date_type
+from datetime import date as date_type, datetime
 
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,8 @@ from app.core import forma_core
 from app.core.coach_skills import distilled_persona
 from app.core.llm_utils import humanize, response_text
 from app.models.briefing import Briefing
+from app.models.memory import MemoryEntity
+from app.services.safety_screen import coach_safety_context, safety_changed_since
 from app.models.onboarding import GoalEvent, GoalStatus
 from app.models.ride import Ride, RideData
 from app.models.training import Workout
@@ -48,7 +50,14 @@ Ground every claim in the forecast and plan provided. If no forecast is
 available, brief without weather and say so plainly. Never invent the
 rider's location, sleep or feelings. Close with ONE short clarifying
 question about today (route, timing, or how they're feeling), and let
-them know they can tap through to talk it through properly with you."""
+them know they can tap through to talk it through properly with you.
+
+Read `safety` before the session. If allowed_intensity is "easy", today is
+easy riding only: brief the easy version, with no targets above endurance and
+no talk of tests. If it is "none", there is no session today: say plainly
+that riding is on hold until a doctor has cleared them, and brief nothing to
+ride. If `recent_health_notes` mention illness, injury or symptoms, ask how
+they are before anything else."""
 
 GOAL_INSTRUCTIONS = """\
 Today is the rider's GOAL EVENT. Write the full team-car briefing they
@@ -80,7 +89,13 @@ decisive stretches, not a segment-by-segment recitation.
 
 Ground everything in the data provided. The forecast is data; their
 numbers are data; anything else you want, you do not have, so do not
-invent it. Close with ONE sharp clarifying question (their plan for
+invent it.
+
+Read `safety` first. A goal date never overrides it. If allowed_intensity is
+"none", do not brief the event as a ride: say plainly that it waits for a
+doctor's clearance. If it is "easy", there is no racing effort today: brief
+an easy ride at most, and say why in one kind line. If `recent_health_notes`
+mention illness, injury or symptoms, ask how they are first. Close with ONE sharp clarifying question (their plan for
 fuelling, their start-line feeling, or the stretch that worries them),
 and let them know the team car channel is open all day: tap through and
 talk it out."""
@@ -159,6 +174,111 @@ def _last_known_fix(db: Session, user_id: str) -> tuple[float, float, str | None
     return (fix[0], fix[1], recent.location_name)
 
 
+HEALTH_NOTE_DAYS = 21
+
+
+def recent_health_notes(db: Session, user_id: str, days: int = HEALTH_NOTE_DAYS) -> list[str]:
+    """Health signals the rider mentioned in the last three weeks (illness,
+    injury, symptoms), from the memory. A briefing that cannot see "my knee
+    flared on Sunday" would brief Tuesday's intervals as if nothing happened."""
+    from datetime import datetime, timedelta
+
+    try:
+        since = datetime.utcnow() - timedelta(days=days)
+        rows = (
+            db.query(MemoryEntity)
+            .filter(
+                MemoryEntity.user_id == user_id,
+                MemoryEntity.type == "health_signal",
+                MemoryEntity.created_at >= since,
+            )
+            .order_by(MemoryEntity.created_at.desc())
+            .limit(6)
+            .all()
+        )
+    except Exception:
+        logger.exception("Health notes for the briefing failed (user=%s)", user_id)
+        return []
+    return [
+        f"({e.created_at.date().isoformat()}) {e.label}"
+        + (f": {e.summary}" if e.summary else "")
+        + (" [HIDDEN, use for judgement, never mention]" if e.hidden_at else "")
+        for e in rows
+    ]
+
+
+# The fixed words a briefing becomes when the coach must not brief a ride.
+ADULTS_ONLY_BRIEFING = (
+    "Forma is for adults, 18 and over, so I can't coach you or build you a plan."
+)
+QUIET_BRIEFING = "No briefing today. There's nothing you need to do, and your plan will wait."
+UNKNOWN_BRIEFING = "No briefing just now. If you want to talk about today's ride, open the coach."
+
+
+def held_briefing_text(db: Session, user: User, block: str) -> str:
+    """What the briefing says instead of a ride when speak_first_block says
+    the coach must not brief one. Fixed words from the record: no model
+    call, so nothing can brief the session a hold rules out.
+
+    "minor": the adults-only line, and nothing else. "wellbeing": no
+    briefing and no pressure. "safety": what the hold means and how it
+    lifts, in the words the rest of the app uses."""
+    if block == "minor":
+        return ADULTS_ONLY_BRIEFING
+    if block == "wellbeing":
+        return QUIET_BRIEFING
+    if block != "safety":
+        return UNKNOWN_BRIEFING
+    words = hold_words(db, user)
+    return f"No briefing today. {words}" if words else UNKNOWN_BRIEFING
+
+
+def hold_words(db: Session, user: User) -> str | None:
+    """What the hold that governs today means and how it lifts, as fixed
+    words from the record ("All your training is on hold." and its lift
+    sentence). None if the state can't be read. The briefing and the daily
+    nudge both say this instead of anything a model writes."""
+    from types import SimpleNamespace
+
+    from app.services import safety_screen, safety_service
+    from app.services.plan_review_service import live_holds
+
+    try:
+        allowed = safety_service.allowed_intensity(db, user)
+        # The easy start after a break is not what blocked this briefing.
+        medical = sorted(
+            (
+                h for h in live_holds(db, user.id)
+                if h.source != "layoff" and h.red_flag != "layoff"
+            ),
+            key=lambda h: (safety_service.HOLD_LEVELS.get(h.level, 0), h.opened_at or datetime.min),
+            reverse=True,
+        )
+        screening = safety_service.latest_screening(db, user.id)
+        if screening is not None and (
+            screening.tier == "none" or screening.clearance_confirmed_at is not None
+        ):
+            screening = None
+        screen_hold = (
+            SimpleNamespace(source="screening", red_flag=None, level=screening.tier)
+            if screening is not None else None
+        )
+        if allowed == "none":
+            statement = "All your training is on hold."
+            governs = next(
+                (h for h in [*medical, screen_hold] if h is not None and h.level == "hold_all"),
+                None,
+            )
+        else:
+            statement = "Your plan is on easy riding only."
+            governs = medical[0] if medical else screen_hold
+        lift = safety_screen.lift_sentence(governs) if governs is not None else None
+    except Exception:
+        logger.exception("Reading the hold for a held briefing failed (user=%s)", user.id)
+        return None
+    return " ".join(p for p in (statement, lift) if p)
+
+
 async def get_or_create_briefing(db: Session, user: User) -> Briefing:
     today = date_type.today()
 
@@ -173,11 +293,35 @@ async def get_or_create_briefing(db: Session, user: User) -> Briefing:
     )
     kind = "goal" if goal_today else "daily"
 
+    # A briefing nudges towards today's ride. None is written (and no cached
+    # one is served) for an account that may be a child's, in the quiet
+    # window after crisis words, or under a hold or an uncleared health
+    # answer: fixed words instead, never stored, so the real briefing comes
+    # back the moment the block ends. The layoff gate alone doesn't block:
+    # the model briefs the easy ride it allows.
+    from app.services.outreach_service import speak_first_block
+
+    block = speak_first_block(db, user, training=True)
+    if block:
+        return Briefing(
+            user_id=user.id,
+            date=today,
+            kind=kind,
+            content=held_briefing_text(db, user, block),
+            conditions=None,
+        )
+
     cached = (
         db.query(Briefing)
         .filter(Briefing.user_id == user.id, Briefing.date == today, Briefing.kind == kind)
         .first()
     )
+    if cached and safety_changed_since(db, user.id, cached.created_at):
+        # A hold opened (or lifted) after this morning's briefing was written:
+        # it would still brief the session the hold rules out. Write it again.
+        db.delete(cached)
+        db.commit()
+        cached = None
     if cached:
         return cached
 
@@ -235,6 +379,9 @@ async def get_or_create_briefing(db: Session, user: User) -> Briefing:
     context: dict = {
         "rider_name": rider_name,
         "date": today.isoformat(),
+        # What the rider may ride today (SAFETY LAW rule 7). Read first.
+        "safety": coach_safety_context(db, user),
+        "recent_health_notes": recent_health_notes(db, user.id),
         "ftp_watts": user.ftp,
         "fitness": fitness,
         "last_known_riding_area": locale,

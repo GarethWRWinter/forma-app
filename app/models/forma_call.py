@@ -32,3 +32,6 @@ class FormaCall(Base):
     cost_cents = Column(Float, default=0.0, nullable=False)
     latency_ms = Column(Integer, default=0, nullable=False)
     error = Column(Boolean, default=False, nullable=False)
+    # Which SAFETY_LAW block the call carried (None for the tasks exempt from
+    # it, and for calls made before it existed).
+    safety_law_version = Column(String(20), nullable=True)

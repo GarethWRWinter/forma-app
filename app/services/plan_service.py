@@ -7,11 +7,18 @@ Generates truly personalised training plans based on:
 - Rider profile (strengths, weaknesses)
 - Experience level and available hours
 - Progressive overload with recovery weeks
+- The safety gate (safety_service.allowed_intensity): an open hold or a
+  health-screen yes without clearance keeps the whole plan easy, or on hold;
+  the first weeks back after a break are easy only
+
+The generator never schedules an FTP test; the rider takes one from
+Settings, and the app gates that card on the same safety state.
 """
 
 from datetime import date, timedelta
 from math import ceil
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.workout_templates import (
@@ -33,6 +40,7 @@ from app.models.training import (
     WorkoutType,
 )
 from app.models.user import User
+from app.services import safety_service as ss
 from app.services.metrics_service import get_current_fitness
 
 
@@ -306,6 +314,191 @@ def _pick_long_ride_day(
     return chosen, days
 
 
+# --- The safety gate ---
+# A rider on a full hold (chest pain, fainting) gets the plan they will ride
+# once a doctor clears them, every session labelled on hold. The label is a
+# fixed prefix on the description, not a status: "skipped" would tell the
+# compliance read and the coach that the rider skipped sessions they were
+# never allowed to ride, and would leave the plan dead after clearance. The
+# description is shown wherever the session is, and sync_hold_marks() keeps
+# the label matching the gate, session by session, whenever a hold changes.
+# Ride mode does not trust the label alone: it refuses from the live safety
+# state.
+#
+# The label says what lifts it, in safety_service's words (hold_label,
+# standing_label, easy_windows): a doctor's clearance for a medical hold or
+# an uncleared health answer; the rider's own word for a fever; a doctor's
+# check for a head injury; nothing the rider can do for an account on hold
+# (under 18, or set by hand), where the coach says nothing about lifting;
+# and time for a break, the easy week after illness or the build back after
+# a head injury. The first three names are kept for the callers that use them.
+HOLD_PREFIX = ss.DOCTOR_HOLD_LABEL
+ACCOUNT_HOLD_PREFIX = ss.ACCOUNT_HOLD_LABEL
+BREAK_PREFIX = ss.BREAK_LABEL
+HOLD_LABELS = ss.HOLD_LABELS
+EASY_PLAN_FOCUS = "Easy and steady riding only, until a doctor clears you for hard training"
+
+
+def _intensity_gate(db: Session, user: User | str) -> tuple[str, date | None]:
+    """The safety gate in its two parts: the standing level from holds and
+    an uncleared health answer ("none", "easy" or "all"), which lasts until
+    clearance and so covers the whole plan, and the first day hard sessions
+    are allowed again after an easy window, if one applies.
+
+    The window is the layoff gate from rides and the screening, and any hold
+    that ends by itself (the easy start after a break the rider told us
+    about, the easy week after a fever): those keep only the days before
+    they end easy, never the whole plan."""
+    window_until = ss.layoff_gate_until(db, user)
+    for hold in ss.open_holds(db, user):
+        if hold.expires_at is not None:
+            # The hold covers its last day (allowed_intensity keeps it easy),
+            # so hard sessions start the day after.
+            ends = hold.expires_at.date() + timedelta(days=1)
+            window_until = ends if window_until is None else max(window_until, ends)
+    # From the day the window ends, only the standing part is left.
+    standing = ss.allowed_intensity(db, user, on_date=window_until)
+    return standing, window_until
+
+
+def _standing_label(db: Session, user_id: str) -> str:
+    """The label for a session the standing gate (holds and an uncleared
+    health answer) keeps the rider off, worded for what lifts it: a fever
+    never mentions a doctor, and an under-18 account offers no way out
+    (safety_service.standing_label)."""
+    return ss.standing_label(db, user_id)
+
+
+_BREAK_BECAUSE = "you're coming back from a break"
+
+
+def _easy_reason(
+    windows: list[tuple[date, str, str]] | None, day: date | None
+) -> tuple[str, str]:
+    """The label and reason for a hard session eased on `day` inside the
+    easy window: the head injury, the easy week after illness or the break
+    that put it there (safety_service.easy_windows). A break when no window
+    names the day."""
+    found = ss.easy_window_on(windows or [], day) if day is not None else None
+    return found or (BREAK_PREFIX, _BREAK_BECAUSE)
+
+
+def _content_level(day: date, standing: str, layoff_until: date | None) -> str:
+    """How hard the session on `day` may be once any full hold is lifted:
+    "easy" under an easy hold or inside the layoff window, otherwise "all"."""
+    if standing == "easy" or (layoff_until is not None and day < layoff_until):
+        return "easy"
+    return "all"
+
+
+def _gated_description(
+    description: str,
+    label: str | None,
+    eased_until: date | None,
+    because: str = _BREAK_BECAUSE,
+) -> str:
+    if eased_until is not None:
+        description = (
+            f"Easy for now, because {because}. Hard sessions "
+            f"start again on {eased_until.day} {eased_until:%B}. {description}"
+        )
+    if label:
+        description = label + description
+    return description
+
+
+def _label_of(description: str | None) -> str | None:
+    text = description or ""
+    return next((label for label in HOLD_LABELS if text.startswith(label)), None)
+
+
+def is_held(workout: Workout) -> bool:
+    """True when the session carries an on-hold label."""
+    return _label_of(workout.description) is not None
+
+
+def _hold_label_for(
+    workout: Workout,
+    standing: str,
+    layoff_until: date | None,
+    standing_label: str,
+    windows: list[tuple[date, str, str]] | None = None,
+) -> str | None:
+    """The label this session should carry, or None. Under a full hold,
+    every session but a rest day. Under an easy hold or an uncleared health
+    answer, any session harder than easy riding. Inside the easy window, any
+    session harder than easy riding, with the label for what put the window
+    there (`windows`, from safety_service.easy_windows): a head injury, the
+    easy week after illness, or a break."""
+    if _enum_value(workout.workout_type) == "rest":
+        return None
+    if standing == "none":
+        return standing_label
+    too_hard = not ss.workout_allowed(workout, "easy")
+    if standing == "easy" and too_hard:
+        return standing_label
+    day = workout.scheduled_date
+    if layoff_until is not None and day is not None and day < layoff_until and too_hard:
+        return _easy_reason(windows, day)[0]
+    return None
+
+
+def sync_hold_marks(db: Session, user_id: str, *, commit: bool = True) -> int:
+    """Make every session's on-hold label match the gate. A planned or
+    modified session from today on carries the label whenever the gate
+    keeps the rider off it (see _hold_label_for), with the wording for what
+    lifts it; a label the gate no longer supports comes off any session,
+    past ones included. Past, completed and skipped sessions never gain a
+    label. Idempotent. Returns how many sessions changed.
+
+    Call it after anything opens or lifts a hold: the health screening,
+    clearance, "this was a mistake", the red-flag detector and the coach's
+    hold tool."""
+    standing, layoff_until = _intensity_gate(db, user_id)
+    standing_label = _standing_label(db, user_id)
+    windows = ss.easy_windows(db, user_id) if layoff_until is not None else []
+    today = date.today()
+    open_statuses = (WorkoutStatus.planned, WorkoutStatus.modified)
+    query = (
+        db.query(Workout)
+        .options(joinedload(Workout.steps))
+        .filter(
+            Workout.user_id == user_id,
+            or_(
+                Workout.status.in_(open_statuses),
+                *(Workout.description.startswith(label) for label in HOLD_LABELS),
+            ),
+        )
+    )
+    changed = 0
+    for workout in query:
+        current = _label_of(workout.description)
+        wanted = _hold_label_for(workout, standing, layoff_until, standing_label, windows)
+        is_open = (
+            workout.status in open_statuses
+            and workout.scheduled_date is not None
+            and workout.scheduled_date >= today
+        )
+        if is_open:
+            target = wanted
+        elif current is not None and wanted is None:
+            target = None
+        else:
+            # A past or closed session never gains a label, and keeps the
+            # one it has while the gate still holds it.
+            continue
+        if current == target:
+            continue
+        base = (workout.description or "")[len(current):] if current else (workout.description or "")
+        workout.description = (target or "") + base
+        changed += 1
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return changed
+
+
 def _build_weekly_workout_types(
     phase_type: str,
     days: int,
@@ -462,10 +655,18 @@ def generate_plan(
     current_ctl = fitness["ctl"]
     current_tsb = fitness["tsb"]
 
-    # User context
+    # User context. With no experience level on file, plan as for a
+    # beginner: the gentler ramp and the more frequent recovery weeks.
     ftp = user.ftp or 200
     weekly_hours = user.weekly_hours_available or 6
-    experience = user.experience_level or "intermediate"
+    experience = user.experience_level or "beginner"
+
+    # The safety gate. Holds and an uncleared health answer last until a
+    # doctor clears the rider, so they shape the whole plan; the layoff
+    # gate shapes only its first weeks.
+    standing, layoff_until = _intensity_gate(db, user)
+    hold_label = _standing_label(db, user.id) if standing == "none" else None
+    windows = ss.easy_windows(db, user.id) if layoff_until is not None else []
 
     # ── 3. Blend workout emphasis across goals by priority ──
     goals_in_plan = [g for g in all_goals if g.event_date <= end_date]
@@ -542,7 +743,7 @@ def generate_plan(
             start_date=phase_def["start_date"],
             end_date=phase_def["end_date"],
             target_weekly_hours=weekly_hours,
-            focus=phase_def.get("focus"),
+            focus=EASY_PLAN_FOCUS if standing == "easy" else phase_def.get("focus"),
             sort_order=sort_order,
         )
         db.add(phase)
@@ -567,6 +768,10 @@ def generate_plan(
             long_ride_cap_s=long_ride_cap_s,
             experience=experience,
             event_name=primary_goal.event_name if primary_goal else None,
+            standing=standing,
+            layoff_until=layoff_until,
+            hold_label=hold_label,
+            easy_windows=windows,
         )
 
     db.commit()
@@ -591,11 +796,23 @@ def _generate_adaptive_workouts(
     long_ride_cap_s: int | None = None,
     experience: str | None = None,
     event_name: str | None = None,
+    standing: str = "all",
+    layoff_until: date | None = None,
+    hold_label: str | None = None,
+    easy_windows: list[tuple[date, str, str]] | None = None,
 ) -> int:
     """
     Generate workouts for a phase with progressive overload and recovery weeks.
     Returns the updated cumulative_week count.
+
+    `standing` and `layoff_until` are the safety gate (_intensity_gate):
+    where it allows only easy riding, every session is recovery or
+    endurance at EASY_CAP or below; under a full hold ("none") every session
+    is labelled on hold, with `hold_label` (_standing_label), the same label
+    sync_hold_marks() would give it. A session eased inside the easy window
+    says why, from `easy_windows` (safety_service.easy_windows).
     """
+    label = (hold_label or HOLD_PREFIX) if standing == "none" else None
     start = phase.start_date
     end = phase.end_date
     if isinstance(start, str):
@@ -745,6 +962,18 @@ def _generate_adaptive_workouts(
             else:
                 ordered.append("endurance")
 
+        # 4b. The safety gate: where only easy riding is allowed, a hard
+        #     session becomes an endurance ride (before the TSS split, so it
+        #     gets an endurance ride's share of the week).
+        eased: set[date] = set()
+        for i, (_, day) in enumerate(selected_days[:len(ordered)]):
+            if (
+                _content_level(day, standing, layoff_until) == "easy"
+                and ordered[i] not in ss.EASY_TYPES
+            ):
+                ordered[i] = "endurance"
+                eased.add(day)
+
         # 5. Calculate TSS weights. The long ride's stress comes off the top;
         #    the other sessions share what is left of the week.
         long_tss = 0.0
@@ -784,19 +1013,31 @@ def _generate_adaptive_workouts(
             if in_race_week and days_to_event <= 2 and wtype in intensity_types:
                 wtype = "recovery"
 
+            level = _content_level(workout_day, standing, layoff_until)
+            # The break line only when the layoff is the whole reason; under
+            # a hold, hard sessions wait for clearance, not for a date.
+            eased_until = (
+                layoff_until if workout_day in eased and standing == "all" else None
+            )
+            because = _easy_reason(easy_windows, workout_day)[1]
+
             if long_day and workout_day == long_day[1]:
                 template = long_template
                 if workout_day in taper_set:
                     template = _long_ride_template(
                         max(3600, _round_quarter_hour(long_s * 0.6)), event_name
                     )
+                if level == "easy" and not ss.workout_allowed(template, "easy"):
+                    wtype, template = "recovery", get_template("recovery")
                 planned_tss = estimate_tss(template, ftp)
                 workout = Workout(
                     phase_id=phase.id,
                     user_id=user.id,
                     scheduled_date=workout_day,
                     title=template["name"],
-                    description=template["description"],
+                    description=_gated_description(
+                        template["description"], label, eased_until, because
+                    ),
                     workout_type=wtype,
                     planned_duration_seconds=template["duration_seconds"],
                     planned_tss=round(planned_tss, 1),
@@ -834,6 +1075,10 @@ def _generate_adaptive_workouts(
                 target_duration_s = max(1800, min(target_duration_s, int(budget_s * 1.15)))
 
             template = get_template(wtype, duration_hint=target_duration_s)
+            if level == "easy" and not ss.workout_allowed(template, "easy"):
+                # Fail closed: nothing over EASY_CAP, whatever the template
+                # library comes to hold.
+                wtype, template = "recovery", get_template("recovery")
             planned_tss = estimate_tss(template, ftp)
 
             workout = Workout(
@@ -841,7 +1086,9 @@ def _generate_adaptive_workouts(
                 user_id=user.id,
                 scheduled_date=workout_day,
                 title=template["name"],
-                description=template.get("description", ""),
+                description=_gated_description(
+                    template.get("description", ""), label, eased_until, because
+                ),
                 workout_type=wtype,
                 planned_duration_seconds=template["duration_seconds"],
                 planned_tss=round(planned_tss, 1),

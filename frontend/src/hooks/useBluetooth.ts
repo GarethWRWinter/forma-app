@@ -16,6 +16,7 @@ import {
   isBluetoothSupported,
   type DeviceType,
 } from "@/lib/bluetooth";
+import { TrainerControl } from "@/lib/rideSafety";
 
 interface DeviceConnection {
   device: BluetoothDevice;
@@ -47,10 +48,19 @@ export interface BluetoothActions {
   disconnectDevice: (type: DeviceType) => void;
   setTargetPower: (watts: number) => Promise<void>;
   stopTrainer: () => Promise<void>;
+  /** Sensors go at once; the trainer is let go first (see TrainerControl). */
   disconnectAll: () => void;
 }
 
-export function useBluetooth(): [BluetoothState, BluetoothActions] {
+export interface BluetoothOptions {
+  /** What the trainer drops to before it is let go: 40% of FTP. Null sends
+      the FTMS stop alone. */
+  releaseWatts?: number | null;
+}
+
+export function useBluetooth(
+  options: BluetoothOptions = {}
+): [BluetoothState, BluetoothActions] {
   const [hrState, setHrState] = useState<BluetoothState["heartRate"]>({
     connected: false,
     name: null,
@@ -77,23 +87,42 @@ export function useBluetooth(): [BluetoothState, BluetoothActions] {
   const powerConnection = useRef<DeviceConnection | null>(null);
   const cadenceConnection = useRef<DeviceConnection | null>(null);
   const trainerConnection = useRef<DeviceConnection | null>(null);
-  const trainerControlPoint =
-    useRef<BluetoothRemoteGATTCharacteristic | null>(null);
+  // Every control point write, in order, through one queue. It also knows
+  // whether the trainer is stopped (a sprint release, Stop, the end), so the
+  // next target is preceded by Start/Resume.
+  const trainerControlRef = useRef<TrainerControl | null>(null);
+  if (trainerControlRef.current === null) {
+    trainerControlRef.current = new TrainerControl({
+      setTargetPower: ftmsSetTargetPower,
+      stop: ftmsStop,
+      startOrResume: ftmsStartOrResume,
+    });
+  }
+  const trainer = trainerControlRef.current;
+  const releaseWatts = useRef<number | null>(options.releaseWatts ?? null);
+  releaseWatts.current = options.releaseWatts ?? null;
   const cadenceCalc = useRef(new CadenceCalculator());
   const powerCadenceCalc = useRef(new CadenceCalculator());
 
-  // Cleanup on unmount
+  // Leaving the page (a link, the back button) mid-ride: sensors disconnect
+  // at once, but the trainer is let go first, 40% then FTMS stop, and only
+  // then disconnected. A bare disconnect can leave a trainer holding the
+  // last ERG target with the rider still on it.
   useEffect(() => {
     return () => {
-      [hrConnection, powerConnection, cadenceConnection, trainerConnection].forEach(
-        (ref) => {
-          if (ref.current?.server.connected) {
-            ref.current.server.disconnect();
-          }
+      [hrConnection, powerConnection, cadenceConnection].forEach((ref) => {
+        if (ref.current?.server.connected) {
+          ref.current.server.disconnect();
         }
-      );
+      });
+      const conn = trainerConnection.current;
+      if (conn) {
+        void trainer.releaseThenDisconnect(releaseWatts.current, () => {
+          if (conn.server.connected) conn.server.disconnect();
+        });
+      }
     };
-  }, []);
+  }, [trainer]);
 
   const handleDisconnect = useCallback(
     (type: DeviceType) => () => {
@@ -120,7 +149,7 @@ export function useBluetooth(): [BluetoothState, BluetoothActions] {
             targetPower: null,
           });
           trainerConnection.current = null;
-          trainerControlPoint.current = null;
+          trainer.detach();
           // Clear trainer-derived sensor readings
           if (!powerConnection.current) {
             setPowerState({ connected: false, name: null, value: null });
@@ -134,7 +163,7 @@ export function useBluetooth(): [BluetoothState, BluetoothActions] {
           break;
       }
     },
-    []
+    [trainer]
   );
 
   const connectHeartRate = useCallback(async () => {
@@ -355,34 +384,50 @@ export function useBluetooth(): [BluetoothState, BluetoothActions] {
       // Some trainers don't support Indoor Bike Data
     }
 
-    // Get Control Point for ERG mode
+    // Get Control Point for ERG mode. ERG only counts once the trainer has
+    // handed over control and started.
     try {
       const controlPoint = await service.getCharacteristic(
         BLE_CHARACTERISTICS.fitnessMachineControlPoint
       );
       await controlPoint.startNotifications();
-      trainerControlPoint.current = controlPoint;
+      const write = (bytes: Uint8Array) =>
+        controlPoint.writeValue(bytes as unknown as BufferSource);
 
       // Request control
-      await controlPoint.writeValue(ftmsRequestControl() as unknown as BufferSource);
+      await write(ftmsRequestControl());
       // Small delay for trainer to process
       await new Promise((r) => setTimeout(r, 200));
       // Start
-      await controlPoint.writeValue(ftmsStartOrResume() as unknown as BufferSource);
+      await write(ftmsStartOrResume());
+      trainer.attach(write);
     } catch {
-      // Control point not available - trainer may be read-only
+      // Control point not available: the trainer may be read-only
     }
 
     setTrainerState((prev) => ({
       ...prev,
       connected: true,
       name: device.name || "Smart Trainer",
-      ergMode: !!trainerControlPoint.current,
+      ergMode: trainer.attached,
     }));
-  }, [handleDisconnect]);
+  }, [handleDisconnect, trainer]);
 
   const disconnectDevice = useCallback(
     (type: DeviceType) => {
+      if (type === "trainer") {
+        // Let go first, then disconnect (see the unmount cleanup above).
+        const conn = trainerConnection.current;
+        if (!conn) {
+          handleDisconnect("trainer")();
+          return;
+        }
+        void trainer.releaseThenDisconnect(releaseWatts.current, () => {
+          if (conn.server.connected) conn.server.disconnect();
+          handleDisconnect("trainer")();
+        });
+        return;
+      }
       const refs: Record<DeviceType, React.RefObject<DeviceConnection | null>> =
         {
           heartRate: hrConnection,
@@ -396,31 +441,19 @@ export function useBluetooth(): [BluetoothState, BluetoothActions] {
       }
       handleDisconnect(type)();
     },
-    [handleDisconnect]
+    [handleDisconnect, trainer]
   );
 
-  const setTargetPower = useCallback(async (watts: number) => {
-    if (!trainerControlPoint.current) return;
-    try {
-      await trainerControlPoint.current.writeValue(
-        ftmsSetTargetPower(watts) as unknown as BufferSource
-      );
-      setTrainerState((prev) => ({ ...prev, targetPower: watts }));
-    } catch (e) {
-      console.error("Failed to set target power:", e);
-    }
-  }, []);
+  const setTargetPower = useCallback(
+    async (watts: number) => {
+      if (await trainer.setTarget(watts)) {
+        setTrainerState((prev) => ({ ...prev, targetPower: watts }));
+      }
+    },
+    [trainer]
+  );
 
-  const stopTrainer = useCallback(async () => {
-    if (!trainerControlPoint.current) return;
-    try {
-      await trainerControlPoint.current.writeValue(
-        ftmsStop() as unknown as BufferSource
-      );
-    } catch (e) {
-      console.error("Failed to stop trainer:", e);
-    }
-  }, []);
+  const stopTrainer = useCallback(() => trainer.stop(), [trainer]);
 
   const disconnectAll = useCallback(() => {
     (["heartRate", "power", "cadence", "trainer"] as DeviceType[]).forEach(

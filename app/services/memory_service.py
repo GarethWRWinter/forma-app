@@ -71,6 +71,20 @@ def extract_memories(
     if not text or len(text.strip()) < 40:
         return {"created": 0, "linked": 0}
 
+    # An account held as possibly under 18: nothing more about the rider is
+    # written down (UK GDPR and the ICO Children's Code). Every path into the
+    # memory comes through here: chat, rides, Strava and onboarding. A failed
+    # check writes nothing either; a missed memory costs little.
+    try:
+        from app.services.plan_review_service import minor_hold_open
+
+        if minor_hold_open(db, user):
+            logger.info("Memory extraction skipped: account on an under-18 hold (user=%s)", user.id)
+            return {"created": 0, "linked": 0}
+    except Exception:
+        logger.exception("Checking for an under-18 hold failed (user=%s)", user.id)
+        return {"created": 0, "linked": 0}
+
     # Known entities give the model dedup + edge targets.
     known = (
         db.query(MemoryEntity)

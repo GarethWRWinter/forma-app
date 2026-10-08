@@ -1,6 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  EaseOffDetector,
+  commandKey,
+  easeOffPct,
+  isEaseOffStep,
+  trainerCommand,
+  type TrainerCommand,
+} from "@/lib/rideSafety";
 
 // === Types ===
 
@@ -17,9 +25,23 @@ export interface SessionStep {
   isInterval: boolean;
   repeatIndex?: number;
   repeatTotal?: number;
+  /** For an interval: the power its recovery rides at, which is where an
+      eased-off rep drops to. */
+  recoveryPct?: number;
 }
 
 export type SessionStatus = "idle" | "running" | "paused" | "completed";
+
+/** The current step was eased off: power sat below 70% of target for 20
+    seconds, so the target dropped to recovery for the rest of it. `id` goes
+    up by one each time, so Race Radio can say so once. */
+export interface EaseOffEvent {
+  id: number;
+  stepIndex: number;
+  pct: number;
+  fromWatts: number;
+  toWatts: number;
+}
 
 export interface SessionState {
   status: SessionStatus;
@@ -31,6 +53,14 @@ export interface SessionState {
   currentCadenceTarget: number | null;
   steps: SessionStep[];
   totalDurationSeconds: number;
+  /** What the trainer should be doing right now (null before the start). */
+  trainerCommand: TrainerCommand | null;
+  /** The current step is above the ERG cap and runs with ERG off. */
+  ergReleased: boolean;
+  /** Set while the current step is eased off. */
+  easeOff: EaseOffEvent | null;
+  /** The current step will ease off by itself if power drops. */
+  easeOffEligible: boolean;
 }
 
 export interface SessionActions {
@@ -40,6 +70,19 @@ export interface SessionActions {
   stop: () => void;
   skipStep: () => void;
   prevStep: () => void;
+  /** Stop pressed: pause and release the trainer before anything is asked. */
+  halt: () => void;
+  /** Send the current trainer command again, e.g. after a reconnect. */
+  resync: () => void;
+}
+
+export interface TrainingSessionOptions {
+  /** Every change in what the trainer should do. The page clamps and sends. */
+  onTrainerCommand?: (cmd: TrainerCommand) => void;
+  /** ERG cap as a fraction of FTP: steps above it run with ERG released. */
+  ergCapPct: number;
+  /** Live power for the ease-off check. Null when nothing measures power. */
+  livePower?: number | null;
 }
 
 interface WorkoutStepInput {
@@ -72,6 +115,7 @@ function flattenSteps(steps: WorkoutStepInput[]): SessionStep[] {
           ? sorted[i + 1]
           : null;
       const repeats = step.repeat_count || 1;
+      const recoveryPct = offStep ? offStep.power_target_pct || 0.5 : undefined;
 
       for (let r = 0; r < repeats; r++) {
         // On interval
@@ -86,6 +130,7 @@ function flattenSteps(steps: WorkoutStepInput[]): SessionStep[] {
           isInterval: true,
           repeatIndex: r + 1,
           repeatTotal: repeats,
+          recoveryPct,
         });
 
         // Off interval
@@ -153,8 +198,9 @@ function calculateTargetPower(
 export function useTrainingSession(
   workoutSteps: WorkoutStepInput[],
   ftp: number,
-  onTargetPowerChange?: (watts: number) => void
+  options: TrainingSessionOptions
 ): [SessionState, SessionActions] {
+  const { ergCapPct, livePower = null } = options;
   const steps = useMemo(() => flattenSteps(workoutSteps), [workoutSteps]);
   const flatSteps = useRef(steps);
   flatSteps.current = steps;
@@ -168,32 +214,95 @@ export function useTrainingSession(
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [stepElapsedSeconds, setStepElapsedSeconds] = useState(0);
   const [totalElapsedSeconds, setTotalElapsedSeconds] = useState(0);
+  const [halted, setHalted] = useState(false);
+  const [easeOff, setEaseOff] = useState<EaseOffEvent | null>(null);
 
   const startTime = useRef<number | null>(null);
   const stepStartTime = useRef<number | null>(null);
   const pausedTotalElapsed = useRef(0);
   const pausedStepElapsed = useRef(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastTargetPower = useRef<number | null>(null);
-  const onTargetPowerChangeRef = useRef(onTargetPowerChange);
-  onTargetPowerChangeRef.current = onTargetPowerChange;
+  const lastCommandKey = useRef<string | null>(null);
+  const onTrainerCommandRef = useRef(options.onTrainerCommand);
+  onTrainerCommandRef.current = options.onTrainerCommand;
+  const detector = useRef(new EaseOffDetector());
+  const easeOffCount = useRef(0);
+
+  // Called wherever a step starts afresh (advance, skip, back, restart).
+  const resetStepTrackers = useCallback(() => {
+    lastCommandKey.current = null; // Force a fresh command to the trainer
+    detector.current.reset();
+    setEaseOff(null);
+  }, []);
 
   const currentStep = flatSteps.current[currentStepIndex];
-  const target = currentStep
-    ? calculateTargetPower(currentStep, stepElapsedSeconds, ftp)
-    : { watts: 0, pct: 0 };
+  const eased = easeOff && easeOff.stepIndex === currentStepIndex ? easeOff : null;
+  const target = !currentStep
+    ? { watts: 0, pct: 0 }
+    : eased
+      ? { watts: eased.toWatts, pct: eased.pct }
+      : calculateTargetPower(currentStep, stepElapsedSeconds, ftp);
 
-  // Send target power changes to trainer
+  // What the trainer should be doing: the target in ERG, 40% of FTP while
+  // paused, released for sprints, Stop and the end.
+  const command = trainerCommand({
+    status,
+    halted,
+    targetWatts: target.watts,
+    targetPct: target.pct,
+    ftp,
+    ergCapPct,
+  });
+  const key = commandKey(command);
+  const commandRef = useRef(command);
+  commandRef.current = command;
+
+  // Send each change to the trainer once
   useEffect(() => {
-    if (
-      status === "running" &&
-      target.watts !== lastTargetPower.current &&
-      onTargetPowerChangeRef.current
-    ) {
-      lastTargetPower.current = target.watts;
-      onTargetPowerChangeRef.current(target.watts);
+    if (!commandRef.current || key === lastCommandKey.current) return;
+    lastCommandKey.current = key;
+    onTrainerCommandRef.current?.(commandRef.current);
+  }, [key]);
+
+  const resync = useCallback(() => {
+    if (!commandRef.current) return;
+    lastCommandKey.current = commandKey(commandRef.current);
+    onTrainerCommandRef.current?.(commandRef.current);
+  }, []);
+
+  // Ease off instead of pushing: on a work step, power below 70% of target
+  // for 20 seconds drops the target to the step's recovery for the rest of
+  // it. In ERG that is what stops a tiring rider grinding to a halt.
+  const easeOffEligible =
+    !!currentStep && !eased && isEaseOffStep(currentStep, ergCapPct);
+  useEffect(() => {
+    if (status !== "running" || livePower === null || !currentStep) {
+      detector.current.reset();
+      return;
     }
-  }, [status, target.watts]);
+    if (!easeOffEligible) return;
+    if (detector.current.update(Date.now(), livePower, target.watts)) {
+      const pct = easeOffPct(currentStep);
+      easeOffCount.current += 1;
+      setEaseOff({
+        id: easeOffCount.current,
+        stepIndex: currentStepIndex,
+        pct,
+        fromWatts: target.watts,
+        toWatts: Math.round(pct * ftp),
+      });
+    }
+    // stepElapsedSeconds keeps the check running while power holds steady.
+  }, [
+    livePower,
+    stepElapsedSeconds,
+    status,
+    currentStep,
+    currentStepIndex,
+    easeOffEligible,
+    target.watts,
+    ftp,
+  ]);
 
   const clearTimer = useCallback(() => {
     if (timerRef.current) {
@@ -232,16 +341,17 @@ export function useTrainingSession(
         pausedStepElapsed.current = 0;
         stepStartTime.current = Date.now();
         setStepElapsedSeconds(0);
-        lastTargetPower.current = null; // Force target power update
+        resetStepTrackers();
         return nextIndex;
       }
 
       return prevIndex;
     });
-  }, [clearTimer]);
+  }, [clearTimer, resetStepTrackers]);
 
   const start = useCallback(() => {
     if (status !== "idle") return;
+    setHalted(false);
     startTime.current = Date.now();
     stepStartTime.current = Date.now();
     pausedTotalElapsed.current = 0;
@@ -264,8 +374,16 @@ export function useTrainingSession(
     setStatus("paused");
   }, [status, clearTimer]);
 
+  // Stop pressed. Release first, ask second: the trainer lets go before the
+  // confirmation appears, and nothing re-engages it until the rider resumes.
+  const halt = useCallback(() => {
+    setHalted(true);
+    pause();
+  }, [pause]);
+
   const resume = useCallback(() => {
     if (status !== "paused") return;
+    setHalted(false);
     startTime.current = Date.now();
     stepStartTime.current = Date.now();
     setStatus("running");
@@ -292,10 +410,10 @@ export function useTrainingSession(
       pausedStepElapsed.current = 0;
       stepStartTime.current = Date.now();
       setStepElapsedSeconds(0);
-      lastTargetPower.current = null;
+      resetStepTrackers();
       return next;
     });
-  }, [status, clearTimer]);
+  }, [status, clearTimer, resetStepTrackers]);
 
   const prevStep = useCallback(() => {
     if (status !== "running" && status !== "paused") return;
@@ -314,7 +432,7 @@ export function useTrainingSession(
         pausedStepElapsed.current = 0;
         stepStartTime.current = Date.now();
         setStepElapsedSeconds(0);
-        lastTargetPower.current = null;
+        resetStepTrackers();
         return prev;
       }
 
@@ -322,10 +440,10 @@ export function useTrainingSession(
       pausedStepElapsed.current = 0;
       stepStartTime.current = Date.now();
       setStepElapsedSeconds(0);
-      lastTargetPower.current = null;
+      resetStepTrackers();
       return prev - 1;
     });
-  }, [status]);
+  }, [status, resetStepTrackers]);
 
   // Cleanup
   useEffect(() => {
@@ -342,6 +460,10 @@ export function useTrainingSession(
     currentCadenceTarget: currentStep?.cadenceTarget ?? null,
     steps: flatSteps.current,
     totalDurationSeconds: totalDuration,
+    trainerCommand: command,
+    ergReleased: command?.kind === "release" && command.reason === "sprint",
+    easeOff: eased,
+    easeOffEligible,
   };
 
   const actions: SessionActions = {
@@ -351,6 +473,8 @@ export function useTrainingSession(
     stop,
     skipStep,
     prevStep,
+    halt,
+    resync,
   };
 
   return [state, actions];

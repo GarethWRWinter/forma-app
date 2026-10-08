@@ -12,6 +12,14 @@ from app.models.founding import FoundingLedger
 from app.models.plan_proposal import PlanProposal
 from app.models.refresh_token import RefreshToken
 from app.models.ride import Ride, RideData
+from app.models.safety import (
+    ClearanceLimit,
+    ConsentEvent,
+    HealthScreening,
+    RideSessionStart,
+    SafetyEvent,
+    SafetyHold,
+)
 from app.models.segment import SegmentEffort, StravaSegment
 from app.models.training import TrainingPhase, TrainingPlan, Workout, WorkoutStep
 from app.models.user import User
@@ -43,4 +51,10 @@ __all__ = [
     "MemoryEdge",
     "StravaSegment",
     "SegmentEffort",
+    "SafetyHold",
+    "SafetyEvent",
+    "ConsentEvent",
+    "HealthScreening",
+    "RideSessionStart",
+    "ClearanceLimit",
 ]

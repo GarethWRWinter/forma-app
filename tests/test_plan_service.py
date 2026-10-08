@@ -1,6 +1,6 @@
 """Tests for training plan generation and workout management."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -13,21 +13,32 @@ from app.core.workout_templates import (
 )
 from app.models.base import Base
 from app.models.onboarding import GoalEvent
+from app.models.ride import Ride, RideSource
+from app.models.safety import HealthScreening
 from app.models.training import (
     TrainingPlan,
     TrainingPhase,
     Workout,
+    WorkoutStatus,
     WorkoutStep,
 )
 from app.models.user import User
+from app.services import safety_service as ss
 from app.services.plan_service import (
+    ACCOUNT_HOLD_PREFIX,
+    BREAK_PREFIX,
+    EASY_PLAN_FOCUS,
+    HOLD_LABELS,
+    HOLD_PREFIX,
     generate_plan,
     get_plan,
     get_plan_workouts,
     get_plans,
     get_workout,
     get_workouts_by_date,
+    is_held,
     link_ride_to_workout,
+    sync_hold_marks,
     update_workout_status,
 )
 
@@ -419,3 +430,355 @@ class TestLongRideAndTaper:
         plan = generate_plan(db, user, goal_event_id=goal.id)
         longest = max(w.planned_duration_seconds for w in get_plan_workouts(db, plan.id, user.id))
         assert longest <= 2 * 3600
+
+
+class TestSafetyGate:
+    """Plan generation obeys safety_service.allowed_intensity: an open hold
+    or an uncleared health answer keeps the whole plan easy (or on hold);
+    the layoff gate keeps only its first weeks easy."""
+
+    HARD = {"tempo", "sweet_spot", "threshold", "vo2max", "sprint"}
+
+    @staticmethod
+    def _type(w) -> str:
+        return str(getattr(w.workout_type, "value", w.workout_type))
+
+    def _plan(self, db, user, weeks_out=12, event_type="road_race"):
+        goal = GoalEvent(
+            user_id=user.id, event_name="Spring Classic", event_type=event_type,
+            priority="a_race", event_date=date.today() + timedelta(weeks=weeks_out),
+        )
+        db.add(goal)
+        db.commit()
+        plan = generate_plan(db, user, goal_event_id=goal.id)
+        return plan, get_plan_workouts(db, plan.id, user.id)
+
+    def _screening(self, db, user, tier="none", long_break=False, cleared=False):
+        db.add(HealthScreening(
+            user_id=user.id, version=ss.SCREENING_VERSION, answers={"q1": tier != "none"},
+            long_break=long_break, any_yes=tier != "none", tier=tier,
+            clearance_confirmed_at=datetime.utcnow() if cleared else None,
+        ))
+        db.commit()
+
+    def test_a_normal_plan_has_hard_sessions(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        _, workouts = self._plan(db, user)
+        assert {self._type(w) for w in workouts} & self.HARD
+        assert not any(is_held(w) for w in workouts)
+
+    def test_an_easy_hold_keeps_the_whole_plan_easy(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        ss.open_hold(db, user, "easy_only", "Knee", "coach_tool")
+        plan, workouts = self._plan(db, user)
+        assert workouts
+        assert {self._type(w) for w in workouts} <= ss.EASY_TYPES
+        assert all(ss.max_step_pct(w) <= ss.EASY_CAP for w in workouts)
+        assert all(ss.workout_allowed(w, "easy") for w in workouts)
+        assert {p.focus for p in plan.phases} == {EASY_PLAN_FOCUS}
+        assert not any(is_held(w) for w in workouts)
+
+    def test_an_uncleared_health_answer_keeps_the_plan_easy(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        self._screening(db, user, tier="easy_only")
+        _, workouts = self._plan(db, user)
+        assert {self._type(w) for w in workouts} <= ss.EASY_TYPES
+
+    def test_a_cleared_health_answer_does_not(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        self._screening(db, user, tier="easy_only", cleared=True)
+        _, workouts = self._plan(db, user)
+        assert {self._type(w) for w in workouts} & self.HARD
+
+    def test_a_full_hold_builds_the_plan_with_every_session_on_hold(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        ss.open_hold(db, user, "hold_all", "Chest pain", "detector", red_flag="chest_pain")
+        plan, workouts = self._plan(db, user)
+        assert workouts and all(is_held(w) for w in workouts)
+        assert all(w.status == "planned" for w in workouts)
+        assert all(not ss.workout_allowed(w, ss.allowed_intensity(db, user)) for w in workouts)
+        # The sessions are the plan they ride once cleared.
+        assert {self._type(w) for w in workouts} & self.HARD
+        assert EASY_PLAN_FOCUS not in {p.focus for p in plan.phases}
+
+    def test_the_layoff_gate_eases_only_its_window(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        self._screening(db, user, long_break=True)
+        gate = ss.layoff_gate_until(db, user)
+        assert gate is not None
+        _, workouts = self._plan(db, user)
+        inside = [w for w in workouts if w.scheduled_date < gate]
+        after = [w for w in workouts if w.scheduled_date >= gate]
+        assert inside and after
+        assert all(ss.workout_allowed(w, "easy") for w in inside)
+        assert {self._type(w) for w in after} & self.HARD
+        line = f"Hard sessions start again on {gate.day} {gate:%B}."
+        eased = [w for w in inside if line in (w.description or "")]
+        assert eased, "a session made easy by the gate says when hard sessions return"
+        assert not any(line in (w.description or "") for w in after)
+
+    def test_a_long_gap_in_the_rides_gates_the_plan(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        db.add(Ride(
+            user_id=user.id, source=RideSource.manual,
+            ride_date=datetime.combine(date.today() - timedelta(days=40), time(9, 0)),
+        ))
+        db.commit()
+        gate = ss.layoff_gate_until(db, user)
+        assert gate is not None
+        _, workouts = self._plan(db, user)
+        assert all(ss.workout_allowed(w, "easy") for w in workouts if w.scheduled_date < gate)
+
+    def test_easy_fails_closed_on_a_template_above_the_cap(self, monkeypatch):
+        import app.services.plan_service as ps
+
+        real = ps.get_template
+
+        def hot_endurance(wtype, duration_hint=None):
+            template = real(wtype, duration_hint)
+            if wtype == "endurance":
+                template = {**template, "steps": [
+                    {**s, "power_target_pct": 0.85, "power_high_pct": 0.9}
+                    for s in template["steps"]
+                ]}
+            return template
+
+        monkeypatch.setattr(ps, "get_template", hot_endurance)
+        db = _make_test_db()
+        user = _make_test_user(db)
+        ss.open_hold(db, user, "easy_only", "Pregnancy", "screening")
+        _, workouts = self._plan(db, user)
+        assert all(ss.workout_allowed(w, "easy") for w in workouts)
+        assert "recovery" in {self._type(w) for w in workouts}
+
+    def test_the_plan_never_schedules_an_ftp_test(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        _, workouts = self._plan(db, user)
+        assert not any("ftp" in w.title.lower() or "test" in w.title.lower() for w in workouts)
+
+    def test_sync_hold_marks_labels_and_releases(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        _, workouts = self._plan(db, user)
+        before = {w.id: w.description for w in workouts}
+        assert sync_hold_marks(db, user.id) == 0
+
+        ss.open_hold(db, user, "hold_all", "Fainted", "detector", red_flag="fainting")
+        labelled = sync_hold_marks(db, user.id)
+        assert labelled == len([w for w in workouts if w.scheduled_date >= date.today()])
+        assert sync_hold_marks(db, user.id) == 0  # idempotent
+        assert all(is_held(w) for w in workouts if w.scheduled_date >= date.today())
+
+        ss.confirm_clearance(db, user, "A&E doctor", None)
+        assert sync_hold_marks(db, user.id) == labelled
+        assert {w.id: w.description for w in workouts} == before
+
+
+class TestHoldLabelsFollowTheGate:
+    """Review finding 17: the on-hold label matches the gate session by
+    session whenever a hold changes, for modified sessions as well as
+    planned ones, and for a plan built under a full hold that keeps its
+    hard sessions."""
+
+    def _plan(self, db, user):
+        goal = GoalEvent(
+            user_id=user.id, event_name="Spring Classic", event_type="road_race",
+            priority="a_race", event_date=date.today() + timedelta(weeks=12),
+        )
+        db.add(goal)
+        db.commit()
+        plan = generate_plan(db, user, goal_event_id=goal.id)
+        return get_plan_workouts(db, plan.id, user.id)
+
+    @staticmethod
+    def _future(workouts):
+        return [w for w in workouts if w.scheduled_date >= date.today()]
+
+    @staticmethod
+    def _hard(w) -> bool:
+        return not ss.workout_allowed(w, "easy")
+
+    @staticmethod
+    def _label(w):
+        return next((p for p in HOLD_LABELS if (w.description or "").startswith(p)), None)
+
+    def test_lifting_a_full_hold_under_an_easy_answer_keeps_hard_sessions_labelled(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        db.add(HealthScreening(
+            user_id=user.id, version=ss.SCREENING_VERSION, answers={"q6": True},
+            any_yes=True, tier="easy_only",
+        ))
+        db.commit()
+        hold = ss.open_hold(db, user, "hold_all", "Chest pain", "detector", red_flag="chest_pain")
+        workouts = self._plan(db, user)
+        future = self._future(workouts)
+        assert future and all(is_held(w) for w in future)
+        hard = [w for w in future if self._hard(w)]
+        assert hard, "a plan built under a full hold keeps its hard sessions"
+
+        ss.lift_hold(db, user, hold.id, "mistake")
+        assert ss.allowed_intensity(db, user) == "easy"
+        sync_hold_marks(db, user.id)
+        for w in future:
+            assert is_held(w) == self._hard(w), (w.title, w.workout_type)
+        assert all(self._label(w) == HOLD_PREFIX for w in hard)
+        assert sync_hold_marks(db, user.id) == 0
+
+    def test_modified_sessions_take_the_label_too(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        future = self._future(self._plan(db, user))
+        for w in future[:3]:
+            w.status = WorkoutStatus.modified
+        db.commit()
+        ss.open_hold(db, user, "hold_all", "Fainted", "detector", red_flag="fainting")
+        sync_hold_marks(db, user.id)
+        assert all(is_held(w) for w in future[:3])
+
+        ss.confirm_clearance(db, user, "A&E doctor", None)
+        sync_hold_marks(db, user.id)
+        assert not any(is_held(w) for w in future)
+
+    def test_an_easy_hold_on_an_existing_plan_labels_only_its_hard_sessions(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        workouts = self._plan(db, user)
+        before = {w.id: w.description for w in workouts}
+        future = self._future(workouts)
+        ss.open_hold(db, user, "easy_only", "Sore knee", "coach_tool", red_flag="injury")
+        sync_hold_marks(db, user.id)
+        assert any(self._hard(w) for w in future)
+        for w in future:
+            assert self._label(w) == (HOLD_PREFIX if self._hard(w) else None)
+
+        ss.confirm_clearance(db, user, "Physio", None)
+        sync_hold_marks(db, user.id)
+        assert {w.id: w.description for w in workouts} == before
+
+    def test_after_clearance_hard_sessions_in_the_layoff_window_still_wait(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        workouts = self._plan(db, user)
+        # Off the bike for six weeks before this: the first two weeks back
+        # are easy, whatever the plan was built with.
+        db.add(Ride(
+            user_id=user.id, source=RideSource.manual,
+            ride_date=datetime.combine(date.today() - timedelta(days=40), time(9, 0)),
+        ))
+        db.commit()
+        gate = ss.layoff_gate_until(db, user)
+        assert gate is not None
+        ss.open_hold(db, user, "hold_all", "Chest pain", "detector", red_flag="chest_pain")
+        sync_hold_marks(db, user.id)
+        ss.confirm_clearance(db, user, "Cardiologist", None)
+        sync_hold_marks(db, user.id)
+
+        future = self._future(workouts)
+        inside = [w for w in future if w.scheduled_date < gate]
+        assert any(self._hard(w) for w in inside)
+        for w in future:
+            wanted = BREAK_PREFIX if w.scheduled_date < gate and self._hard(w) else None
+            assert self._label(w) == wanted, (w.scheduled_date, w.workout_type)
+
+    def test_an_under_18_hold_never_mentions_a_doctor(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        ss.open_hold(db, user, "hold_all", "Said they are 15", "detector", red_flag="minor")
+        future = self._future(self._plan(db, user))
+        assert future and all(self._label(w) == ACCOUNT_HOLD_PREFIX for w in future)
+        assert not any("doctor" in (w.description or "").split(".")[0] for w in future)
+
+    def test_a_break_hold_from_the_coach_reads_as_a_break(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        future = self._future(self._plan(db, user))
+        ss.open_hold(db, user, "easy_only", "Six weeks off", "layoff", red_flag="layoff")
+        sync_hold_marks(db, user.id)
+        hard = [w for w in future if self._hard(w)]
+        assert hard and all(self._label(w) == BREAK_PREFIX for w in hard)
+
+    def test_past_and_closed_sessions_never_gain_a_label_but_lose_a_stale_one(self):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        future = self._future(self._plan(db, user))
+        done, skipped = future[0], future[1]
+        done.status = WorkoutStatus.completed
+        skipped.status = WorkoutStatus.skipped
+        past = Workout(
+            user_id=user.id, scheduled_date=date.today() - timedelta(days=3),
+            title="Old VO2", description="Five by five.", workout_type="vo2max",
+            planned_duration_seconds=3600, status=WorkoutStatus.planned,
+        )
+        db.add(past)
+        db.commit()
+        ss.open_hold(db, user, "hold_all", "Fainted", "detector", red_flag="fainting")
+        sync_hold_marks(db, user.id)
+        assert not is_held(done) and not is_held(skipped) and not is_held(past)
+
+        # A label left on a session that has since closed comes off once
+        # the gate no longer holds it.
+        done.description = HOLD_PREFIX + done.description
+        db.commit()
+        ss.confirm_clearance(db, user, "GP", None)
+        sync_hold_marks(db, user.id)
+        assert not is_held(done)
+
+    def test_a_fresh_plan_already_matches_the_gate(self):
+        """Whatever the gate, sync_hold_marks has nothing to change on a plan
+        that was just built: the two read the gate the same way."""
+        cases = {
+            "clear": lambda db, u: None,
+            "easy hold": lambda db, u: ss.open_hold(db, u, "easy_only", "Knee", "coach_tool"),
+            "full hold": lambda db, u: ss.open_hold(
+                db, u, "hold_all", "Chest pain", "detector", red_flag="chest_pain"),
+            "under 18": lambda db, u: ss.open_hold(
+                db, u, "hold_all", "Said they are 15", "detector", red_flag="minor"),
+            "break": lambda db, u: db.add(Ride(
+                user_id=u.id, source=RideSource.manual,
+                ride_date=datetime.combine(date.today() - timedelta(days=40), time(9, 0)),
+            )),
+        }
+        for name, setup in cases.items():
+            db = _make_test_db()
+            user = _make_test_user(db)
+            setup(db, user)
+            db.commit()
+            self._plan(db, user)
+            assert sync_hold_marks(db, user.id) == 0, name
+
+
+class TestExperienceDefault:
+    def _first_long_ride(self, experience):
+        db = _make_test_db()
+        user = _make_test_user(db)
+        user.experience_level = experience
+        user.preferred_hard_days = []
+        user.rest_days = []
+        db.commit()
+        goal = GoalEvent(
+            user_id=user.id, event_name="Fred Whitton", event_type="sportive",
+            priority="a_race", event_date=date.today() + timedelta(weeks=20),
+            target_duration_minutes=480,
+        )
+        db.add(goal)
+        db.commit()
+        plan = generate_plan(db, user, goal_event_id=goal.id)
+        long_rides = [
+            w for w in get_plan_workouts(db, plan.id, user.id)
+            if w.description.startswith("The long ride")
+        ]
+        return long_rides[0].planned_duration_seconds
+
+    def test_no_experience_level_plans_as_a_beginner(self):
+        # A beginner's long ride starts at 75 minutes; an intermediate's at 90.
+        assert self._first_long_ride(None) == self._first_long_ride("beginner") == 75 * 60
+        assert self._first_long_ride("intermediate") == 90 * 60

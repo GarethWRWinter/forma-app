@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1 import admin, auth, chat, coach_insights, exports, goals, inspiration, integrations, memory, metrics, onboarding, palmares, rides, training, users
+from app.api.v1 import admin, auth, chat, coach_insights, exports, goals, inspiration, integrations, memory, metrics, onboarding, palmares, rides, safety, training, users
 from app.api.v1.dropbox import router as dropbox_router
 from app.api.v1.wahoo import router as wahoo_router
 from app.api.v1.billing import router as billing_router
@@ -10,6 +10,7 @@ api_router = APIRouter()
 
 api_router.include_router(auth.router)
 api_router.include_router(users.router)
+api_router.include_router(safety.router)
 api_router.include_router(rides.router)
 api_router.include_router(metrics.router)
 api_router.include_router(onboarding.router)

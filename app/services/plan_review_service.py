@@ -186,6 +186,12 @@ def build_review_context(db: Session, user: User) -> dict:
         "preferred_hard_days_weekday_indexes": user.preferred_hard_days or [],
     }
 
+    # What the rider may be asked to ride at all (SAFETY LAW rule 7). A
+    # proposal the safety state rules out is dropped before the rider sees it.
+    from app.services.safety_screen import coach_safety_context
+
+    context["safety"] = coach_safety_context(db, user)
+
     # ── The plan as prescribed ──
     plan = _active_plan(db, user)
     context["plan"] = None
@@ -483,6 +489,11 @@ When a change is warranted:
 }
 
 Rules for the changes list.
+- Read `safety` first. If allowed_intensity is "easy", propose nothing above
+  recovery or endurance riding, no tests and no intensity targets. If it is
+  "none", propose only skip_workout. Never argue for more load while a hold,
+  an uncleared health-screen yes or a layoff gate stands, and any limits a
+  doctor set beat the plan.
 - At most three edits. This is one correction expressed in the fewest sessions
   that deliver it, not a rewrite of the block.
 - action is one of update_workout, add_workout, skip_workout.
@@ -628,6 +639,15 @@ def review_plan(
     """
     today = date.today()
 
+    try:
+        if minor_hold_open(db, user):
+            # An account that may be a child's: nothing more of their data
+            # goes to the model, and the coach raises nothing.
+            return None
+    except Exception:
+        logger.exception("Checking for an under-18 hold failed (user=%s)", user.id)
+        return None
+
     plan = _active_plan(db, user)
     if plan is None:
         return None  # nothing to interrogate
@@ -681,6 +701,12 @@ def review_plan(
         return None
 
     changes = _validate_changes(data.get("changes"), allowed_ids, today)
+    changes, held = gate_changes(db, user, changes)
+    if held:
+        logger.info(
+            "Plan review: %d change(s) dropped by the safety gate (user=%s)",
+            len(held), user.id,
+        )
     if not changes:
         # An observation with no edits is a chat message, not a proposal. The
         # rider is being asked to approve something concrete or nothing at all.
@@ -733,17 +759,241 @@ def review_plan(
 # ── The rider's decision ─────────────────────────────────────────────────────
 
 
-def _planned_if_for(workout_type: str, duration_seconds: int | None) -> float | None:
-    """A changed session type leaves the old intensity target lying. Refresh it
-    from the template so the row stays internally honest."""
-    try:
-        from app.core.workout_templates import get_template
+# ── Steps follow the type, and the safety gate decides what may go in ──────
 
-        template = get_template(workout_type, duration_hint=duration_seconds)
-        return template.get("planned_if")
-    except Exception:
-        logger.exception("Template lookup failed for type %s", workout_type)
+
+def template_for(workout_type: str, duration_hint: int | None = None) -> dict | None:
+    """The template plan generation builds this session type from, picked the
+    way plan_service picks it (closest duration). None for a rest day, which
+    has nothing to ride."""
+    from app.core.workout_templates import get_template
+
+    value = _enum_value(workout_type)
+    if value == WorkoutType.rest.value:
         return None
+    return get_template(value, duration_hint=duration_hint)
+
+
+def rebuild_steps(
+    db: Session, workout: Workout, template: dict | None, ftp: int | None = None
+) -> None:
+    """Replace a session's steps with its template's, built by the same
+    function plan generation uses.
+
+    This is the fix for the session-type bug: a type changed in chat or by an
+    accepted proposal used to change the label only, so a VO2max session
+    renamed "recovery" still drove the trainer through VO2max intervals. The
+    planned duration, TSS and IF follow the new steps, so the row stays
+    honest about what ride mode will ask for."""
+    from app.core.workout_templates import estimate_tss
+    from app.services.plan_service import _create_workout_steps
+
+    workout.steps.clear()  # delete-orphan: the old rows go on flush
+    db.flush()
+    if template is None:
+        workout.planned_duration_seconds = None
+        workout.planned_tss = 0.0
+        workout.planned_if = None
+    else:
+        _create_workout_steps(db, workout, template)
+        workout.planned_duration_seconds = template["duration_seconds"]
+        workout.planned_tss = round(estimate_tss(template, ftp or 0), 1)
+        workout.planned_if = template.get("planned_if")
+    db.flush()
+    db.expire(workout, ["steps"])
+
+
+def template_summary(template: dict | None) -> str:
+    """One line on what a rebuilt session now asks for, for the coach to
+    describe it truthfully."""
+    if template is None:
+        return "a rest day, with nothing to ride"
+    from app.services.safety_service import max_step_pct
+
+    minutes = round(template["duration_seconds"] / 60)
+    return (
+        f"the {template['name']} template ({template.get('description', '').strip()}), "
+        f"{minutes} minutes, no step above {round(max_step_pct(template) * 100)}% of FTP"
+    )
+
+
+def candidate_for(
+    workout_type: str, template: dict | None = None, workout: Workout | None = None
+) -> dict:
+    """What the gate judges: the type, and the steps the session will carry
+    (the template's for a new or retyped session, the existing ones otherwise)."""
+    if template is not None or workout is None:
+        steps = (template or {}).get("steps", [])
+    else:
+        steps = list(workout.steps or [])
+    return {"workout_type": _enum_value(workout_type), "steps": steps}
+
+
+# ── The rules beyond intensity: an injury hold and an under-eating flag ────
+#
+# One definition, read by every path that changes the plan: the chat tools
+# (coach_service), coach-filed and review-engine proposals, and accepting one.
+
+# After a rider says something about eating very little or losing weight
+# fast, nothing may add training for this long (SAFETY LAW 2h).
+RESTRICTION_NO_INCREASE_DAYS = 28
+
+
+def live_holds(db: Session, user_id: str) -> list:
+    """This rider's holds that are still in force: not lifted, and not past
+    an expiry if the hold carries one. safety_service owns the definition;
+    the query below only stands in where it has none."""
+    from sqlalchemy import or_
+
+    from app.models.safety import SafetyHold
+    from app.services import safety_service
+
+    in_force = getattr(safety_service, "open_holds", None)
+    if in_force is not None:
+        return list(in_force(db, user_id))
+    query = db.query(SafetyHold).filter(
+        SafetyHold.user_id == user_id, SafetyHold.lifted_at.is_(None)
+    )
+    if hasattr(SafetyHold, "expires_at"):
+        query = query.filter(
+            or_(SafetyHold.expires_at.is_(None), SafetyHold.expires_at > datetime.utcnow())
+        )
+    return query.all()
+
+
+def open_hold_for(db: Session, user: User | str, red_flag: str):
+    """The live hold opened for this red flag, or None."""
+    uid = user if isinstance(user, str) else user.id
+    return next((h for h in live_holds(db, uid) if h.red_flag == red_flag), None)
+
+
+def minor_hold_open(db: Session, user: User | str) -> bool:
+    """Whether the account is held as possibly under 18. While it is, nothing
+    about the rider is written, generated or sent. Raises on a database
+    failure: each caller decides which way to fail."""
+    return open_hold_for(db, user, "minor") is not None
+
+
+def restriction_flagged(db: Session, user: User | str) -> bool:
+    """Whether the red-flag check (or the coach) logged under-eating or fast
+    weight loss for this rider in the last 28 days. A failed read counts as
+    flagged: never add load on a guess."""
+    from app.models.safety import SafetyEvent
+
+    uid = user if isinstance(user, str) else user.id
+    since = datetime.utcnow() - timedelta(days=RESTRICTION_NO_INCREASE_DAYS)
+    try:
+        return (
+            db.query(SafetyEvent.id)
+            .filter(
+                SafetyEvent.user_id == uid,
+                SafetyEvent.kind == "restriction",
+                SafetyEvent.created_at >= since,
+            )
+            .first()
+            is not None
+        )
+    except Exception:
+        logger.exception("Reading restriction flags failed (user=%s)", uid)
+        return True
+
+
+def load_goes_up(workout: Workout, new_type: str, edit: dict) -> bool:
+    """Whether an edit makes a session longer, heavier or harder."""
+    from app.services.safety_service import INTENSITY_CEILING
+
+    def _more(key: str, current) -> bool:
+        new = edit.get(key)
+        return new is not None and (current is None or new > current)
+
+    current_type = _enum_value(workout.workout_type) or "rest"
+    harder = INTENSITY_CEILING.get(new_type, 0.0) > INTENSITY_CEILING.get(current_type, 0.0)
+    return (
+        harder
+        or _more("planned_duration_seconds", workout.planned_duration_seconds)
+        or _more("planned_tss", workout.planned_tss)
+    )
+
+
+def plan_rule_refusal(
+    db: Session, user: User, action: str, new_type: str | None,
+    workout: Workout | None = None, edit: dict | None = None,
+) -> str | None:
+    """Which rule beyond intensity rules an edit out, or None.
+
+    "injury": an injury hold is open, and the edit would put a ride in the
+    plan (an added session, or one retyped to anything but rest). SAFETY LAW
+    2e: the session is skipped instead, never replaced.
+    "restriction": under-eating or fast weight loss was flagged in the last
+    28 days, and the edit adds a session or makes one longer, heavier or
+    harder (SAFETY LAW 2h)."""
+    if action == "skip_workout" or new_type == WorkoutType.rest.value:
+        return None
+    retyped = workout is None or new_type != _enum_value(workout.workout_type)
+    if action == "add_workout" or workout is None:
+        if open_hold_for(db, user, "injury") is not None:
+            return "injury"
+        if restriction_flagged(db, user):
+            return "restriction"
+        return None
+    if retyped and open_hold_for(db, user, "injury") is not None:
+        return "injury"
+    if restriction_flagged(db, user) and load_goes_up(workout, new_type, edit or {}):
+        return "restriction"
+    return None
+
+
+def _change_allowed(db: Session, user: User, change: dict) -> bool:
+    """Whether one proposed edit fits the rider's safety state on its date:
+    the intensity gate, the injury hold and the under-eating flag, exactly as
+    the chat tools apply them."""
+    from app.services import safety_service
+
+    action = change.get("action")
+    if action == "skip_workout":
+        return True  # taking work out is always allowed
+    workout = None
+    if action == "update_workout":
+        workout = (
+            db.query(Workout)
+            .filter(Workout.id == change.get("workout_id"), Workout.user_id == user.id)
+            .first()
+        )
+        if workout is None:
+            return True  # nothing to apply; apply_proposal skips it anyway
+    day = _as_date(change.get("scheduled_date")) or (
+        _as_date(workout.scheduled_date) if workout is not None else None
+    )
+    new_type = change.get("workout_type") or (
+        _enum_value(workout.workout_type) if workout is not None else None
+    )
+    if not new_type:
+        return False
+    if plan_rule_refusal(db, user, action, new_type, workout, change):
+        return False
+    retyped = workout is None or new_type != _enum_value(workout.workout_type)
+    hint = change.get("planned_duration_seconds") or (
+        workout.planned_duration_seconds if workout is not None else None
+    )
+    template = template_for(new_type, hint) if retyped else None
+    candidate = candidate_for(new_type, template, None if retyped else workout)
+    allowed = safety_service.allowed_intensity(db, user, day)
+    return safety_service.workout_allowed(candidate, allowed)
+
+
+def gate_changes(db: Session, user: User, changes: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split proposed edits into those the rider's safety state allows and
+    those it rules out (a hold, an uncleared health-screen yes, the layoff
+    gate). Skips always pass: taking work out is never the risk."""
+    kept, held = [], []
+    for change in changes:
+        try:
+            ok = _change_allowed(db, user, change)
+        except Exception:
+            logger.exception("Safety gate failed on a proposed change (user=%s)", user.id)
+            ok = False  # fail closed
+        (kept if ok else held).append(change)
+    return kept, held
 
 
 def apply_proposal(db: Session, user: User, proposal: PlanProposal) -> int:
@@ -771,6 +1021,20 @@ def apply_proposal(db: Session, user: User, proposal: PlanProposal) -> int:
         action = change.get("action")
         workout_id = change.get("workout_id")
         scheduled = _as_date(change.get("scheduled_date"))
+
+        # The safety state may have changed since the proposal was written:
+        # a hold opened since then outranks the rider's tap on "Make the change".
+        try:
+            allowed = _change_allowed(db, user, change)
+        except Exception:
+            logger.exception("Safety gate failed applying proposal %s", proposal.id)
+            allowed = False
+        if not allowed:
+            logger.info(
+                "Applying proposal %s: %s on %s held back by the safety gate",
+                proposal.id, action, workout_id or change.get("scheduled_date"),
+            )
+            continue
 
         if action in ("update_workout", "skip_workout"):
             workout = (
@@ -811,10 +1075,14 @@ def apply_proposal(db: Session, user: User, proposal: PlanProposal) -> int:
                 workout.planned_tss = change["planned_tss"]
             if change.get("workout_type"):
                 new_type = WorkoutType(change["workout_type"])
-                if new_type != workout.workout_type:
+                if new_type.value != _enum_value(workout.workout_type):
                     workout.workout_type = new_type
-                    workout.planned_if = _planned_if_for(
-                        new_type.value, workout.planned_duration_seconds
+                    # What the trainer does follows the type: rebuild the
+                    # steps from the template, as plan generation would.
+                    rebuild_steps(
+                        db, workout,
+                        template_for(new_type.value, workout.planned_duration_seconds),
+                        user.ftp,
                     )
             # The rider changed this session on purpose, and the plan should
             # remember that it is no longer the generated prescription.
@@ -842,10 +1110,15 @@ def apply_proposal(db: Session, user: User, proposal: PlanProposal) -> int:
                 workout_type=WorkoutType(change["workout_type"]),
                 planned_duration_seconds=duration,
                 planned_tss=change.get("planned_tss"),
-                planned_if=_planned_if_for(change["workout_type"], duration),
                 status=WorkoutStatus.planned,
             )
             db.add(workout)
+            db.flush()
+            # A new session gets real steps, so ride mode has something true
+            # to run and the safety ceilings have something to check.
+            rebuild_steps(
+                db, workout, template_for(change["workout_type"], duration), user.ftp
+            )
             changed += 1
 
     proposal.status = "accepted"
@@ -855,6 +1128,16 @@ def apply_proposal(db: Session, user: User, proposal: PlanProposal) -> int:
         "Proposal %s accepted by user=%s, %d workouts changed",
         proposal.id, user.id, changed,
     )
+    if changed:
+        # A rewritten description drops its on-hold label, and an added
+        # session has none yet: put them back to match the gate.
+        try:
+            from app.services.plan_service import sync_hold_marks
+
+            sync_hold_marks(db, user.id)
+        except Exception:
+            logger.exception("Marking held sessions after a proposal failed (user=%s)", user.id)
+            db.rollback()
     return changed
 
 

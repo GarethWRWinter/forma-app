@@ -177,7 +177,10 @@ Rules for your response:
      blank lines, no headings).
    - `adjustments` may be an empty array if no changes are needed.
 6. Only suggest changes to workouts in the `upcoming_workouts` list; do not \
-   invent new ones. If no change is needed, return an empty `adjustments` array."""
+   invent new ones. If no change is needed, return an empty `adjustments` array.
+7. Read `safety` first. Never suggest an adjustment above what \
+   allowed_intensity allows ("easy": recovery and endurance only, no tests; \
+   "none": nothing to ride), and respect any doctor_limits."""
 
 
 def _build_assessment_prompt(
@@ -186,9 +189,11 @@ def _build_assessment_prompt(
     ride: Ride,
     score_result: dict,
     upcoming: list[Workout],
+    safety: dict | None = None,
 ) -> str:
     """Build the user message payload for Claude."""
-    rider_name = (user.first_name or user.email.split("@")[0]).strip()
+    # User has no first_name: this line raised on every written assessment.
+    rider_name = (user.full_name or user.email.split("@")[0]).split()[0]
 
     planned = {
         "title": workout.title,
@@ -235,6 +240,9 @@ def _build_assessment_prompt(
         "actual_ride": actual,
         "upcoming_workouts": upcoming_list,
     }
+    if safety is not None:
+        # What the rider may ride (SAFETY LAW rule 7).
+        payload["safety"] = safety
 
     return (
         "Here is the data for the completed ride and the next few days of the "
@@ -319,8 +327,20 @@ def generate_assessment(
 
     need_llm = force or not workout.execution_feedback
     if need_llm:
+        # Nothing about an account held as possibly under 18 is generated
+        # (nor when that can't be checked): the score stands on its own.
+        from app.services.outreach_service import speak_first_block
+
+        if speak_first_block(db, user, training=False) in ("minor", "unknown"):
+            need_llm = False
+    if need_llm:
+        from app.services.safety_screen import coach_safety_context
+
         upcoming = _get_upcoming_workouts(db, user.id, workout.scheduled_date)
-        user_msg = _build_assessment_prompt(user, workout, ride, score_result, upcoming)
+        user_msg = _build_assessment_prompt(
+            user, workout, ride, score_result, upcoming,
+            safety=coach_safety_context(db, user),
+        )
 
         # One system, not separate features: assessments see the same memory
         # and dossier every other coach surface sees.

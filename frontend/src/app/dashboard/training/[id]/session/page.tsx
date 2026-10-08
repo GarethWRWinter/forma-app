@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -26,12 +26,46 @@ import {
   VolumeX,
   Radio,
 } from "lucide-react";
-import { rides, training } from "@/lib/api";
+import {
+  rides,
+  safety,
+  training,
+  type RideSessionStartPayload,
+  type SafetyState,
+  type WorkoutStep,
+} from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { formatDuration, cn } from "@/lib/utils";
 import { getZoneFromPct } from "@/lib/trainingZones";
 import { ZONES, SERIES, ZONE_BLOCKS } from "@/lib/palette";
 import { useBluetooth } from "@/hooks/useBluetooth";
+import {
+  ERG_CAP_PCT,
+  clampErgWatts,
+  createCommandQueue,
+  ergCeilingFor,
+  setErgCeiling,
+} from "@/lib/bluetooth";
+import {
+  HARD_SESSION_LINE,
+  PAUSE_RELEASE_PCT,
+  RIDE_MODE_ACK_BUTTON,
+  RIDE_MODE_ACK_TITLE,
+  SPRINT_ERG_OFF,
+  easyVersionText,
+  isHardSession,
+  maxErgTargetPct,
+  mislabelledText,
+  rideGate,
+  rideModeAckParagraphs,
+  rideModeAckRecord,
+  safetyReadStatus,
+  sha256Hex,
+  stepsSignature,
+  type RideGate,
+  type TrainerCommand,
+} from "@/lib/rideSafety";
+import { emergencyNumber } from "@/components/safety/safety-rules";
 import { useCoachRadio } from "@/hooks/useCoachRadio";
 import {
   useTelemetryBuffer,
@@ -74,6 +108,41 @@ function formatTime(seconds: number): string {
 const AUTO_PAUSE_DELAY = 15;
 // Minimum power reading to consider "riding"
 const MIN_POWER_THRESHOLD = 10;
+// Shares the cache entry with the hold banner and Settings.
+const SAFETY_STATE_KEY = ["safety-state"] as const;
+const NO_STEPS: WorkoutStep[] = [];
+
+/** "2026-10-22" as "22 October". */
+function longDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "long" });
+}
+
+/**
+ * The record of what the trainer was told, for ride_session_starts. Never
+ * holds up the ride: one retry, then a console warning.
+ */
+async function recordSessionStart(
+  payload: Omit<RideSessionStartPayload, "steps_hash">,
+  steps: WorkoutStep[]
+): Promise<void> {
+  try {
+    const steps_hash = await sha256Hex(stepsSignature(steps));
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await safety.recordSessionStart({ ...payload, steps_hash });
+        return;
+      } catch (e) {
+        if (attempt >= 2) throw e;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  } catch (e) {
+    console.warn("Couldn't record the session start:", e);
+  }
+}
 
 export default function TrainingSessionPage() {
   const params = useParams();
@@ -85,6 +154,8 @@ export default function TrainingSessionPage() {
   // means no ride mode, and we say so instead of guessing.
   const ftp = user?.ftp ?? null;
   const coachName = user?.coach_name || "Forma";
+  const emergency = emergencyNumber(user?.country);
+  const queryClient = useQueryClient();
   const [showDevicePanel, setShowDevicePanel] = useState(false);
   const [showConfirmStop, setShowConfirmStop] = useState(false);
   const [showStepList, setShowStepList] = useState(true);
@@ -108,25 +179,176 @@ export default function TrainingSessionPage() {
     queryFn: () => training.getWorkout(workoutId),
   });
 
-  const [btState, btActions] = useBluetooth();
+  // === Safety gate ===
+  // Read fresh every time ride mode opens: a hold opened in chat ten minutes
+  // ago must reach the trainer. The cache entry is shared with the hold
+  // banner, so its copy may be minutes old, and a refetch that fails keeps
+  // it: only a read made since this page opened counts, and anything else
+  // refuses. Not refetched mid-ride: the state and the steps are frozen at
+  // Start.
+  const [openedAt] = useState(() => Date.now());
+  const safetyQuery = useQuery({
+    queryKey: SAFETY_STATE_KEY,
+    queryFn: () => safety.getState(),
+    staleTime: 0,
+    retry: 1,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+  });
+  const safetyRead = safetyReadStatus(
+    {
+      hasData: safetyQuery.data != null,
+      isError: safetyQuery.isError,
+      isFetching: safetyQuery.isFetching,
+      dataUpdatedAt: safetyQuery.dataUpdatedAt,
+    },
+    openedAt
+  );
+  const [startedSafety, setStartedSafety] = useState<SafetyState | null>(null);
+  const safetyState =
+    startedSafety ?? (safetyRead === "fresh" ? (safetyQuery.data ?? null) : null);
+
+  const [startedGate, setStartedGate] = useState<RideGate<WorkoutStep> | null>(
+    null
+  );
+  const liveGate = useMemo(
+    () =>
+      workout?.steps?.length && safetyState
+        ? rideGate(
+            workout.workout_type,
+            workout.steps,
+            safetyState.allowed,
+            safetyState.ceilings,
+            safetyState.easy_cap
+          )
+        : null,
+    [workout?.steps, workout?.workout_type, safetyState]
+  );
+  const gate = startedGate ?? liveGate;
+  const rideSteps = gate?.kind === "ride" ? gate.steps : NO_STEPS;
+  const hardSession =
+    gate?.kind === "ride" &&
+    !gate.easy &&
+    isHardSession(workout?.workout_type ?? "", gate.steps);
+
+  // ERG cap: the server's, never above 1.3 x FTP. bluetooth.ts holds the same
+  // ceiling at the transport layer, so a bug here still can't exceed it.
+  const serverCap = safetyState?.erg_cap;
+  const ergCapPct =
+    typeof serverCap === "number" && serverCap > 0
+      ? Math.min(serverCap, ERG_CAP_PCT)
+      : ERG_CAP_PCT;
+  const ergCeiling = ftp ? ergCeilingFor(ftp, ergCapPct) : null;
+  useEffect(() => {
+    setErgCeiling(ergCeiling);
+    return () => setErgCeiling(null);
+  }, [ergCeiling]);
+
+  // First ride ever: the ride-mode acknowledgement, recorded word for word.
+  const [ackDone, setAckDone] = useState(false);
+  const ackRecord = rideModeAckRecord(emergency);
+  const ackMutation = useMutation({
+    mutationFn: () => safety.acknowledge("ride_mode", ackRecord),
+    onSuccess: () => {
+      setAckDone(true);
+      queryClient.setQueryData<SafetyState>(SAFETY_STATE_KEY, (s) =>
+        s ? { ...s, ride_mode_ack: true } : s
+      );
+    },
+  });
+  const needsAck = !!safetyState && !safetyState.ride_mode_ack && !ackDone;
+
+  // Leaving the page mid-ride lets the trainer go at this level, then stops
+  // it, before Bluetooth disconnects (useBluetooth, TrainerControl).
+  const releaseWatts = ftp
+    ? clampErgWatts(Math.round(PAUSE_RELEASE_PCT * ftp), ergCeiling)
+    : null;
+  const [btState, btActions] = useBluetooth({ releaseWatts });
+  const trainerLive = btState.trainer.connected && btState.trainer.ergMode;
+
+  // Every trainer write goes through one queue, in order: a release must
+  // never collide with a target write still in flight.
+  const trainerQueue = useRef(createCommandQueue());
 
   const handleTargetPowerChange = useCallback(
-    async (watts: number) => {
+    (cmd: TrainerCommand) => {
       // Belt and braces: the page refuses to start without an FTP, but never
       // let a target derived from a missing one reach the trainer.
-      if (!ftp) return;
-      if (btState.trainer.connected && btState.trainer.ergMode) {
-        await btActions.setTargetPower(watts);
+      if (!ftp || !trainerLive) return;
+      const send = trainerQueue.current;
+      if (cmd.kind === "erg") {
+        // ERG never holds more than the cap (1.3 x FTP), whatever the step
+        // asks for. Sprints above it arrive as a release instead.
+        const watts = clampErgWatts(cmd.watts, ergCeiling);
+        void send(() => btActions.setTargetPower(watts));
+        return;
       }
+      // Release (sprint, Stop, the end): drop to 40% of FTP first, so a
+      // trainer that ignores the FTMS stop still lets go of a hard target,
+      // then hand the resistance back to the rider.
+      const easy = clampErgWatts(Math.round(PAUSE_RELEASE_PCT * ftp), ergCeiling);
+      void send(() => btActions.setTargetPower(easy));
+      void send(() => btActions.stopTrainer());
     },
-    [ftp, btState.trainer.connected, btState.trainer.ergMode, btActions]
+    [ftp, trainerLive, ergCeiling, btActions]
   );
 
-  const [session, sessionActions] = useTrainingSession(
-    workout?.steps || [],
-    ftp ?? 0,
-    handleTargetPowerChange
-  );
+  const [session, sessionActions] = useTrainingSession(rideSteps, ftp ?? 0, {
+    onTrainerCommand: handleTargetPowerChange,
+    ergCapPct,
+    livePower: btState.power.connected ? (btState.power.value ?? 0) : null,
+  });
+
+  // A trainer connected (or reconnected) mid-session picks up where the
+  // session is, not where it was when it dropped.
+  const { resync } = sessionActions;
+  useEffect(() => {
+    if (trainerLive && session.status !== "idle") resync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trainerLive, resync]);
+
+  // Start: freeze the steps we ride and record what the trainer was told.
+  const handleStart = useCallback(() => {
+    if (!ftp || gate?.kind !== "ride" || session.status !== "idle") return;
+    // Never from a stale or failed read (the refusal screen covers this too).
+    if (safetyRead !== "fresh" || !safetyState) return;
+    setStartedSafety(safetyState);
+    setStartedGate(gate);
+    sessionActions.start();
+    void recordSessionStart(
+      {
+        workout_id: workoutId,
+        ftp,
+        erg: trainerLive,
+        max_target_watts: clampErgWatts(
+          Math.round(maxErgTargetPct(session.steps, ergCapPct) * ftp),
+          ergCeiling
+        ),
+      },
+      gate.steps
+    );
+  }, [
+    ftp,
+    gate,
+    session.status,
+    session.steps,
+    sessionActions,
+    workoutId,
+    trainerLive,
+    ergCapPct,
+    ergCeiling,
+    safetyRead,
+    safetyState,
+  ]);
+
+  // Stop releases the trainer at once; the question comes after.
+  const stopWasRunning = useRef(false);
+  const handleStopPressed = useCallback(() => {
+    stopWasRunning.current = session.status === "running";
+    setAutoPaused(false);
+    sessionActions.halt();
+    setShowConfirmStop(true);
+  }, [session.status, sessionActions]);
 
   // === Telemetry buffering ===
   const buffer = useTelemetryBuffer({
@@ -230,6 +452,11 @@ export default function TrainingSessionPage() {
     ftp: ftp ?? 0,
     livePower: btState.power.value ?? 0,
     enabled: true,
+    hardSession,
+    trainerControlled: trainerLive,
+    ergReleased: session.ergReleased,
+    easeOffEligible: session.easeOffEligible,
+    easeOff: session.easeOff,
   });
 
   // === Auto-pause when no power detected ===
@@ -299,13 +526,9 @@ export default function TrainingSessionPage() {
     }
   }, [session.status]);
 
-  // Cleanup trainer on unmount
-  useEffect(() => {
-    return () => {
-      btActions.disconnectAll();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Leaving the page disconnects everything. useBluetooth does it on unmount,
+  // and lets the trainer go (40%, then FTMS stop) before it disconnects; a
+  // second disconnect from here would race that release.
 
   // Scroll active step into view in step list
   const activeStepRef = useRef<HTMLDivElement>(null);
@@ -368,6 +591,84 @@ export default function TrainingSessionPage() {
       </div>
     );
   }
+
+  // === Safety refusals. Only before the start: once riding, the steps are
+  // frozen and the trainer follows them to the end (or to Stop). ===
+  if (session.status === "idle") {
+    if (safetyRead === "loading") {
+      return (
+        <div className="f-carbon flex h-screen items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-vb-red border-t-transparent" />
+        </div>
+      );
+    }
+    if (safetyRead === "failed" || !safetyState) {
+      return (
+        <RideRefusal
+          lead="I couldn't check today's training status, so I won't set your trainer yet."
+          detail="Check your connection and try again."
+          backHref={`/dashboard/training/${workoutId}`}
+          action={
+            <button
+              onClick={() => void safetyQuery.refetch()}
+              className="font-mono text-xs uppercase tracking-[0.08em] text-vb-red"
+            >
+              Try again
+            </button>
+          }
+        />
+      );
+    }
+    if (gate?.kind === "hold") {
+      return (
+        <RideRefusal
+          lead={`Riding is on hold until a doctor has checked you over. If symptoms come back, call ${emergency}.`}
+          detail="I won't set your trainer until then. If something has changed, talk it through with me."
+          backHref={`/dashboard/training/${workoutId}`}
+          action={
+            <Link
+              href="/dashboard/coach"
+              className="font-mono text-xs uppercase tracking-[0.08em] text-vb-red"
+            >
+              Talk to {coachName}
+            </Link>
+          }
+        />
+      );
+    }
+    if (gate?.kind === "mislabelled") {
+      return (
+        <RideRefusal
+          lead={mislabelledText(workout.workout_type, gate.peakPct, gate.ceilingPct)}
+          detail="Ask me in chat and I'll rebuild it at the right intensity."
+          backHref={`/dashboard/training/${workoutId}`}
+          action={
+            <Link
+              href="/dashboard/coach"
+              className="font-mono text-xs uppercase tracking-[0.08em] text-vb-red"
+            >
+              Talk to {coachName}
+            </Link>
+          }
+        />
+      );
+    }
+  }
+
+  // The easy version of a held hard session, and why.
+  const easyNotice =
+    gate?.kind === "ride" && gate.easy && gate.capPct !== null
+      ? easyVersionText({
+          doctor:
+            (!!safetyState?.hold && safetyState.hold.source !== "layoff") ||
+            (!!safetyState?.screening &&
+              safetyState.screening.tier !== "none" &&
+              !safetyState.screening.clearance_confirmed),
+          capPct: gate.capPct,
+          capWatts: Math.round(gate.capPct * ftp),
+          gateOpens: longDate(safetyState?.layoff_gate_until),
+        })
+      : null;
 
   const currentStep = session.steps[session.currentStepIndex];
   const nextStep = session.steps[session.currentStepIndex + 1];
@@ -704,7 +1005,37 @@ export default function TrainingSessionPage() {
           )}
 
           {/* Current Step Info */}
-          {session.status === "idle" && !deviceSetupDone ? (
+          {session.status === "idle" && needsAck ? (
+            /* === First ride ever: the ride-mode acknowledgement === */
+            <div className="f-rise w-full max-w-lg">
+              <div className="rounded-sm border border-white/10 border-l-[3px] border-l-vb-red bg-vb-carbon-raised px-6 py-5 text-left">
+                <p className="f-kicker mb-2 text-vb-red">Ride mode</p>
+                <h2 className="f-display mb-4 text-2xl text-balance text-vb-chalk">
+                  {RIDE_MODE_ACK_TITLE}
+                </h2>
+                {rideModeAckParagraphs(emergency).map((line) => (
+                  <p key={line} className="mb-3 text-sm text-pretty text-vb-chalk last:mb-0">
+                    {line}
+                  </p>
+                ))}
+              </div>
+              {ackMutation.isError && (
+                <p className="mt-3 text-center text-xs text-vb-warning">
+                  That didn&apos;t save. Check your connection and try again.
+                </p>
+              )}
+              <div className="mt-6 flex justify-center">
+                <Button
+                  variant="flamme"
+                  size="lg"
+                  disabled={ackMutation.isPending}
+                  onClick={() => ackMutation.mutate()}
+                >
+                  {ackMutation.isPending ? "Saving…" : RIDE_MODE_ACK_BUTTON}
+                </Button>
+              </div>
+            </div>
+          ) : session.status === "idle" && !deviceSetupDone ? (
             /* === Device Setup Screen === */
             <div className="f-rise w-full max-w-lg text-center">
               <h2 className="f-display mb-1 text-3xl text-vb-chalk">
@@ -714,6 +1045,8 @@ export default function TrainingSessionPage() {
                 {formatDuration(session.totalDurationSeconds)} &middot;{" "}
                 {session.steps.length} steps
               </p>
+
+              {easyNotice && <RideNotice label="Easy version" text={easyNotice} />}
 
               <div className="mb-6 overflow-hidden rounded-sm border border-white/10 bg-vb-carbon-raised">
                 <div className="border-b border-white/10 px-5 py-3">
@@ -819,6 +1152,8 @@ export default function TrainingSessionPage() {
                   {connectedDeviceCount} device{connectedDeviceCount > 1 ? "s" : ""} connected
                 </p>
               )}
+              {easyNotice && <RideNotice label="Easy version" text={easyNotice} />}
+              {hardSession && <RideNotice label="Before you start" text={HARD_SESSION_LINE} />}
             </div>
           ) : session.status === "completed" ? (
             <div className="f-rise text-center">
@@ -895,6 +1230,17 @@ export default function TrainingSessionPage() {
                 <p className="f-data mt-3 text-lg text-vb-chalk-dim">
                   {Math.round(session.currentTargetPct * 100)}% FTP
                 </p>
+                {session.ergReleased && btState.trainer.connected && (
+                  <p className="mt-3 inline-flex items-center gap-2 rounded-sm border border-vb-red/40 bg-vb-carbon-raised px-3 py-1.5 font-mono text-xs font-semibold uppercase tracking-[0.08em] text-vb-red">
+                    <Zap className="h-4 w-4" />
+                    {SPRINT_ERG_OFF}
+                  </p>
+                )}
+                {session.easeOff && (
+                  <p className="mt-3 text-sm text-vb-chalk-dim">
+                    Eased to {session.easeOff.toWatts}W for the rest of this effort.
+                  </p>
+                )}
               </div>
 
               {/* Interval Progress Bar */}
@@ -1051,8 +1397,13 @@ export default function TrainingSessionPage() {
                 </div>
                 {btState.trainer.connected && (
                   <p className="f-kicker mt-2.5 text-center text-[9px] text-vb-chalk-dim">
-                    ERG active · {btState.trainer.name} · holding{" "}
-                    {session.currentTargetWatts}W
+                    {!btState.trainer.ergMode
+                      ? `${btState.trainer.name} · no ERG control`
+                      : session.trainerCommand?.kind === "release"
+                        ? `ERG off · ${btState.trainer.name}`
+                        : session.trainerCommand?.reason === "pause"
+                          ? `ERG eased · ${btState.trainer.name} · ${clampErgWatts(session.trainerCommand.watts, ergCeiling)}W while paused`
+                          : `ERG active · ${btState.trainer.name} · holding ${clampErgWatts(session.currentTargetWatts, ergCeiling)}W`}
                   </p>
                 )}
               </div>
@@ -1103,8 +1454,10 @@ export default function TrainingSessionPage() {
 
           {/* Controls */}
           <div className="flex items-center gap-4">
-            {session.status === "idle" && (
-              <Button variant="flamme" size="lg" onClick={sessionActions.start}>
+            {/* Start lives on the ready screen only, after the acknowledgement
+                and the hard-session line have been seen. */}
+            {session.status === "idle" && deviceSetupDone && !needsAck && (
+              <Button variant="flamme" size="lg" onClick={handleStart}>
                 <Play className="h-5 w-5" /> Start workout
               </Button>
             )}
@@ -1133,7 +1486,7 @@ export default function TrainingSessionPage() {
                   <SkipForward className="h-5 w-5" />
                 </button>
                 <button
-                  onClick={() => setShowConfirmStop(true)}
+                  onClick={handleStopPressed}
                   className="f-press flex h-12 w-12 items-center justify-center rounded-sm border border-vb-red/40 bg-vb-carbon-raised text-vb-red transition-colors hover:bg-vb-red hover:text-white"
                   title="Stop"
                 >
@@ -1169,7 +1522,7 @@ export default function TrainingSessionPage() {
                   <SkipForward className="h-5 w-5" />
                 </button>
                 <button
-                  onClick={() => setShowConfirmStop(true)}
+                  onClick={handleStopPressed}
                   className="f-press flex h-12 w-12 items-center justify-center rounded-sm border border-vb-red/40 bg-vb-carbon-raised text-vb-red transition-colors hover:bg-vb-red hover:text-white"
                   title="Stop"
                 >
@@ -1332,7 +1685,7 @@ export default function TrainingSessionPage() {
                 disabled={saving}
                 onClick={async () => {
                   sessionActions.stop();
-                  await btActions.stopTrainer();
+                  await trainerQueue.current(() => btActions.stopTrainer());
                   await saveSession();
                   setShowConfirmStop(false);
                 }}
@@ -1344,7 +1697,7 @@ export default function TrainingSessionPage() {
                 onClick={() => {
                   setShowConfirmStop(false);
                   sessionActions.stop();
-                  btActions.stopTrainer();
+                  void trainerQueue.current(() => btActions.stopTrainer());
                   buffer.clear();
                   router.push(`/dashboard/training/${workoutId}`);
                 }}
@@ -1354,7 +1707,11 @@ export default function TrainingSessionPage() {
               </button>
               <button
                 disabled={saving}
-                onClick={() => setShowConfirmStop(false)}
+                onClick={() => {
+                  setShowConfirmStop(false);
+                  // Back to the ride it was: re-engages ERG at the target.
+                  if (stopWasRunning.current) sessionActions.resume();
+                }}
                 className="f-press rounded-sm border border-white/20 px-4 py-2 font-mono text-xs font-semibold uppercase tracking-[0.08em] text-vb-chalk-dim transition-colors hover:text-vb-chalk disabled:opacity-50"
               >
                 Keep going
@@ -1418,6 +1775,46 @@ export default function TrainingSessionPage() {
 }
 
 // === Sub-Components ===
+
+/** Ride mode won't start, and says why. */
+function RideRefusal({
+  lead,
+  detail,
+  action,
+  backHref,
+}: {
+  lead: string;
+  detail: string;
+  action: React.ReactNode;
+  backHref: string;
+}) {
+  return (
+    <div className="f-carbon flex h-screen flex-col items-center justify-center px-8 text-center text-vb-chalk-dim">
+      <AlertTriangle className="mb-4 h-6 w-6 text-vb-red" />
+      <p className="max-w-sm text-pretty text-vb-chalk">{lead}</p>
+      <p className="mt-3 max-w-sm text-sm text-pretty">{detail}</p>
+      <div className="mt-6 flex flex-wrap items-center justify-center gap-4">
+        {action}
+        <Link
+          href={backHref}
+          className="font-mono text-xs uppercase tracking-[0.08em] text-vb-chalk-dim"
+        >
+          Back to workout
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+/** A short safety note on the screens before the start. */
+function RideNotice({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="mx-auto mb-6 max-w-md rounded-sm border border-white/10 border-l-[3px] border-l-vb-warning bg-vb-carbon-raised px-5 py-3 text-left">
+      <p className="f-kicker mb-1 text-vb-warning">{label}</p>
+      <p className="text-sm text-pretty text-vb-chalk">{text}</p>
+    </div>
+  );
+}
 
 function DeviceRow({
   icon,

@@ -20,6 +20,7 @@ from app.core.llm_utils import humanize, response_text
 from app.models.onboarding import GoalEvent
 from app.models.ride import Ride
 from app.models.user import User
+from app.services.safety_screen import coach_safety_context
 
 logger = logging.getLogger(__name__)
 
@@ -38,16 +39,35 @@ Cover, in whatever order serves this rider:
    question you'd ask to find the end goal underneath.
 3. One enhancement: the single change that would make this goal work
    harder for them (a checkpoint, a sharper definition, a process layer,
-   or more audacity if it's too safe).
+   or more audacity if it's too safe). Read `safety` first: while
+   allowed_intensity is not "all" (an open hold, a health-screen yes not
+   yet cleared, or a layoff gate), never push for audacity or a bigger
+   goal, and count the time the hold costs in the size verdict.
 4. Close with one direct question that invites them to talk to you.
 
 Ground every claim in the data provided; where data is missing, say what
 you'd want to know rather than inventing it. Never pad. Never flatter.
 The tone is the team car, not a horoscope."""
 
+# Added to the instructions while a hold, an uncleared screen or the layoff
+# gate stands: the read is about getting back well, not about ambition.
+HELD_NOTE = """
+
+This rider is under a safety limit right now (see `safety`). The
+enhancement is about getting back to full training well: no push for a
+bigger goal, no talk of tests, no intensity targets. If the date is close,
+say plainly and kindly that it may need to move, and that their health
+decides it."""
+
 
 def generate_goal_read(db: Session, user: User, goal: GoalEvent) -> GoalEvent:
-    """Write (or rewrite) the coach's read for an upcoming goal."""
+    """Write (or rewrite) the coach's read for an upcoming goal. Nothing is
+    written for an account held as possibly under 18, or when that can't be
+    checked: the goal comes back as it was."""
+    from app.services.outreach_service import speak_first_block
+
+    if speak_first_block(db, user, training=False) in ("minor", "unknown"):
+        return goal
     today = date.today()
     event_date = goal.event_date
     days_until = (event_date - today).days if event_date >= today else None
@@ -66,7 +86,9 @@ def generate_goal_read(db: Session, user: User, goal: GoalEvent) -> GoalEvent:
     rides_6w, secs_6w, metres_6w = agg
 
     route = goal.route_data or {}
+    safety = coach_safety_context(db, user)
     context = {
+        "safety": safety,
         "goal": {
             "name": goal.event_name,
             "date": str(goal.event_date),
@@ -99,7 +121,8 @@ def generate_goal_read(db: Session, user: User, goal: GoalEvent) -> GoalEvent:
         surface="goals",
         system=distilled_persona(user.coach_name, user.coach_tone)
         + "\n\n"
-        + READ_INSTRUCTIONS,
+        + READ_INSTRUCTIONS
+        + (HELD_NOTE if safety.get("allowed_intensity") != "all" else ""),
         messages=[
             {
                 "role": "user",

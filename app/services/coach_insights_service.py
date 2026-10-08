@@ -25,8 +25,50 @@ from app.models.user import User
 from app.services.metrics_service import get_current_fitness, get_weekly_training_load
 from app.core.llm_utils import humanize, response_text
 from app.core.coach_skills import distilled_persona
+from app.services.safety_screen import coach_safety_context, safety_changed_since
 
 logger = logging.getLogger(__name__)
+
+
+# What a surface says instead of anything a model writes, when the rider's
+# safety state rules the model out (outreach_service.speak_first_block).
+QUIET_NUDGE = "No pressure today. There's nothing you need to do, and your plan will wait."
+UNKNOWN_NUDGE = "If you want to talk about today's ride, open the coach."
+
+
+def _speak_block(db: Session, user: User, *, training: bool) -> str | None:
+    from app.services.outreach_service import speak_first_block
+
+    return speak_first_block(db, user, training=training)
+
+
+def _no_model_for(block: str | None) -> bool:
+    """Whether a surface the rider opened themselves (a debrief, a metric,
+    a ride title) must not reach the model: an account held as possibly
+    under 18, about whom nothing is generated, or one whose state can't be
+    read (fails closed)."""
+    return block in ("minor", "unknown")
+
+
+def _adults_only() -> str:
+    from app.services.briefing_service import ADULTS_ONLY_BRIEFING
+
+    return ADULTS_ONLY_BRIEFING
+
+
+def held_nudge_text(db: Session, user: User, block: str) -> str:
+    """The nudge as fixed words, with no model call, while speak_first_block
+    blocks it: the adults-only line for a possible child, no pressure in the
+    quiet window after crisis words, what the hold means under a hold."""
+    if block == "minor":
+        return _adults_only()
+    if block == "wellbeing":
+        return QUIET_NUDGE
+    if block == "safety":
+        from app.services.briefing_service import hold_words
+
+        return hold_words(db, user) or UNKNOWN_NUDGE
+    return UNKNOWN_NUDGE
 
 
 # ── Daily Nudge ──────────────────────────────────────────────────────────────
@@ -73,6 +115,10 @@ Rules:
   silence.
 - Tone follows the situation: steady on rest days, sharp before hard
   sessions, warm after a good block, careful when they are deep in fatigue.
+- Read `safety` before today's session. If allowed_intensity is "easy", talk
+  only about easy riding today; if it is "none", there is no session to talk
+  up, so ask how they are instead. Never push a session the safety state
+  rules out.
 - Use long term memory to make it personal, and respect [HIDDEN] items:
   they inform judgement and are never mentioned.
 - Return ONLY the message. No JSON, no headings, no preamble.
@@ -161,6 +207,8 @@ def _build_nudge_context(
         },
         "ftp": user.ftp,
         "this_week_compliance": week_read or f"{completed}/{total} sessions completed",
+        # What the rider may ride today (SAFETY LAW rule 7).
+        "safety": coach_safety_context(db, user),
     }
 
     if today_workout:
@@ -225,6 +273,18 @@ def generate_daily_nudge(db: Session, user: User) -> dict:
     """
     today = date.today()
 
+    # The nudge pushes towards today's ride. None is written (and no cached
+    # one served) for a possible child, in the quiet window after crisis
+    # words, or under a hold or an uncleared health answer: fixed words
+    # instead, never cached, so the real nudge returns when the block ends.
+    block = _speak_block(db, user, training=True)
+    if block:
+        return {
+            "nudge": held_nudge_text(db, user, block),
+            "generated_at": datetime.utcnow().isoformat(),
+            "cached": False,
+        }
+
     # Check cache
     from app.models.coach import CoachNudge
     existing = (
@@ -235,6 +295,12 @@ def generate_daily_nudge(db: Session, user: User) -> dict:
         )
         .first()
     )
+    if existing and safety_changed_since(db, user.id, existing.created_at):
+        # A hold opened or lifted after this morning's nudge: it may be
+        # talking up a session the rider must not ride. Write it again.
+        db.delete(existing)
+        db.commit()
+        existing = None
     if existing:
         return {
             "nudge": existing.content,
@@ -266,7 +332,18 @@ def generate_daily_nudge(db: Session, user: User) -> dict:
         rider_name = context["rider_name"]
         tsb = context["fitness"]["tsb"]
         workout = context.get("todays_workout")
-        if workout:
+        allowed = (context.get("safety") or {}).get("allowed_intensity")
+        if allowed == "none":
+            nudge_text = (
+                f"{rider_name}, riding is on hold until a doctor has checked you over. "
+                "How are you feeling today?"
+            )
+        elif allowed in ("easy", "unknown") and workout:
+            nudge_text = (
+                f"{rider_name}, keep today easy: steady riding you could chat through, "
+                "and stop if anything feels wrong. How are you feeling?"
+            )
+        elif workout:
             wtype = workout["type"]
             article = "an" if wtype[:1].lower() in "aeiou" else "a"
             nudge_text = f"Hey {rider_name}, you've got {article} {wtype} session on the plan today. Your form is sitting at {tsb:+.0f}, let's make it count."
@@ -304,6 +381,9 @@ Rules:
 4. Reference specific numbers from the ride (power, duration, TSS, IF).
 5. If you can relate this ride to their fitness trend or upcoming goal, do so briefly.
 6. End with a forward-looking statement (what's next, how this builds toward their goal).
+   Read `safety` first: if allowed_intensity is "easy", look ahead only to easy
+   riding; if it is "none", the next step is the doctor, not a session. Never
+   talk up a session or an effort it rules out, and respect any doctor_limits.
 7. Use the rider's long-term memory: does this ride confirm or contradict a known gap \
    (e.g. "fades in the final hour")? Did they apply an insight you gave them (e.g. fueling)? \
    If advice you gave is visibly working, SAY SO with the evidence, closing that loop is \
@@ -420,6 +500,8 @@ def generate_ride_story(db: Session, user: User, ride: Ride) -> None:
     """Write Forma's title + one-line story for a ride. Once, then cached."""
     if ride.story and ride.forma_title:
         return
+    if _no_model_for(_speak_block(db, user, training=False)):
+        return
     zs = ride.zone_summary or {}
     context = {
         "original_title": ride.title,
@@ -466,6 +548,16 @@ def generate_ride_debrief(
     Generate a coaching debrief for a completed ride.
     Cached on the ride record (debrief_text column).
     """
+    block = _speak_block(db, user, training=False)
+    if _no_model_for(block):
+        # Nothing about a possible child is generated or served, and nothing
+        # is cached, so the real debrief can be written once that's resolved.
+        return {
+            "debrief": _adults_only() if block == "minor" else UNKNOWN_NUDGE,
+            "generated_at": datetime.utcnow().isoformat(),
+            "cached": False,
+        }
+
     # Check cache
     if ride.debrief_text and not force:
         return {
@@ -475,6 +567,9 @@ def generate_ride_debrief(
         }
 
     context = _build_debrief_context(db, user, ride)
+    # What the rider may ride next (SAFETY LAW rule 7): the forward look
+    # never talks up a session the safety state rules out.
+    context["safety"] = coach_safety_context(db, user)
 
     # The Rider Dossier: known facts + curiosity gaps. Post-ride is the most
     # natural drip moment, a bonk invites a fuelling question, a missed
@@ -536,9 +631,13 @@ Rules:
 1. Address the rider by first name.
 2. Explain what this metric means FOR THEM, not a generic definition.
 3. Compare to benchmarks or their own history where relevant.
-4. Suggest what to do about it (if applicable).
-5. 2-4 sentences max. Be concise and conversational.
-6. Return ONLY the explanation text. No JSON, no headings."""
+4. Suggest what to do about it in training terms (if applicable). Never
+   suggest losing weight, eating less, a body-weight target or a
+   calorie figure (SAFETY LAW 2h).
+5. Read `safety` before suggesting anything: never suggest training above
+   what allowed_intensity allows, and respect any doctor_limits.
+6. 2-4 sentences max. Be concise and conversational.
+7. Return ONLY the explanation text. No JSON, no headings."""
 
 
 def explain_metric(
@@ -549,6 +648,9 @@ def explain_metric(
     No caching, these are cheap Haiku calls.
     """
     rider_name = (user.full_name or user.email.split("@")[0]).split()[0]
+    block = _speak_block(db, user, training=False)
+    if _no_model_for(block):
+        return {"explanation": _adults_only() if block == "minor" else UNKNOWN_NUDGE}
     fitness = get_current_fitness(db, user.id)
 
     context = {
@@ -556,14 +658,20 @@ def explain_metric(
         "metric_name": metric_name,
         "metric_value": metric_value,
         "ftp": user.ftp,
-        "weight_kg": user.weight_kg,
         "experience": user.experience_level,
         "fitness": {
             "ctl": round(fitness["ctl"], 1),
             "atl": round(fitness["atl"], 1),
             "tsb": round(fitness["tsb"], 1),
         },
+        # What the rider may ride (SAFETY LAW rule 7).
+        "safety": coach_safety_context(db, user),
     }
+    # Weight only travels with a per-kilo metric, which cannot be explained
+    # without it. Anywhere else, "suggest what to do about it" next to a body
+    # weight invites weight-loss advice (SAFETY LAW 2h).
+    if any(k in str(metric_name).lower() for k in ("kg", "kilo", "weight")):
+        context["weight_kg"] = user.weight_kg
 
     # Long-term memory, explain the number in the context of THEIR journey.
     try:
