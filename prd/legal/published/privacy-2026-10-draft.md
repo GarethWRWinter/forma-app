@@ -14,7 +14,7 @@ Forma is run by FORMA CYCLING LTD, a company registered in England and Wales
 (number 17479029), registered office 71-75 Shelton Street, Covent Garden,
 London WC2H 9JQ. We are the data controller for everything described here.
 We are registered with the Information Commissioner's Office, registration
-number [CONFIRM: ICO number].
+number ZC269008.
 
 Questions, requests or complaints: gareth@ridewithforma.com. That reaches me,
 Gareth Winter, the founder, and I answer it myself.

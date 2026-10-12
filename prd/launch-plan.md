@@ -181,6 +181,9 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
        Postgres login forma_backup. Restore drill passed: 34/34 tables,
        3,375,452 rows, every count matching production. Passphrase and URL in the
        Mac's Keychain (forma-db-backup-passphrase, forma-db-backup-url).
+5f. [x] **ICO registration done 8 Oct 2026:** Forma Cycling Ltd, reference ZC269008,
+       expires 7 Oct 2027 (renew annually; certificate in Forma /Admin). Number is in
+       the privacy policy.
 5d. [x] **LAUNCH GATE: Wahoo app in Production mode, webhook token set.** Done
        7 Oct 2026: app is Production and Approved; WAHOO_WEBHOOK_TOKEN set and
        token-less events now refused (403). Sandbox
