@@ -122,7 +122,7 @@ for its job, under a contract that requires them to protect it.
   Under Anthropic's commercial terms they are not used to train its models.
 - **ElevenLabs** (the coach's voice). The text of a reply is sent to be
   spoken when you use voice.
-- **Railway** (our servers and database). [CONFIRM: region, e.g. EU (Amsterdam) or US]
+- **Railway** (our servers and database, in Amsterdam, in the EU).
 - **Vercel** (hosts the app's web pages).
 - **Stripe** (payments).
 - **Postmark** (sends our emails), and **Google Workspace** (our inbox, where
