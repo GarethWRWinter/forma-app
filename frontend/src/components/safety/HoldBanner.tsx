@@ -23,8 +23,9 @@ import { useApplySafetyState, useSafetyState } from "@/components/safety/useSafe
  *
  * `card` sits at the top of the dashboard; `strip` runs across the top of
  * every other dashboard page. The way out follows the hold's lift kind:
- * "I've been cleared" (a doctor's clearance, or for a head injury its own
- * check, which leaves easy riding and no racing before day 21), "My fever has
+ * "I've been cleared" (a doctor's clearance, for a head injury its own
+ * check, which leaves easy riding and no racing before day 21, or for a fit
+ * after a head injury the seizure's own declaration), "My fever has
  * gone" (the rider's own word, which leaves an easy week) and "This was a
  * mistake" (logged, for
  * the chat detector misreading something like "my chest strap died"). Holds
@@ -150,6 +151,18 @@ export function HoldBanner({ variant = "card" }: { variant?: "card" | "strip" })
       {mode === "clear" && view.clearKind === "head_injury" && (
         <ClearanceForm
           kind="head_injury"
+          holdId={hold.id}
+          className="mt-4 max-w-xl"
+          onCancel={() => setMode("idle")}
+          onDone={(next) => {
+            setMode("idle");
+            setDone(liftedMessage(next));
+          }}
+        />
+      )}
+      {mode === "clear" && view.clearKind === "head_seizure" && (
+        <ClearanceForm
+          kind="head_seizure"
           holdId={hold.id}
           className="mt-4 max-w-xl"
           onCancel={() => setMode("idle")}

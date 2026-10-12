@@ -15,7 +15,11 @@ Each hold says how it lifts (lift_kind): "doctor" (a declared clearance),
 week that ends by itself), "head_injury" (its own declaration: a doctor has
 checked them since and they've had no symptoms for 24 hours, which turns it
 into easy riding until two weeks after the injury, with no racing or group
-riding before day 21), "layoff" (the easy start after a break, which a
+riding before day 21), "head_seizure" (a fit or seizure after a head
+injury: its own declaration that a doctor has assessed the seizure and
+cleared them to ride, never the head injury's routine one, and no graded
+return after it, since how they build back follows that doctor's advice),
+"layoff" (the easy start after a break, which a
 clearance doesn't skip), "expires" (ends on its own at expires_at) or
 "admin_only" (an under-18 account, or a hold set by hand: nothing the rider
 does lifts it, and only admin_lift does). While an account is held as under
@@ -100,33 +104,70 @@ HEAD_EASY_DAYS = 14
 HEAD_NO_RACING_DAYS = 21
 HEAD_EASY_REASON = "Easy riding while you build back after a head injury"
 
+# A fit or seizure after a head injury is its own red flag on the hold
+# (round 3, L7): all riding held until a doctor has assessed the seizure and
+# cleared them to ride, declared in these words and no others. It never
+# takes the head injury's routine declaration (a doctor's check and 24 hours
+# free of symptoms) or its graded return: how they build back follows that
+# doctor's advice, recorded as their limits.
+HEAD_SEIZURE_FLAG = "head_seizure"
+SEIZURE_LIFT_VERSION = "seizure-v1"
+SEIZURE_LIFT_TEXT = (
+    "A doctor has assessed the seizure after my head injury and cleared me to ride."
+)
+
 # Where a rider who thinks a hold is wrong writes to.
 FORMA_EMAIL = "gareth@ridewithforma.com"
 
 HOLD_LEVELS = {"easy_only": 1, "hold_all": 2}
 # "profile": an under-18 date of birth given on the account itself (at
 # re-acceptance or in Settings), which only Forma lifts, like any under-18 hold.
-HOLD_SOURCES = {"screening", "detector", "coach_tool", "layoff", "admin", "profile"}
+# "reply": the coach's own reply sent the rider for care (999, A&E, NHS 111
+# or a GP today) with no full hold open (coach_service.REPLY_HOLD_SOURCE).
+# Being sent for care means a doctor lifts it, whatever its red flag
+# (lift_kind "doctor"; a physio or a midwife can't: doctor_only), except a
+# head injury, which keeps its own doctor's declaration and graded return.
+HOLD_SOURCES = {"screening", "detector", "coach_tool", "reply", "layoff", "admin", "profile"}
+# The sources whose easy_only hold a full hold for the same episode raises in
+# place (open_hold): the detector (the regex screen or the classifier) and
+# the coach's reply, both readings of what the rider said. A hold the coach
+# opened on purpose (coach_tool) is never raised by another source: it stays
+# beside, so marking the full hold a mistake leaves the coach's own in force.
+RAISING_SOURCES = frozenset({"detector", "reply"})
+# How close together two readings of one red flag must be to count as one
+# episode: the classifier's verdict and the reply that follows it are seconds
+# apart, and "now it's swollen and hot" a few hours later is the same calf.
+EPISODE_HOURS = 24
 LIFT_HOW = {
-    "clearance", "mistake", "admin", "superseded", "fever_self", "head_clearance", "expired",
+    "clearance", "mistake", "admin", "superseded", "fever_self", "head_clearance",
+    "seizure_clearance", "expired",
 }
-LIFT_KINDS = ("doctor", "fever_self", "head_injury", "layoff", "expires", "admin_only")
+LIFT_KINDS = (
+    "doctor", "fever_self", "head_injury", "head_seizure", "layoff", "expires", "admin_only",
+)
 # Which lift_kinds each way of lifting may touch. An under-18 hold, or one
 # set by hand, lifts only by admin. A doctor's clearance never skips the
-# easy week after a fever, the easy start after a break, or a head injury's
-# own declaration.
+# easy week after a fever, the easy start after a break, a head injury's
+# own declaration or a seizure's. The seizure's declaration also lifts the
+# head injury of the same episode (lift_head_seizure): the doctor who
+# assessed the seizure assessed the injury behind it.
 _LIFTABLE = {
     "admin": frozenset(LIFT_KINDS),
-    "superseded": frozenset({"doctor", "fever_self", "head_injury", "layoff", "expires"}),
+    "superseded": frozenset(
+        {"doctor", "fever_self", "head_injury", "head_seizure", "layoff", "expires"}
+    ),
     "expired": frozenset({"expires"}),
     "fever_self": frozenset({"fever_self"}),
     "head_clearance": frozenset({"head_injury"}),
+    "seizure_clearance": frozenset({"head_seizure", "head_injury"}),
     "clearance": frozenset({"doctor"}),
-    "mistake": frozenset({"doctor", "fever_self", "head_injury", "layoff"}),
+    "mistake": frozenset({"doctor", "fever_self", "head_injury", "head_seizure", "layoff"}),
 }
 # The ways out the rider takes themselves. While the account is held as under
 # 18, every one of them is refused, whatever hold it is aimed at.
-RIDER_LIFTS = frozenset({"mistake", "clearance", "fever_self", "head_clearance"})
+RIDER_LIFTS = frozenset(
+    {"mistake", "clearance", "fever_self", "head_clearance", "seizure_clearance"}
+)
 TIERS ={"none", "easy_only", "hold_all"}
 CONSENT_KINDS = {
     "terms", "health_data", "age", "ride_mode", "screening", "clearance", "reaccept",
@@ -176,6 +217,25 @@ class ClearanceOutOfScope(ValueError):
         )
 
 
+# What a rider held for a fit after a head injury hears when they try any
+# other way out: the routine head-injury check, or a general clearance.
+SEIZURE_NEEDS_DOCTOR = (
+    "Your hold is for a fit after a head injury, so it has its own check: a doctor "
+    "has to assess the seizure and clear you to ride. Once one has, tap I've been "
+    "cleared on the hold notice and confirm it."
+)
+
+
+class SeizureNeedsDoctor(ClearanceOutOfScope):
+    """The routine head-injury check tried while a fit after a head injury
+    is on hold: only a doctor's assessment of the seizure lifts it
+    (lift_head_seizure). Nothing is recorded."""
+
+    def __init__(self):
+        self.word = "doctor"
+        ValueError.__init__(self, SEIZURE_NEEDS_DOCTOR)
+
+
 # Who can clear what is holding the rider, and the buttons that say so.
 _NEEDS = {
     "doctor": ("a doctor", "My GP or Another doctor"),
@@ -184,13 +244,24 @@ _NEEDS = {
 }
 
 
+def _in_scope(hold, scope: tuple) -> bool:
+    """Whether the clinician in `scope` may clear this hold: never one the
+    coach's reply opened (doctor_only), and a physio only an easy-riding
+    injury hold, since an injury bad enough to stop all riding needs a
+    doctor (round 2, L21)."""
+    if doctor_only(hold) or _get(hold, "red_flag") not in scope[1]:
+        return False
+    return not (scope[0] == "physio" and _get(hold, "level") == "hold_all")
+
+
 def _needs(doctor_holds: list, screen_yes: set[str]) -> str:
-    """The narrowest clinician who could clear everything holding the rider."""
-    for word, flags, questions, _ in _CLINICIAN_SCOPES:
-        if all(h.red_flag in flags for h in doctor_holds if h.source != "screening") and (
-            screen_yes <= questions
-        ):
-            return word
+    """The narrowest clinician who could clear everything holding the rider.
+    A hold the coach's reply opened always needs a doctor (doctor_only)."""
+    for scope in _CLINICIAN_SCOPES:
+        if all(
+            _in_scope(h, scope) for h in doctor_holds if h.source != "screening"
+        ) and (screen_yes <= scope[2]):
+            return scope[0]
     return "doctor"
 
 
@@ -256,12 +327,25 @@ def lift_kind(hold) -> str:
     four after three months or more off). "expires": anything else that ends
     by itself at expires_at (the easy weeks after a fever or a head injury).
     "fever_self": the rider declares the fever gone. "head_injury": the
-    head injury's own declaration (lift_head_injury). "doctor": everything
-    else, by a declared clearance."""
+    head injury's own declaration (lift_head_injury). "head_seizure": a fit
+    after a head injury, lifted only by a doctor's assessment of the seizure
+    (lift_head_seizure). "doctor": everything
+    else, by a declared clearance, and every hold the coach's reply opened
+    (source "reply") but a head injury's: a rider sent for care is cleared
+    by a doctor, never on their own word that a fever has gone, and never
+    as a break that only a mistake ends."""
     red_flag = _get(hold, "red_flag")
     source = _get(hold, "source")
     if red_flag == "minor" or source == "admin":
         return "admin_only"
+    # A fit after a head injury, whoever opened it: a doctor assesses the
+    # seizure (lift_head_seizure), never the routine head-injury check.
+    if red_flag == HEAD_SEIZURE_FLAG and _get(hold, "expires_at") is None:
+        return "head_seizure"
+    # The easy days a head-injury lift leaves behind carry the lifted hold's
+    # source, so a reply hold that ends by itself still reads "expires".
+    if source == "reply" and _get(hold, "expires_at") is None:
+        return "head_injury" if red_flag == "head_injury" else "doctor"
     # Before "expires": the easy start after a break ends by itself too, but
     # it stays a break, which the rider can still mark a mistake.
     if source == "layoff" or red_flag == "layoff":
@@ -273,6 +357,16 @@ def lift_kind(hold) -> str:
     if red_flag == "head_injury":
         return "head_injury"
     return "doctor"
+
+
+def doctor_only(hold) -> bool:
+    """Whether only a doctor's clearance lifts this hold: one the coach's
+    reply opened, sending the rider for care (999, A&E, NHS 111 or a GP
+    today). A physio clears an injury and a midwife a pregnancy, but not
+    once the rider has been sent for care: a suspected clot, fracture or
+    cauda equina needs a doctor (round 2, L19 to L21). Works on a SafetyHold
+    or a dict."""
+    return _get(hold, "source") == "reply" and lift_kind(hold) == "doctor"
 
 
 def can_lift(hold, how: str) -> bool:
@@ -308,12 +402,18 @@ def open_holds(db: Session, user: User | str) -> list[SafetyHold]:
 def _most_severe(holds: list[SafetyHold]) -> SafetyHold | None:
     if not holds:
         return None
-    return max(holds, key=lambda h: (HOLD_LEVELS.get(h.level, 0), h.opened_at or datetime.min))
+    return max(holds, key=lambda h: (
+        HOLD_LEVELS.get(h.level, 0),
+        h.red_flag == HEAD_SEIZURE_FLAG,
+        h.opened_at or datetime.min,
+    ))
 
 
 def current_hold(db: Session, user_id: str) -> SafetyHold | None:
-    """The most severe hold in force (hold_all beats easy_only; newest breaks
-    a tie). A hold past its expires_at doesn't count."""
+    """The most severe hold in force (hold_all beats easy_only; a fit after a
+    head injury beats any other full hold, so its own way out is the one
+    offered; newest breaks a tie). A hold past its expires_at doesn't
+    count."""
     return _most_severe(_open_holds(db, _uid(user_id)))
 
 
@@ -445,6 +545,131 @@ def remention_of(db: Session, hold: SafetyHold) -> SafetyHold | None:
     return _easy_running_at(_post_lift_easy(db, hold.user_id, hold.red_flag), hold.opened_at)
 
 
+# How a source reads in the note a raise leaves on a hold.
+_SOURCE_WORDS = {
+    "detector": "the safety check on the rider's message",
+    "reply": "the coach's reply, which sent the rider for care",
+}
+
+
+def _raised_source(old: str, new: str) -> str:
+    """The source a raised hold carries: the coach's reply when either
+    reading was it, so the hold still needs a doctor (doctor_only); else the
+    new reading's."""
+    return "reply" if "reply" in (old, new) else new
+
+
+def _holds_to_raise(
+    db: Session,
+    uid: str,
+    level: str,
+    source: str,
+    flag: str | None,
+    expires_at: datetime | None,
+    new_event: bool,
+    now: datetime,
+) -> list[SafetyHold]:
+    """The easy_only holds a full hold from `source` raises in place rather
+    than sitting beside, newest first (open_hold). Only for a full hold from
+    the detector or the coach's reply (RAISING_SOURCES) that doesn't end by
+    itself and isn't a new illness or injury. A hold it raises is the same
+    episode read another way: the same red flag, from the other of those two
+    sources (the same source supersedes, as before), opened in the last
+    EPISODE_HOURS, not one that ends by itself, and lifted no more easily
+    once raised than it was, or than the new hold would have been. So the
+    easy week after a fever, a break, a head injury's own declaration, a
+    screening answer and a hold the coach opened on purpose are never
+    raised."""
+    if (
+        level != "hold_all"
+        or source not in RAISING_SOURCES
+        or flag is None
+        or expires_at is not None
+        or new_event
+    ):
+        return []
+    since = now - timedelta(hours=EPISODE_HOURS)
+    new_ways = _ways_out({"red_flag": flag, "source": source, "expires_at": None, "level": level})
+    found = []
+    for hold in _open_holds(db, uid, now):
+        if (
+            hold.level != "easy_only"
+            or hold.red_flag != flag
+            or hold.source not in RAISING_SOURCES
+            or hold.source == source
+            or hold.expires_at is not None
+            or hold.opened_at is None
+            or hold.opened_at < since
+        ):
+            continue
+        raised = {
+            "red_flag": flag,
+            "source": _raised_source(hold.source, source),
+            "expires_at": None,
+            "level": level,
+        }
+        if _ways_out(raised) <= (_ways_out(hold) & new_ways):
+            found.append(hold)
+    return sorted(found, key=lambda h: h.opened_at, reverse=True)
+
+
+def _episode_hold_covering(
+    db: Session,
+    uid: str,
+    level: str,
+    source: str,
+    flag: str | None,
+    expires_at: datetime | None,
+    new_event: bool,
+    now: datetime,
+) -> SafetyHold | None:
+    """The hold already open for this episode that covers a new reading of
+    it from the other raising source, or None (open_hold returns it rather
+    than opening a second hold beside it). The same red flag, opened in the
+    last EPISODE_HOURS, at this level or higher, not ending by itself, and
+    no easier to lift than the new hold would be: a doctor-only hold is
+    covered only by another doctor-only one. So the classifier's late
+    easy_only verdict after the reply's full hold, or the detector reading
+    the same calf again next message, never splits the episode in two."""
+    if source not in RAISING_SOURCES or flag is None or expires_at is not None or new_event:
+        return None
+    since = now - timedelta(hours=EPISODE_HOURS)
+    new = {"red_flag": flag, "source": source, "expires_at": None, "level": level}
+    new_ways = _ways_out(new)
+    covering = [
+        hold for hold in _open_holds(db, uid, now)
+        if hold.red_flag == flag
+        and hold.source in RAISING_SOURCES
+        and hold.source != source
+        and hold.expires_at is None
+        and hold.opened_at is not None
+        and hold.opened_at >= since
+        and _covers(hold.level, None, level, None)
+        and _ways_out(hold) <= new_ways
+        and (doctor_only(hold) or not doctor_only(new))
+    ]
+    return _most_severe(covering)
+
+
+def _raise_hold(
+    hold: SafetyHold, reason: str, source: str, note: str | None, now: datetime
+) -> None:
+    """Raise an easy_only hold to hold_all in place: the same row, so its id
+    (on the hold notice, on every safety event about it) stays good. Its
+    reason becomes the full hold's, since an easy limit ("pain-free, flat or
+    indoor riding only") would contradict it, and the note keeps what it
+    said before and who raised it."""
+    line = (
+        f"Raised from easy riding to a full hold on {_day_month(now)} at {now:%H:%M} UTC "
+        f"by {_SOURCE_WORDS.get(source, source)}. It was opened by "
+        f"{_SOURCE_WORDS.get(hold.source, hold.source)} as: {hold.reason}"
+    )
+    hold.level = "hold_all"
+    hold.reason = (reason or "").strip()[:200] or "Safety hold"
+    hold.source = _raised_source(hold.source, source)
+    hold.note = "\n".join(part for part in (hold.note, note, line) if part)
+
+
 def open_hold(
     db: Session,
     user: User | str,
@@ -485,7 +710,26 @@ def open_hold(
     hold, even under a higher one: "hit my head and my wrist is swollen"
     records both, so marking the head injury a mistake leaves the wrist on
     easy riding. Lifting one concern never quietly drops a restriction
-    something else asked for."""
+    something else asked for.
+
+    One episode read two ways is one hold (round 2, L19 and L20). When the
+    detector or the coach's reply opens a full hold and the other of the
+    two opened an easy_only hold for the same red flag in the last
+    EPISODE_HOURS (the classifier read a suspected fracture as an injury,
+    and the reply sent the rider to A&E), that hold is raised to hold_all
+    in place and returned (_holds_to_raise, _raise_hold): the app then never
+    allows easy riding for it, and one mistake or one clearance deals with
+    the whole episode. Raised by the reply, or raised over a reply's hold,
+    it needs a doctor (doctor_only). The other way round, a reading from one
+    of the two that the other's hold for the same episode already covers
+    returns that hold (_episode_hold_covering), whichever lands first. A
+    hold the coach opened on purpose is never raised by another source.
+
+    While a hold for a fit after a head injury is open (HEAD_SEIZURE_FLAG),
+    the detector or the reply reading that head injury again returns it:
+    it already holds all riding until a doctor has assessed the seizure,
+    and a second, head-injury hold beside it would offer the routine check
+    as a way out. A new crash (new_event) still gets its own hold."""
     if level not in HOLD_LEVELS:
         raise ValueError(f"Unknown hold level: {level!r}")
     if source not in HOLD_SOURCES:
@@ -496,6 +740,17 @@ def open_hold(
     _expire_due(db, uid, now)
 
     new_event = bool(new_event) or _hit_is_new(hit)
+    if (
+        flag == "head_injury"
+        and source in RAISING_SOURCES
+        and expires_at is None
+        and not new_event
+    ):
+        seizure = _most_severe(
+            [h for h in _open_holds(db, uid, now) if lift_kind(h) == "head_seizure"]
+        )
+        if seizure is not None:
+            return seizure
     easies = _post_lift_easy(db, uid, flag)
 
     same = [h for h in _open_holds(db, uid, now) if h.source == source and h.red_flag == flag]
@@ -511,6 +766,9 @@ def open_hold(
     for existing in same:
         if _covers(existing.level, existing.expires_at, level, expires_at):
             return existing
+    covering = _episode_hold_covering(db, uid, level, source, flag, expires_at, new_event, now)
+    if covering is not None:
+        return covering
     new_ways = _ways_out(
         {"red_flag": flag, "source": source, "expires_at": expires_at, "level": level}
     )
@@ -520,6 +778,17 @@ def open_hold(
         ):
             lower.lifted_at = now
             lower.lifted_how = "superseded"
+
+    raising = _holds_to_raise(db, uid, level, source, flag, expires_at, new_event, now)
+    if raising:
+        hold, rest = raising[0], raising[1:]
+        _raise_hold(hold, reason, source, note, now)
+        # Anything else of the same episode gives way to it: it is no easier
+        # to lift than they were (_holds_to_raise).
+        for other in rest:
+            _stamp_lift(other, "superseded", f"Raised into hold {hold.id}.", now)
+        _done(db, commit)
+        return hold
 
     if new_event:
         easy = _easy_running_at(easies, now) if expires_at is None else None
@@ -975,8 +1244,10 @@ def confirm_clearance(
 
     A physio or a midwife clears only their own concern (clinician_scope): a
     physio lifts an injury hold, never a heart, head, medicine or pregnancy
-    one, and stamps the screening only when every yes in it is theirs. So a
-    physio clearing a knee never counts as clearing a medicine for a year.
+    one, nor any hold the coach's reply opened when it sent the rider for
+    care (doctor_only), and stamps the screening only when every yes in it
+    is theirs. So a physio clearing a knee never counts as clearing a
+    medicine for a year.
     Raises ClearanceOutOfScope, recording nothing, when they could clear
     nothing that is holding the rider.
 
@@ -986,7 +1257,9 @@ def confirm_clearance(
 
     A head injury is never lifted here: it has its own declaration
     (lift_head_injury), because "cleared me for hard training" is not what
-    a graded return after a head injury needs the rider to confirm.
+    a graded return after a head injury needs the rider to confirm. Nor is
+    a fit after a head injury (lift_head_seizure): a doctor has to have
+    assessed the seizure itself.
 
     Raises NothingToClear, recording nothing, when there is nothing a
     clearance can lift: no hold it covers and no health answer waiting.
@@ -1018,11 +1291,13 @@ def confirm_clearance(
     doctor_holds = [h for h in open_now if can_lift(h, "clearance")]
     # Held back for a doctor too, though not by this form: a physio or a
     # midwife is told a doctor is needed, as for any other doctor's hold.
-    head_holds = [h for h in open_now if lift_kind(h) == "head_injury"]
+    head_holds = [h for h in open_now if lift_kind(h) in ("head_injury", "head_seizure")]
+    # A physio or a midwife never lifts a hold the coach's reply opened: the
+    # rider was sent for care, so a doctor clears it (doctor_only).
     lifting = [
         h for h in doctor_holds
         if scope is None
-        or (screening_in_scope if h.source == "screening" else h.red_flag in scope[1])
+        or (screening_in_scope if h.source == "screening" else _in_scope(h, scope))
     ]
     screen_waiting = _screening_waiting(screening)
     clears_screening = screen_waiting and screening_in_scope
@@ -1073,6 +1348,8 @@ def confirm_clearance(
 def _nothing_to_clear(open_now: list[SafetyHold]) -> str:
     """Why a clearance has nothing to lift, and what does lift the hold."""
     kinds = {lift_kind(h): h for h in open_now}
+    if "head_seizure" in kinds:
+        return SEIZURE_NEEDS_DOCTOR
     if "head_injury" in kinds:
         return (
             "Your hold is for a head injury, so it has its own check. Tap I've been "
@@ -1122,11 +1399,13 @@ def lift_head_injury(
     those two weeks have passed goes straight back to full training.
 
     A physio or a midwife can't make this declaration: raises
-    ClearanceOutOfScope, recording nothing. Raises HoldNotLiftable for any
-    other kind of hold, or while the account is held as under 18. Returns
-    the easy hold, or the lifted hold when no easy days are left; a second
-    tap changes nothing and returns the hold. None if the hold isn't this
-    rider's."""
+    ClearanceOutOfScope, recording nothing. While a fit after a head injury
+    is on hold, nobody can: raises SeizureNeedsDoctor, recording nothing,
+    because only a doctor's assessment of the seizure lifts that
+    (lift_head_seizure). Raises HoldNotLiftable for any other kind of hold,
+    or while the account is held as under 18. Returns the easy hold, or the
+    lifted hold when no easy days are left; a second tap changes nothing and
+    returns the hold. None if the hold isn't this rider's."""
     uid = _uid(user)
     by = (by or "").strip()[:200]
     if not by:
@@ -1145,6 +1424,11 @@ def lift_head_injury(
         if hold.lifted_how == "head_clearance":
             return hold
         raise HoldNotLiftable(hold, "head_clearance")
+    if lift_kind(hold) == "head_seizure" or any(
+        lift_kind(h) == "head_seizure" for h in _open_holds(db, uid)
+    ):
+        # A fit after the head injury: never the routine check (round 3, L7).
+        raise SeizureNeedsDoctor()
     if not can_lift(hold, "head_clearance"):
         raise HoldNotLiftable(hold, "head_clearance")
     scope = clinician_scope(by)
@@ -1206,6 +1490,94 @@ def _injury_day(db: Session, hold: SafetyHold, now: datetime) -> datetime:
     return hold.opened_at or now
 
 
+def lift_head_seizure(
+    db: Session,
+    user: User | str,
+    hold_id: str,
+    by: str,
+    limits: str | None = None,
+    request=None,
+    *,
+    commit: bool = True,
+) -> SafetyHold | None:
+    """The rider declares a doctor has assessed the seizure after their head
+    injury and cleared them to ride (SEIZURE_LIFT_TEXT, recorded word for
+    word with who assessed them and any limits they gave).
+
+    Every open hold for a fit after a head injury lifts, and so does every
+    open head-injury hold of the same episode (opened within EPISODE_HOURS
+    of one of them): the doctor who assessed the seizure assessed the injury
+    behind it, so the routine head-injury check never follows. Nothing
+    graded follows either: no easy weeks and no day 21, because how they
+    build back follows that doctor's advice, which the limits record and
+    the coach treats as hard rules.
+
+    Only a doctor: a physio or a midwife raises ClearanceOutOfScope,
+    recording nothing. Raises HoldNotLiftable for a hold that isn't for a
+    fit after a head injury, or while the account is held as under 18. A
+    second tap changes nothing and returns the hold. None if the hold isn't
+    this rider's."""
+    uid = _uid(user)
+    by = (by or "").strip()[:200]
+    if not by:
+        raise ValueError("Say which doctor assessed you")
+    hold = (
+        db.query(SafetyHold)
+        .filter(SafetyHold.id == hold_id, SafetyHold.user_id == uid)
+        .first()
+    )
+    if hold is None:
+        return None
+    minor = minor_hold(db, uid)
+    if minor is not None:
+        raise HoldNotLiftable(minor, "seizure_clearance")
+    if hold.lifted_at is not None:
+        if hold.lifted_how == "seizure_clearance":
+            return hold
+        raise HoldNotLiftable(hold, "seizure_clearance")
+    if lift_kind(hold) != "head_seizure":
+        raise HoldNotLiftable(hold, "seizure_clearance")
+    scope = clinician_scope(by)
+    if scope is not None:
+        raise ClearanceOutOfScope(scope[0], scope[3], "doctor")
+    limits = (limits or "").strip() or None
+
+    now = _now()
+    _expire_due(db, uid, now)
+    open_now = _open_holds(db, uid, now)
+    seizures = [h for h in open_now if lift_kind(h) == "head_seizure"]
+    window = timedelta(hours=EPISODE_HOURS)
+    heads = [
+        h for h in open_now
+        if lift_kind(h) == "head_injury" and h.opened_at is not None and any(
+            s.opened_at is not None and abs(h.opened_at - s.opened_at) <= window
+            for s in seizures
+        )
+    ]
+    note = (
+        f"Assessed by: {by}. The rider declared a doctor assessed the seizure after "
+        "their head injury and cleared them to ride."
+        + (f" Limits: {limits}" if limits else "")
+    )
+    for lifted in seizures + heads:
+        _stamp_lift(lifted, "seizure_clearance", note, now)
+    consent = record_consent(
+        db, uid, "clearance", SEIZURE_LIFT_VERSION, SEIZURE_LIFT_TEXT,
+        request=request, source="app", commit=False,
+    )
+    if limits:
+        db.add(ClearanceLimit(
+            user_id=uid,
+            limits=limits,
+            cleared_by=by,
+            cleared_for="; ".join(h.reason for h in seizures + heads) or None,
+            consent_event_id=consent.id,
+            recorded_at=now,
+        ))
+    _done(db, commit)
+    return hold
+
+
 def no_racing_or_group_until(
     db: Session, user: User | str, today: date | None = None
 ) -> date | None:
@@ -1213,7 +1585,8 @@ def no_racing_or_group_until(
     injury: HEAD_NO_RACING_DAYS after the day the rider told us about it,
     whether or not a doctor has checked them yet. None when no head injury
     holds it back. A head-injury hold marked a mistake, or lifted by Forma,
-    doesn't count; one lifted by its own declaration still does, because
+    doesn't count, nor does one lifted with a fit after it
+    (lift_head_seizure), whose return follows the doctor's advice; one lifted by its own declaration still does, because
     that is the graded return this date protects. Nor does the same injury
     mentioned again during its easy riding (remention_of): that never
     restarts the clock. A second head injury does (a hold the coach opened,
@@ -1232,7 +1605,7 @@ def no_racing_or_group_until(
             SafetyHold.opened_at >= since,
             or_(
                 SafetyHold.lifted_how.is_(None),
-                SafetyHold.lifted_how.notin_(("mistake", "admin")),
+                SafetyHold.lifted_how.notin_(("mistake", "admin", "seizure_clearance")),
             ),
         )
         .all()
@@ -1363,6 +1736,9 @@ FEVER_HOLD_LABEL = "On hold until your fever has been gone for 24 hours. "
 HEAD_HOLD_LABEL = (
     "On hold until a doctor has checked you and you've had no symptoms for 24 hours. "
 )
+SEIZURE_HOLD_LABEL = (
+    "On hold until a doctor has assessed the seizure after your head injury. "
+)
 BREAK_LABEL = "Not yet, because you're coming back from a break. Ride easy instead. "
 ILLNESS_EASY_LABEL = "Not yet, because this is your easy week after illness. Ride easy instead. "
 HEAD_EASY_LABEL = "Not yet, because you're building back after a head injury. Ride easy instead. "
@@ -1372,6 +1748,7 @@ HOLD_LABELS = (
     ACCOUNT_HOLD_LABEL,
     FEVER_HOLD_LABEL,
     HEAD_HOLD_LABEL,
+    SEIZURE_HOLD_LABEL,
     BREAK_LABEL,
     ILLNESS_EASY_LABEL,
     HEAD_EASY_LABEL,
@@ -1385,9 +1762,11 @@ _EASY_BECAUSE = {
     BREAK_LABEL: "you're coming back from a break",
 }
 # When several holds apply, the one that asks most of the rider speaks:
-# an account hold, then a doctor, a head injury, a fever, and last a break.
+# an account hold, then a fit after a head injury, a doctor, a head injury,
+# a fever, and last a break.
 _KIND_RANK = {
-    "admin_only": 0, "doctor": 1, "head_injury": 2, "fever_self": 3, "layoff": 4, "expires": 5,
+    "admin_only": 0, "head_seizure": 1, "doctor": 2, "head_injury": 3, "fever_self": 4,
+    "layoff": 5, "expires": 6,
 }
 
 
@@ -1424,6 +1803,8 @@ def hold_label(hold) -> str:
         return FEVER_HOLD_LABEL
     if kind == "head_injury":
         return HEAD_HOLD_LABEL
+    if kind == "head_seizure":
+        return SEIZURE_HOLD_LABEL
     return DOCTOR_HOLD_LABEL
 
 
@@ -1490,6 +1871,11 @@ def _hold_clause(hold) -> str:
         return (
             "Riding is on hold until a doctor has checked you since you hit your head "
             "and you've had no symptoms for at least 24 hours"
+        )
+    if kind == "head_seizure":
+        return (
+            "Riding is on hold until a doctor has assessed the seizure after your head "
+            "injury and cleared you to ride"
         )
     if kind == "expires":
         until = _day_month(expires_at)

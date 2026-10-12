@@ -1051,8 +1051,10 @@ def test_the_coach_is_told_the_head_injury_return_in_its_own_words(db_session):
     ends = easy.expires_at
     day21 = head.opened_at + timedelta(days=ss.HEAD_NO_RACING_DAYS)
     assert sentence == (
-        f"Easy riding only until {ends.day} {ends:%B} after your head injury, then build "
-        f"back gradually. No racing or group riding before {day21.day} {day21:%B}."
+        f"Easy riding only until {ends.day} {ends:%B} after your head injury, starting on "
+        f"the indoor trainer before the road, then build back gradually. No racing or "
+        f"group riding before {day21.day} {day21:%B}. If any symptom comes back, stop and "
+        f"get checked again."
     )
     assert "ends by itself" not in sentence
     context = safety_screen.coach_safety_context(db_session, user)
@@ -2073,3 +2075,476 @@ def test_the_new_event_note_reads_cleanly():
     ):
         assert not re.search("[–—!]", text)
         assert "kicker" not in text.lower()
+
+
+# === Round 2: a reply that sends the rider for care, and one episode, one hold ===
+#
+# Live round 2 (L19 to L21): the classifier opened only easy_only for a
+# suspected fracture, a DVT and cauda equina, so the app still allowed easy
+# riding, and the card and the reply told a rider with a suspected clot to
+# see a physio. The code now guarantees the level and who clears it; the
+# coach writes the rest.
+
+# The classifier's reading of each, as round 2 recorded it, and the reason
+# its easy_only hold carried.
+_INJURY_EASY_REASON = (
+    "An injury or worrying pain mentioned in chat: pain-free, flat or indoor riding "
+    "only, with no climbing or big-gear work"
+)
+
+
+def _classifier_injury(db, user, note='Matched "my collarbone has a lump sticking up"'):
+    return ss.open_hold(
+        db, user, "easy_only", _INJURY_EASY_REASON, "detector", red_flag="injury", note=note,
+    )
+
+
+def _reply_hold(db, user, level="hold_all", red_flag="injury",
+                clause="That needs assessing today at A&E."):
+    return ss.open_hold(
+        db, user, level, "Sent for emergency care in chat", "reply", red_flag=red_flag,
+        note=f'The coach\'s reply said: "{clause}"',
+    )
+
+
+@pytest.mark.parametrize("red_flag", [
+    "injury", "fever", "pregnancy", "medication", "layoff", "heat", "escalation",
+    "chest_pain", None,
+])
+def test_a_hold_the_reply_opened_lifts_by_a_doctor_whatever_its_red_flag(db_session, red_flag):
+    """Sent for care means a doctor clears it: never the rider's own word that
+    a fever has gone, and never a break only a mistake ends."""
+    user = _user(db_session)
+    hold = _reply_hold(db_session, user, red_flag=red_flag)
+    assert hold.source == "reply" and "reply" in ss.HOLD_SOURCES
+    assert ss.lift_kind(hold) == "doctor" and ss.doctor_only(hold)
+    assert ss.can_lift(hold, "clearance") and ss.can_lift(hold, "mistake")
+    assert not ss.can_lift(hold, "fever_self")
+    assert ss.hold_label(hold) == ss.DOCTOR_HOLD_LABEL
+    assert ss.hold_explanation(hold) == (
+        "Riding is on hold until you tell me a doctor has cleared you."
+    )
+    ss.confirm_clearance(db_session, user, "My GP", None)
+    assert ss.allowed_intensity(db_session, user) == "all"
+
+
+def test_a_head_injury_the_reply_held_keeps_its_own_graded_return(db_session, monkeypatch):
+    """The head injury's declaration is itself a doctor's check, and it keeps
+    the two easy weeks and day 21: a plain clearance would skip both."""
+    user = _user(db_session)
+    injured = datetime(2026, 10, 12, 9, 0)
+    monkeypatch.setattr(ss, "_now", lambda: injured)
+    head = _reply_hold(db_session, user, red_flag="head_injury", clause="Call 999 now.")
+    assert ss.lift_kind(head) == "head_injury" and not ss.doctor_only(head)
+    with pytest.raises(ss.NothingToClear):
+        ss.confirm_clearance(db_session, user, "My GP", None)
+    db_session.rollback()
+    monkeypatch.setattr(ss, "_now", lambda: injured + timedelta(days=2))
+    easy = ss.lift_head_injury(db_session, user, head.id, "My GP")
+    # The easy days carry the reply's source but end by themselves.
+    assert (easy.source, ss.lift_kind(easy)) == ("reply", "expires")
+    assert easy.expires_at == injured + timedelta(days=ss.HEAD_EASY_DAYS)
+    assert ss.no_racing_or_group_until(db_session, user) == date(2026, 11, 2)
+
+
+@pytest.mark.parametrize("by", ["My physio", "Physio at the club"])
+def test_a_physio_cannot_clear_a_suspected_clot_the_reply_sent_for_care(db_session, by):
+    """L20: 'A physio clearing a DVT is wrong; it needs a doctor.' L21: cauda
+    equina, clearance by a doctor only."""
+    user = _user(db_session)
+    hold = _reply_hold(
+        db_session, user,
+        clause="Call 999 now (112 if you're in the EU, 911 in the US), or get to A&E "
+               "straight away.",
+    )
+    with pytest.raises(ss.ClearanceOutOfScope) as refused:
+        ss.confirm_clearance(db_session, user, by, None)
+    db_session.rollback()
+    assert str(refused.value) == (
+        "A physio can clear an injury, but what's holding you needs a doctor. Once one "
+        "has cleared you, pick My GP or Another doctor."
+    )
+    db_session.refresh(hold)
+    assert hold.lifted_at is None
+    assert db_session.query(ConsentEvent).count() == 0
+    ss.confirm_clearance(db_session, user, "My GP", None)
+    db_session.refresh(hold)
+    assert hold.lifted_how == "clearance"
+
+
+def test_a_midwife_cannot_clear_a_pregnancy_the_reply_sent_to_a_and_e(db_session):
+    user = _user(db_session)
+    _reply_hold(db_session, user, red_flag="pregnancy",
+                clause="Go to A&E now, with someone else driving.")
+    with pytest.raises(ss.ClearanceOutOfScope) as refused:
+        ss.confirm_clearance(db_session, user, "My midwife", None)
+    db_session.rollback()
+    assert "needs a doctor" in str(refused.value)
+    assert ss.allowed_intensity(db_session, user) == "none"
+
+
+def test_a_physio_still_clears_the_knee_beside_a_reply_hold(db_session):
+    """Doctor-only is the reply's hold, not every injury: a knee the detector
+    held last week is still the physio's, and the clot stays for a doctor."""
+    user = _user(db_session)
+    knee = ss.open_hold(db_session, user, "easy_only", _INJURY_EASY_REASON, "detector",
+                        red_flag="injury")
+    knee.opened_at = datetime.utcnow() - timedelta(days=5)
+    db_session.commit()
+    clot = _reply_hold(db_session, user)
+    assert clot.id != knee.id  # a different episode: days apart
+    ss.confirm_clearance(db_session, user, "My physio", None)
+    db_session.refresh(knee)
+    db_session.refresh(clot)
+    assert knee.lifted_how == "clearance" and clot.lifted_at is None
+    assert ss.allowed_intensity(db_session, user) == "none"
+
+
+def test_l19_the_reply_raises_the_classifiers_easy_hold_for_a_suspected_fracture(db_session):
+    """L19: the classifier read the collarbone as an injury and opened
+    easy_only; the reply sent the rider to A&E. One hold, raised in place to
+    hold_all: no easy riding, a doctor to clear it, and its id unchanged for
+    the hold notice and the classifier's own safety event."""
+    user = _user(db_session)
+    easy = _classifier_injury(db_session, user)
+    db_session.add(SafetyEvent(user_id=user.id, kind="injury", source="classifier",
+                               matched="my collarbone has a lump sticking up", hold_id=easy.id))
+    db_session.commit()
+    assert ss.allowed_intensity(db_session, user) == "easy"
+
+    raised = _reply_hold(db_session, user)
+
+    assert raised.id == easy.id
+    assert (raised.level, raised.source, raised.red_flag) == ("hold_all", "reply", "injury")
+    assert raised.reason == "Sent for emergency care in chat"
+    assert "pain-free" not in raised.reason
+    assert [h.id for h in ss.open_holds(db_session, user)] == [easy.id]
+    assert ss.allowed_intensity(db_session, user) == "none"
+    assert ss.doctor_only(raised)
+    assert ss.safety_state(db_session, user)["hold"]["lift_kind"] == "doctor"
+    # The note keeps what it was and what raised it.
+    assert raised.note.startswith('Matched "my collarbone has a lump sticking up"\n')
+    assert 'The coach\'s reply said: "That needs assessing today at A&E."' in raised.note
+    assert "Raised from easy riding to a full hold" in raised.note
+    assert f"as: {_INJURY_EASY_REASON}" in raised.note
+    assert db_session.query(SafetyEvent).one().hold_id == raised.id
+    # A physio can't clear it now; one tap of mistake ends the whole episode.
+    with pytest.raises(ss.ClearanceOutOfScope):
+        ss.confirm_clearance(db_session, user, "My physio", None)
+    db_session.rollback()
+    ss.lift_hold(db_session, user, raised.id, "mistake")
+    assert ss.open_holds(db_session, user) == []
+    assert ss.allowed_intensity(db_session, user) == "all"
+
+
+def test_a_late_classifier_verdict_after_the_reply_hold_never_splits_the_episode(db_session):
+    """Round 2: classifier cards and holds landed 20 to 70 s late. Whichever
+    lands first, one hold: the reply's full one."""
+    user = _user(db_session)
+    full = _reply_hold(db_session, user)
+    late = _classifier_injury(db_session, user)
+    assert late.id == full.id
+    assert [h.id for h in ss.open_holds(db_session, user)] == [full.id]
+    assert full.level == "hold_all" and ss.doctor_only(full)
+
+
+def test_the_detector_at_hold_all_raises_a_reply_easy_hold_and_keeps_it_for_a_doctor(
+    db_session,
+):
+    """'Call NHS 111 today' with no hold open, then the next message reads as
+    an emergency: the reply's easy hold is raised, and still needs a doctor."""
+    user = _user(db_session)
+    easy = _reply_hold(db_session, user, level="easy_only",
+                       clause="Call NHS 111 today and tell them about the swelling.")
+    full = ss.open_hold(db_session, user, "hold_all", "Calf swollen, now breathless",
+                        "detector", red_flag="injury")
+    assert full.id == easy.id
+    assert (full.level, full.source) == ("hold_all", "reply")
+    assert full.reason == "Calf swollen, now breathless"
+    assert "by the safety check on the rider's message" in full.note
+    assert ss.doctor_only(full)
+
+
+def test_the_coachs_own_easy_hold_is_never_raised_by_another_source(db_session):
+    """A hold the coach opened on purpose stays beside: marking the full hold
+    a mistake leaves the coach's restriction in force."""
+    user = _user(db_session)
+    coach = ss.open_hold(db_session, user, "easy_only", "Knee: flat riding only",
+                         "coach_tool", red_flag="injury")
+    full = _reply_hold(db_session, user)
+    assert full.id != coach.id and coach.level == "easy_only"
+    ss.lift_hold(db_session, user, full.id, "mistake")
+    assert ss.current_hold(db_session, user.id).id == coach.id
+    assert ss.allowed_intensity(db_session, user) == "easy"
+
+
+def test_an_easy_hold_from_an_earlier_episode_is_not_raised(db_session):
+    user = _user(db_session)
+    old = _classifier_injury(db_session, user)
+    old.opened_at = datetime.utcnow() - timedelta(hours=ss.EPISODE_HOURS + 1)
+    db_session.commit()
+    full = _reply_hold(db_session, user)
+    db_session.refresh(old)
+    assert full.id != old.id
+    assert (old.level, old.lifted_at) == ("easy_only", None)
+    assert ss.allowed_intensity(db_session, user) == "none"
+
+
+def test_a_new_injury_is_never_folded_into_the_easy_hold(db_session):
+    user = _user(db_session)
+    easy = _classifier_injury(db_session, user)
+    new = ss.open_hold(db_session, user, "hold_all", "Crashed again today", "reply",
+                       red_flag="injury", new_event=True)
+    db_session.refresh(easy)
+    assert new.id != easy.id and easy.level == "easy_only" and easy.lifted_at is None
+
+
+def test_a_different_red_flag_in_the_same_turn_keeps_its_own_hold(db_session):
+    """'Hit my head and my wrist is swollen' (finding 9) still records both."""
+    user = _user(db_session)
+    wrist = _classifier_injury(db_session, user)
+    head = _reply_hold(db_session, user, red_flag="head_injury", clause="Call 999 now.")
+    assert head.id != wrist.id and wrist.level == "easy_only"
+    ss.lift_hold(db_session, user, head.id, "mistake")
+    assert ss.allowed_intensity(db_session, user) == "easy"
+
+
+def test_a_raise_never_makes_a_hold_easier_to_lift(db_session):
+    """A fever the detector holds lifts on the rider's word and leaves an easy
+    week behind; the reply's easy hold for it needs a doctor. Neither swallows
+    the other: they sit side by side."""
+    user = _user(db_session)
+    reply = _reply_hold(db_session, user, level="easy_only", red_flag="fever",
+                        clause="Please see your GP today about that cough.")
+    fever = _fever(db_session, user)
+    assert fever.id != reply.id
+    assert (ss.lift_kind(reply), ss.lift_kind(fever)) == ("doctor", "fever_self")
+    easy_week = ss.lift_fever(db_session, user, fever.id)
+    db_session.refresh(reply)
+    assert reply.lifted_at is None and easy_week.expires_at is not None
+    assert {h.id for h in ss.open_holds(db_session, user)} == {reply.id, easy_week.id}
+    # The easy week ends by itself; the reply's hold waits for a doctor.
+    assert ss.allowed_intensity(
+        db_session, user, on_date=easy_week.expires_at.date() + timedelta(days=1)
+    ) == "easy"
+
+
+def test_the_easy_week_after_a_fever_is_never_raised(db_session, monkeypatch):
+    user = _user(db_session)
+    start = datetime(2026, 10, 12, 9, 0)
+    monkeypatch.setattr(ss, "_now", lambda: start)
+    easy = ss.lift_fever(db_session, user, _fever(db_session, user).id)
+    monkeypatch.setattr(ss, "_now", lambda: start + timedelta(hours=3))
+    full = _reply_hold(db_session, user, red_flag="fever", clause="Go to A&E today.")
+    db_session.refresh(easy)
+    assert full.id != easy.id
+    assert easy.level == "easy_only" and easy.lifted_at is None
+
+
+def test_the_raise_note_reads_cleanly(db_session):
+    import re
+
+    user = _user(db_session)
+    _classifier_injury(db_session, user, note=None)
+    raised = _reply_hold(db_session, user)
+    line = raised.note.splitlines()[-1]
+    assert line.startswith("Raised from easy riding to a full hold on ")
+    assert not re.search("[–—!]", line) and "kicker" not in line.lower()
+
+
+# === Round 3, safety-v7: a fit after a head injury has its own hold (L7) ===
+#
+# Live round 3, L7: "got doored by a van ... apparently I had a fit on the
+# pavement ... I left A&E before they did the scan". The hold was the routine
+# head injury's, so the way back was a doctor's check and 24 hours free of
+# symptoms, then the usual easy weeks. A seizure after a head injury needs a
+# doctor to assess the seizure itself, and their advice sets the way back.
+
+
+def _seizure(db, user, source="detector"):
+    return ss.open_hold(
+        db, user, "hold_all", "A fit or seizure after a blow to the head mentioned in chat",
+        source, red_flag=ss.HEAD_SEIZURE_FLAG,
+    )
+
+
+def test_v7_a_seizure_hold_lifts_only_by_its_own_doctor_declaration(db_session):
+    user = _user(db_session)
+    seizure = _seizure(db_session, user)
+    assert ss.lift_kind(seizure) == "head_seizure"
+    assert ss.can_lift(seizure, "seizure_clearance")
+    for how in ("clearance", "head_clearance", "fever_self"):
+        assert not ss.can_lift(seizure, how), how
+    assert ss.SEIZURE_LIFT_TEXT == (
+        "A doctor has assessed the seizure after my head injury and cleared me to ride."
+    )
+    assert ss.allowed_intensity(db_session, user) == "none"
+
+
+def test_v7_the_routine_head_injury_check_never_lifts_a_seizure(db_session):
+    user = _user(db_session)
+    seizure = _seizure(db_session, user)
+    head = _head(db_session, user, source="coach_tool")
+    # The concussion declaration is refused on either hold, recording nothing.
+    for hold in (seizure, head):
+        with pytest.raises(ss.SeizureNeedsDoctor) as refused:
+            ss.lift_head_injury(db_session, user, hold.id, "My GP")
+        assert "assess the seizure" in str(refused.value)
+        # The API already answers ClearanceOutOfScope with its message.
+        assert isinstance(refused.value, ss.ClearanceOutOfScope)
+    # Nor does the general clearance.
+    with pytest.raises(ss.NothingToClear) as refused:
+        ss.confirm_clearance(db_session, user, "My GP", None)
+    assert str(refused.value) == ss.SEIZURE_NEEDS_DOCTOR
+    db_session.rollback()
+    db_session.refresh(seizure)
+    db_session.refresh(head)
+    assert seizure.lifted_at is None and head.lifted_at is None
+    assert db_session.query(ConsentEvent).count() == 0
+
+
+def test_v7_a_physio_or_midwife_can_never_clear_a_seizure(db_session):
+    user = _user(db_session)
+    seizure = _seizure(db_session, user)
+    for who in ("My physio", "My midwife"):
+        with pytest.raises(ss.ClearanceOutOfScope) as refused:
+            ss.lift_head_seizure(db_session, user, seizure.id, who)
+        assert "needs a doctor" in str(refused.value)
+        with pytest.raises(ss.ClearanceOutOfScope):
+            ss.confirm_clearance(db_session, user, who, None)
+    db_session.rollback()
+    db_session.refresh(seizure)
+    assert seizure.lifted_at is None
+    assert db_session.query(ConsentEvent).count() == 0
+
+
+def test_v7_the_seizure_declaration_records_its_words_and_has_no_graded_return(
+    db_session, monkeypatch
+):
+    user = _user(db_session)
+    start = datetime(2026, 10, 12, 9, 0)
+    monkeypatch.setattr(ss, "_now", lambda: start)
+    seizure = _seizure(db_session, user)
+    # The coach's own head-injury hold for the same crash, a few minutes later.
+    monkeypatch.setattr(ss, "_now", lambda: start + timedelta(minutes=5))
+    head = _head(db_session, user, source="coach_tool")
+    assert head.id != seizure.id
+    assert ss.current_hold(db_session, user.id).id == seizure.id  # its way out shows
+    monkeypatch.setattr(ss, "_now", lambda: start + timedelta(days=3))
+    lifted = ss.lift_head_seizure(
+        db_session, user, seizure.id, "Another doctor", "No racing for six weeks"
+    )
+    assert lifted.id == seizure.id and lifted.lifted_how == "seizure_clearance"
+    db_session.refresh(head)
+    assert head.lifted_how == "seizure_clearance"
+    assert ss.open_holds(db_session, user) == []  # no easy weeks left behind
+    consent = db_session.query(ConsentEvent).one()
+    assert consent.text_shown == ss.SEIZURE_LIFT_TEXT
+    assert consent.doc_version == ss.SEIZURE_LIFT_VERSION
+    limit = db_session.query(ClearanceLimit).one()
+    assert limit.limits == "No racing for six weeks" and limit.cleared_by == "Another doctor"
+    # The doctor's advice sets the way back, never the usual day 21.
+    assert ss.no_racing_or_group_until(db_session, user, start.date()) is None
+    # A second tap changes nothing.
+    again = ss.lift_head_seizure(db_session, user, seizure.id, "Another doctor")
+    assert again.id == seizure.id
+    assert db_session.query(ConsentEvent).count() == 1
+
+
+def test_v7_the_seizure_declaration_refuses_other_holds_and_under_18s(db_session):
+    user = _user(db_session)
+    head = _head(db_session, user)
+    with pytest.raises(ss.HoldNotLiftable):
+        ss.lift_head_seizure(db_session, user, head.id, "My GP")
+    other = _user(db_session, email="other@example.com")
+    assert ss.lift_head_seizure(db_session, other, _seizure(db_session, user).id, "My GP") is None
+    minor = _user(db_session, email="kid@example.com")
+    seizure = _seizure(db_session, minor)
+    ss.open_hold(db_session, minor, "hold_all", "Under 18", "detector", red_flag="minor")
+    with pytest.raises(ss.HoldNotLiftable):
+        ss.lift_head_seizure(db_session, minor, seizure.id, "My GP")
+
+
+def test_v7_a_head_injury_read_again_while_a_seizure_is_held_is_that_hold(db_session):
+    user = _user(db_session)
+    seizure = _seizure(db_session, user)
+    for source in ("detector", "reply"):
+        again = ss.open_hold(db_session, user, "hold_all", "Hit their head", source,
+                             red_flag="head_injury")
+        assert again.id == seizure.id, source
+    # A new crash is a new injury: its own hold.
+    new = ss.open_hold(db_session, user, "hold_all", "Crashed again", "detector",
+                       red_flag="head_injury", new_event=True)
+    assert new.id != seizure.id
+
+
+def test_v7_a_seizure_hold_reads_as_its_own_on_the_plan_and_notice(db_session):
+    user = _user(db_session)
+    seizure = _seizure(db_session, user)
+    assert ss.hold_label(seizure) == ss.SEIZURE_HOLD_LABEL
+    assert ss.SEIZURE_HOLD_LABEL in ss.HOLD_LABELS
+    assert ss.standing_label(db_session, user) == ss.SEIZURE_HOLD_LABEL
+    text = ss.hold_explanation(seizure)
+    assert "assessed the seizure" in text and "24 hours" not in text
+    state = ss.safety_state(db_session, user)
+    assert state["hold"]["lift_kind"] == "head_seizure"
+    assert state["hold"]["red_flag"] == ss.HEAD_SEIZURE_FLAG
+    for words in (ss.SEIZURE_LIFT_TEXT, ss.SEIZURE_HOLD_LABEL, ss.SEIZURE_NEEDS_DOCTOR, text):
+        _clean(words)
+
+
+def test_v7_the_seizure_lift_endpoint(api):
+    """The app's way out of a seizure hold: POST /safety/seizure-lift, a
+    doctor only, its own words recorded, and nothing graded after it. Every
+    other way out answers with the seizure's own message and records
+    nothing."""
+    client, db, user = api
+    seizure = _seizure(db, user)
+    head = _head(db, user, source="coach_tool")
+    state = client.get("/api/v1/users/me/safety-state").json()
+    assert state["hold"]["lift_kind"] == "head_seizure"
+
+    # The routine head-injury check and the general clearance both refuse.
+    r = client.post("/api/v1/users/me/safety/head-injury-lift",
+                    json={"hold_id": head.id, "by": "My GP"})
+    assert r.status_code == 400 and r.json()["detail"] == ss.SEIZURE_NEEDS_DOCTOR
+    r = client.post("/api/v1/users/me/safety/clearance", json={"by": "My GP"})
+    assert r.status_code == 409 and r.json()["detail"] == ss.SEIZURE_NEEDS_DOCTOR
+    # A physio can't make it, and neither can the declaration on another hold.
+    r = client.post("/api/v1/users/me/safety/seizure-lift",
+                    json={"hold_id": seizure.id, "by": "My physio"})
+    assert r.status_code == 400 and "needs a doctor" in r.json()["detail"]
+    r = client.post("/api/v1/users/me/safety/seizure-lift", json={"hold_id": head.id, "by": "My GP"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == (
+        "This hold isn't for a fit after a head injury, so it can't be lifted that way."
+    )
+    r = client.post("/api/v1/users/me/safety/seizure-lift",
+                    json={"hold_id": _seizure(db, "someone-else").id, "by": "My GP"})
+    assert r.status_code == 404
+    assert db.query(ConsentEvent).count() == 0
+
+    r = client.post("/api/v1/users/me/safety/seizure-lift",
+                    json={"hold_id": seizure.id, "by": "Another doctor",
+                          "limits": "No road riding for four weeks"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["hold"] is None and body["allowed"] == "all"
+    assert not body["no_racing_or_group_until"]
+    consent = db.query(ConsentEvent).one()
+    assert consent.text_shown == ss.SEIZURE_LIFT_TEXT
+    assert consent.doc_version == ss.SEIZURE_LIFT_VERSION
+    assert [l["text"] for l in body["limits"]] == ["No road riding for four weeks"]
+    db.refresh(head)
+    assert head.lifted_how == "seizure_clearance"
+    _clean("This hold isn't for a fit after a head injury, so it can't be lifted that way.")
+
+
+def test_v7_the_seizure_lift_endpoint_refuses_an_under_18_account(api):
+    client, db, user = api
+    seizure = _seizure(db, user)
+    ss.open_hold(db, user.id, "hold_all", "Under 18", "detector", red_flag="minor")
+    r = client.post("/api/v1/users/me/safety/seizure-lift",
+                    json={"hold_id": seizure.id, "by": "My GP"})
+    assert r.status_code == 400 and "18 and over" in r.json()["detail"]
+    assert db.query(ConsentEvent).count() == 0

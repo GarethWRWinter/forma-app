@@ -456,7 +456,7 @@ def get_screening(db: Session, user: User) -> dict:
         db.query(SafetyHold.id)
         .filter(
             SafetyHold.user_id == user.id,
-            SafetyHold.source.in_(("detector", "coach_tool")),
+            SafetyHold.source.in_(("detector", "coach_tool", "reply")),
             SafetyHold.opened_at > ss.rescreen_red_flags_after(db, user, latest),
             SafetyHold.expires_at.is_(None),
             or_(SafetyHold.lifted_how.is_(None), SafetyHold.lifted_how != "mistake"),

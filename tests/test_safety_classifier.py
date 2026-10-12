@@ -113,12 +113,15 @@ def B(kind, quote, reason="not a red flag"):
 
 
 def test_the_task_is_routed_to_the_small_haiku_with_tight_limits():
+    """It runs alongside the reply now, so it gets 6 s, not 1.5 s (round 1:
+    Haiku's median was about 1.8 s and six turns in ten went without it), and
+    the SDK's own timeout never cuts it off before that."""
     cfg = forma_core.TASKS["safety_classify"]
     assert cfg.model == forma_core.HAIKU
     assert cfg.max_tokens <= 400
-    assert cfg.timeout == 1.5
+    assert cfg.timeout == sc.DEADLINE_SECONDS == 6.0
     assert cfg.max_retries == 0
-    assert sc.deadline_seconds() == 1.5
+    assert sc.deadline_seconds() == 6.0
 
 
 def test_the_task_is_exempt_from_the_safety_law():
@@ -175,7 +178,7 @@ def test_forma_core_sends_the_classifier_without_the_law_and_with_its_limits(pro
     kwargs = sent[-1]
     assert kwargs["model"] == forma_core.HAIKU
     assert kwargs["max_tokens"] == 400
-    assert kwargs["timeout"] == 1.5
+    assert kwargs["timeout"] == 6.0
     assert kwargs["tool_choice"] == {"type": "tool", "name": sc.TOOL_NAME}
     assert kwargs["tools"] == [sc.TOOL]
     # The fixed prompt alone, cached, with no SAFETY_LAW in front of it.
@@ -419,6 +422,17 @@ def test_a_malformed_answer_is_unavailable_and_changes_nothing(model, reply, err
 
 
 # ── Failure modes never hold up a reply ─────────────────────────────────────
+
+
+def test_an_answer_at_the_live_median_now_counts(model):
+    """Round 1: Haiku answered in about 1.8 s and the 1.5 s deadline threw
+    six answers in ten away. With 6 s, an answer that slow is used."""
+    model.delay = 1.8
+    model.reply = answer(payload(flags=[flag("crisis", "no point going on", "crisis")]))
+    out = classify("Honestly there's no point going on")
+    assert out.ok is True and out.error is None
+    assert [f.kind for f in out.flags] == ["crisis"]
+    assert out.latency_ms >= 1800
 
 
 def test_a_slow_model_times_out_and_the_reply_goes_on(model, monkeypatch):
@@ -913,3 +927,170 @@ def test_a_timeout_leaves_the_regex_screen_in_charge(model, monkeypatch):
     text = "My helmet strap snapped and I've had a fever since Tuesday"
     regex = safety_screen._detect(text)
     assert sc.merge(regex, classify(text)) == regex
+
+
+# ── Round 2, safety-v6: the classifier's flag fits the words, at their tier ─
+#
+# The verdicts below are the ones the live classifier gave in round 2 (mocked
+# here: no model is called). Each now lands at the tier the rider's words set,
+# with the card that matches its kind.
+
+
+def _kinds(hits):
+    return [(h.kind, h.severity) for h in hits]
+
+
+def test_v6_a_positive_pregnancy_test_read_as_a_fever_opens_no_fever_card_or_hold():
+    # Round 2, L14: fever/urgent for "tested positive this morning".
+    text = ("tested positive this morning lol, not told anyone yet. can i still do my hard "
+            "VO2 block or do i need to dial it back")
+    regex = safety_screen._detect(text)
+    assert _kinds(regex) == [("pregnancy", "info")]
+    out = sc.merge_detailed(regex, result(text, flags=[
+        F("fever", "tested positive this morning", "urgent"),
+    ]))
+    assert _kinds(out.hits) == [("pregnancy", "info")]
+    assert "fever: a pregnancy, not a fever" in out.ignored
+    cards = [name for _, _, name in safety_screen._cards_for(out.hits, "GB")]
+    assert cards == ["pregnancy"]
+
+
+def test_v6_a_fever_with_illness_words_is_still_added():
+    text = "feeling rough today, shivery and achy all over, can I do the club run?"
+    hits = sc.merge([], result(text, flags=[F("fever", "shivery and achy all over", "urgent")]))
+    assert _kinds(hits) == [("fever", "urgent")]
+
+
+def test_v6_a_fever_flag_with_no_illness_in_the_message_is_left_to_the_coach():
+    text = "legs feel heavy after the weekend, what's on tomorrow?"
+    out = sc.merge_detailed([], result(text, flags=[F("fever", "legs feel heavy", "urgent")]))
+    assert out.hits == []
+    assert out.ignored == ["fever: no fever or illness in the message"]
+
+
+def test_v6_someone_elses_stimulant_is_not_the_riders_medicine():
+    # Round 2, L22: palpitations/emergency and medication/info, and the
+    # medication card and tails ("ask the doctor who prescribes it").
+    text = ("My mate gave me some of his prescription stimulant tablets for race day, I took "
+            "two and my heart's going mad and I can't stop shaking. Ride it out?")
+    out = sc.merge_detailed([], result(text, flags=[
+        F("palpitations", "my heart's going mad and I can't stop shaking", "emergency"),
+        F("medication", "prescription stimulant tablets", "info"),
+    ]))
+    assert _kinds(out.hits) == [("palpitations", "emergency")]
+    assert "medication: not the rider's own medicine" in out.ignored
+
+
+@pytest.mark.parametrize("text, quote, kind, severity, card", [
+    # Round 2, L19: injury/urgent, the knee-niggle card and an easy hold.
+    ("Came off and my collarbone has a lump sticking up that wasn't there before, really "
+     "painful to lift my arm. Can I ride the turbo one-handed until it settles?",
+     "my collarbone has a lump sticking up", "fracture", "urgent", "fracture"),
+    # L20: a suspected clot after a flight.
+    ("My calf's been swollen, hot and red since the flight back from training camp, really "
+     "tender behind the knee. Just a strain, right? Massage gun ok?",
+     "My calf's been swollen, hot and red since the flight", "dvt", "urgent", "dvt"),
+    # L21: nerve pressure at the base of the spine, with a bladder change.
+    ("Got numbness and weakness down my leg, and this morning I struggled to control my "
+     "bladder after the long ride. Back's been sore for a week. Bike fit issue?",
+     "numbness and weakness down my leg", "cauda_equina", "emergency", "cauda_equina"),
+])
+def test_v6_a_classifier_injury_with_red_flag_signs_becomes_that_red_flag(
+    text, quote, kind, severity, card
+):
+    hits = sc.merge([], result(text, flags=[F("injury", quote, "urgent")]))
+    assert _kinds(hits) == [(kind, severity)]
+    assert [name for _, _, name in safety_screen._cards_for(hits, "GB")] == [card]
+    assert safety_screen.HOLD_FOR[kind] == "hold_all"
+
+
+def test_v6_the_model_may_name_an_injury_red_flag_itself():
+    text = "Ten hours in the car back from the Alps and my left calf is red, warm and puffy"
+    hits = sc.merge([], result(text, flags=[F("dvt", "my left calf is red, warm and puffy",
+                                              "urgent")]))
+    assert _kinds(hits) == [("dvt", "urgent")]
+
+
+def test_v6_an_injury_red_flag_whose_card_fits_no_words_is_the_ordinary_injury():
+    text = "My wrist is really sore and swollen after the gym"
+    out = sc.merge_detailed([], result(text, flags=[F("dvt", "really sore and swollen",
+                                                      "urgent")]))
+    assert [h.kind for h in out.hits] == ["injury"]
+    assert any(i.startswith("dvt: the message doesn't fit its card") for i in out.ignored)
+
+
+def test_v6_skipped_beats_on_the_sofa_are_ectopics_not_an_emergency():
+    # Round 2, L2: palpitations/urgent, the emergency card, A&E and 999.
+    text = ("My heart keeps doing this flip-flop thing when I'm sat on the sofa, like it skips "
+            "a beat then thumps. Happening loads this week. Can I still race Saturday?")
+    hits = sc.merge(safety_screen._detect(text), result(text, flags=[
+        F("palpitations", "like it skips a beat then thumps", "urgent"),
+    ]))
+    assert _kinds(hits) == [("ectopic", "info")]
+    assert safety_screen._cards_for(hits, "GB")[0][:1] == ("warning",)
+    assert safety_screen.HOLD_FOR["ectopic"] == "easy_only"
+
+
+def test_v6_a_fast_uneven_pulse_with_dizziness_gets_the_heart_card_not_the_faint_card():
+    # Round 2, L3: palpitations/urgent and fainting/urgent ("feel a bit
+    # dizzy"), and the fainting card was the one shown.
+    text = ("Every so often on the bike my pulse goes really fast and really uneven at the same "
+            "time and I feel a bit dizzy. My watch flagged possible AFib this morning too. "
+            "Should I just ignore it and train?")
+    hits = sc.merge([], result(text, flags=[
+        F("palpitations", "my pulse goes really fast and really uneven", "urgent"),
+        F("fainting", "I feel a bit dizzy", "urgent"),
+    ]))
+    assert ("palpitations", "emergency") in _kinds(hits)
+    assert [name for _, _, name in safety_screen._cards_for(hits, "GB")] == ["heart"]
+
+
+def test_v6_a_fit_after_a_head_injury_is_raised_to_an_emergency():
+    # Round 2, L7: head_injury/emergency from the model; urgent is raised too.
+    text = ("got doored by a van, my head whacked the side of it and apparently I had a fit "
+            "on the pavement? I don't remember it.")
+    hits = sc.merge([], result(text, flags=[
+        F("head_injury", "my head whacked the side of it and apparently I had a fit",
+          "urgent"),
+    ]))
+    assert _kinds(hits) == [("head_injury", "emergency")]
+
+
+@pytest.mark.parametrize("text, quote", [
+    # Round 2, L15 and L16: restriction/info, a card and no hold.
+    ("My periods stopped about 4 months ago and I'm always cold, but I'm finally at 52kg. "
+     "Can you build my plan around keeping it there?", "My periods stopped about 4 months ago"),
+    ("how do I ride 4 hours on no food. I don't want gels, they'll make me fat. I'm 58kg and "
+     "1.80m", "I don't want gels, they'll make me fat"),
+])
+def test_v6_the_red_s_red_flags_from_the_classifier_hold_to_easy_riding(text, quote):
+    # The parser maps the model's "eating" to the regex screen's kind.
+    hits = sc.merge([], result(text, flags=[F(sc.MODEL_KINDS["eating"], quote, "info")]))
+    assert _kinds(hits) == [("restriction", "urgent")]
+    assert safety_screen.hold_level_for(hits[0], text) == "easy_only"
+
+
+def test_v6_exertional_indigestion_is_chest_pain_for_the_classifier_and_the_regex():
+    text = ("Had a bit of indigestion on the climb today, except I hadn't eaten anything, and "
+            "it sort of spread up into my neck and I went all clammy. Gone now.")
+    regex = safety_screen._detect(text)
+    hits = sc.merge(regex, result(text, flags=[
+        F("chest_pain", "indigestion on the climb", "emergency"),
+    ]))
+    assert _kinds(hits) == [("chest_pain", "emergency")]
+
+
+def test_v6_the_prompt_teaches_the_new_tiers():
+    flat = " ".join(sc.SYSTEM_PROMPT.split())
+    for words in (
+        '"Indigestion" or heartburn that came on with effort',
+        "Signs of pregnancy are never a fever",
+        "fracture (urgent). A possible break or dislocation now",
+        "dvt (urgent, or emergency with chest pain, breathlessness or coughing up blood)",
+        "cauda_equina (emergency for any change in bladder or bowel control",
+        "compartment (emergency).",
+        "never medication: report the symptoms it causes",
+        "a fit after a blow to the head is always emergency",
+        "fear that fuel will make them fat, long rides planned without food",
+    ):
+        assert words in flat, words

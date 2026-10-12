@@ -9,14 +9,19 @@ way every time, and it acts before a single word of the reply is written.
 A hit does four things (plan section E):
   1. writes a safety_events row (what matched, what the rider was shown);
   2. opens a hold: hold_all for chest symptoms, fainting, a head injury,
-     fever or a rider under 18; easy_only for an injury, a pregnancy, a
-     medicine, a condition or a break of four weeks or more;
+     fever, signs of a stomach bleed, an injury red flag (a possible break,
+     a clot, nerve pressure at the base of the spine, a tight swollen limb
+     in severe pain) or a rider under 18; easy_only for an ordinary injury,
+     skipped beats at rest, a pregnancy, a medicine, a condition, the red
+     flags of eating too little or a break of four weeks or more. Each hit
+     is first put at the tier the rider's words set (tier_hits), whichever
+     check found it, so its card always matches its kind;
   3. adds a SAFETY CONTEXT line to the coach's system prompt for this turn:
      what matched, the rider's own emergency numbers, what the reply must
      say, and how the hold lifts, word for word;
-  4. for chest symptoms, fainting, a head injury, crisis words, fever and
-     heat, puts a fixed card in front of the rider before the model's text,
-     in the numbers of the rider's own country.
+  4. for chest symptoms, fainting, a head injury, signs of a stomach bleed,
+     crisis words, fever and heat, puts a fixed card in front of the rider
+     before the model's text, in the numbers of the rider's own country.
 If the model's reply never comes (the provider fails, or it is cut off
 before a word), fallback_reply answers in fixed words instead: a plain no to
 riding on, the card's primary action, the safety net, the hold from the
@@ -105,6 +110,11 @@ _UK_ONLY = (
     r"\bbeat\b|0808 801 0677|beateatingdisorders"
 )
 
+# Where a UK rider can get an injury seen without waiting for a GP slot.
+_NHS_PHYSIO = (
+    " In the UK you can usually refer yourself to NHS physiotherapy, or ask your GP."
+)
+
 # Per country: the emergency number; where to go today; where heart symptoms
 # or fainting are seen today (somewhere with an ECG, never a routine GP slot,
 # so in France that's 15 or les urgences, not the médecin traitant); the
@@ -132,11 +142,23 @@ LOCALES: dict[str, dict] = {
         "today_short": "NHS 111",
         "gp": "your GP",
         "crisis": (
-            "Samaritans are free, day or night, on 116 123, or text SHOUT to 85258."
+            "Samaritans are free, day or night, on 116 123, or text SHOUT to 85258. In "
+            "England you can also call NHS 111 and choose option 2 for urgent mental "
+            "health help."
         ),
-        "danger": "If you're in immediate danger, call 999 or go to A&E.",
+        "danger": (
+            "If you've already taken something or hurt yourself, or you feel you might "
+            "act on it, call 999 or go to A&E now, even if you feel fine."
+        ),
+        "crisis_now": (
+            "call NHS 111 and choose option 2 now to reach the mental health crisis team "
+            "(in England; elsewhere in the UK, your GP out-of-hours service), or go to A&E"
+        ),
+        "xray": "A&E or an urgent treatment centre",
         "crisis_rx": r"116 ?123",
         "invalid": r"\b988\b|\b741741\b|\b3114\b",
+        "physio_route": _NHS_PHYSIO,
+        "native": "",
         "swaps": (),
     },
     "IE": {
@@ -155,9 +177,17 @@ LOCALES: dict[str, dict] = {
         "crisis": (
             "Samaritans are free, day or night, on 116 123, or text HELLO to 50808."
         ),
-        "danger": "If you're in immediate danger, call 112 or 999.",
+        "danger": (
+            "If you've already taken something or hurt yourself, or you feel you might "
+            "act on it, call 112 or 999 or go to the emergency department now, even if "
+            "you feel fine."
+        ),
+        "crisis_now": "go to the emergency department now, or call your GP out-of-hours service",
+        "xray": "the emergency department or an injury unit",
         "crisis_rx": r"116 ?123|50808",
         "invalid": r"\bnhs\b|\bshout\b|\b85258\b|\b111\b|\b988\b|\b741741\b|\bbeat\b|0808 801 0677",
+        "physio_route": "",
+        "native": "",
         "swaps": ((r"\bA&E\b", "the emergency department"),),
     },
     "FR": {
@@ -176,9 +206,17 @@ LOCALES: dict[str, dict] = {
         "today_short": "your médecin traitant",
         "gp": "your doctor",
         "crisis": "Call 3114, free, day or night: it's France's suicide prevention line.",
-        "danger": "If you're in immediate danger, call 15 or 112.",
+        "danger": (
+            "If you've already taken something or hurt yourself, or you feel you might "
+            "act on it, call 15 or 112 or go to les urgences now, even if you feel fine."
+        ),
+        "crisis_now": "call 3114 or 15 (SAMU) now, or go to les urgences",
+        "xray": "les urgences (the emergency department)",
         "crisis_rx": r"\b3114\b",
         "invalid": _UK_ONLY + r"|\b988\b|\b741741\b",
+        "physio_route": "",
+        # One line in French on the chest card, for a rider who reads it first.
+        "native": " Si la douleur revient ou dure, appelez le 15 (SAMU) ou le 112.",
         "swaps": (
             (r"\b999\b", "15 or 112"),
             (r"\bA&E\b", "the emergency department"),
@@ -199,9 +237,17 @@ LOCALES: dict[str, dict] = {
         "today_short": "a doctor",
         "gp": "your doctor",
         "crisis": "Your country's crisis line is listed at findahelpline.com.",
-        "danger": "If you're in immediate danger, call 112.",
+        "danger": (
+            "If you've already taken something or hurt yourself, or you feel you might "
+            "act on it, call 112 or go to the emergency department now, even if you "
+            "feel fine."
+        ),
+        "crisis_now": "go to the emergency department now, or call 112",
+        "xray": "the emergency department",
         "crisis_rx": r"findahelpline",
         "invalid": _UK_ONLY + r"|\b988\b|\b741741\b",
+        "physio_route": "",
+        "native": "",
         "swaps": (
             (r"\b999\b", "112"),
             (r"\bA&E\b", "the emergency department"),
@@ -225,9 +271,16 @@ LOCALES: dict[str, dict] = {
             "Call or text 988, or chat at 988lifeline.org, free, day or night, or text "
             "HOME to 741741."
         ),
-        "danger": "If you're in immediate danger, call 911 or go to the ER.",
+        "danger": (
+            "If you've already taken something or hurt yourself, or you feel you might "
+            "act on it, call 911 or go to the ER now, even if you feel fine."
+        ),
+        "crisis_now": "call or text 988 now, or go to the ER",
+        "xray": "the ER or urgent care",
         "crisis_rx": r"\b988\b",
         "invalid": _UK_ONLY,
+        "physio_route": "",
+        "native": "",
         "swaps": (
             (r"\b999\b", "911"),
             (r"\bA&E\b", "the ER"),
@@ -248,9 +301,17 @@ LOCALES: dict[str, dict] = {
         "today_short": "your doctor",
         "gp": "your doctor",
         "crisis": "Call or text 988, free, day or night.",
-        "danger": "If you're in immediate danger, call 911 or go to the emergency department.",
+        "danger": (
+            "If you've already taken something or hurt yourself, or you feel you might "
+            "act on it, call 911 or go to the emergency department now, even if you feel "
+            "fine."
+        ),
+        "crisis_now": "call or text 988 now, or go to the emergency department",
+        "xray": "the emergency department",
         "crisis_rx": r"\b988\b",
         "invalid": _UK_ONLY + r"|\b741741\b",
+        "physio_route": "",
+        "native": "",
         "swaps": (
             (r"\b999\b", "911"),
             (r"\bA&E\b", "the emergency department"),
@@ -272,15 +333,25 @@ LOCALES: dict[str, dict] = {
         "gp": "your GP",
         "crisis": (
             "In the UK and Ireland, Samaritans are free, day or night, on 116 123, "
-            "and in the UK you can text SHOUT to 85258. In the US, call or text 988. "
+            "and in the UK you can text SHOUT to 85258 (in England, NHS 111 option 2 "
+            "is for urgent mental health help). In the US, call or text 988. "
             "Elsewhere, findahelpline.com lists your local line."
         ),
         "danger": (
-            "If you're in immediate danger, call your local emergency number (999 "
-            "in the UK, 112 in the EU, 911 in the US)."
+            "If you've already taken something or hurt yourself, or you feel you might "
+            "act on it, call your local emergency number (999 in the UK, 112 in the EU, "
+            "911 in the US) or go to A&E (the emergency department) now, even if you feel "
+            "fine."
         ),
+        "crisis_now": (
+            "in England, call NHS 111 and choose option 2 now to reach the mental health "
+            "crisis team; anywhere, you can go to A&E (the emergency department) now"
+        ),
+        "xray": "A&E or an urgent treatment centre (the emergency department elsewhere)",
         "crisis_rx": r"116 ?123|\b988\b|findahelpline",
         "invalid": None,
+        "physio_route": _NHS_PHYSIO,
+        "native": "",
         "swaps": (),
     },
 }
@@ -302,32 +373,67 @@ def _local(country: str | None) -> dict:
     return LOCALES[locale_for(country)]
 
 
+# Beat, introduced rather than pasted bare: a number with no context reads
+# as an accusation.
+_BEAT_LINE = (
+    "If food or weight is feeling hard to manage, Beat, the UK eating disorder "
+    "charity, can help: 0808 801 0677 in England; other UK numbers at "
+    "beateatingdisorders.org.uk."
+)
+
+
+# Taken something, hurt themselves, an aborted or interrupted attempt, or
+# preparing for one (going to the place, sitting there considering it,
+# rehearsing it): the emergency, now, whatever they feel (SAFETY LAW rule 4).
+# The acted crisis card leads with it, and the reply says it as a
+# conclusion, never on a condition.
+CRISIS_ACTED_LINE = (
+    "What you've told me needs help now, not later, even if you feel fine: call "
+    "{emergency} now or go to {hospital}, and get someone to be with you."
+)
+
 # ── The fixed cards, in the rider's own numbers ─────────────────────────────
 
 # Each card names one situation and says what to do on every branch of it,
 # so a rider who reads nothing else still has the right number.
 _CARD_TEXT = {
+    # Discomfort a rider calls indigestion counts when it came on with effort
+    # (round 2, L1): what decides 999 is what came with it, not whether it
+    # is still there.
     "chest": (
-        "If you have chest pain, pressure or tightness, pain in your arm, jaw, "
-        "neck or back that comes with effort or breathlessness, or you're short of "
-        "breath at rest, call {emergency} now if it's still happening, lasted more "
-        "than a few minutes, or came with sweating, sickness, faintness or "
-        "breathlessness. Don't ride or drive. If it has fully settled, you still "
-        "need to be seen today: {heart_today}. Don't ride until a doctor has "
-        "checked you."
+        "If you have chest pain, pressure or tightness, discomfort you might call "
+        "indigestion that came on with effort, pain in your arm, jaw, neck or back "
+        "that comes with effort or breathlessness, or you're short of breath at "
+        "rest, call {emergency} now if it's still happening, lasted more than a few "
+        "minutes, spread to your arm, jaw, neck or back, or came with sweating or "
+        "clamminess, sickness, faintness or breathlessness, even if it has settled. "
+        "Don't ride or drive. If it settled quickly and came with none of those, you "
+        "still need to be seen today: {heart_today}. Don't ride until a doctor has "
+        "checked you.{native}"
     ),
     "faint": (
         "If you passed out, or it came with chest pain, a racing or irregular "
-        "heartbeat or breathlessness, call {emergency} now. Otherwise stop, lie "
-        "down with your legs raised, don't stay alone and don't drive. Get seen "
-        "today for an ECG, a heart tracing: {heart_today}. Don't ride until a "
-        "doctor has checked your heart."
+        "heartbeat or breathlessness, call {emergency} now. Otherwise stop "
+        "pedalling (press Stop if you're on the trainer) and get off the bike "
+        "carefully, sitting on the floor first if you feel light-headed, then lie "
+        "down with your legs raised. Don't get back on the bike, don't stay alone "
+        "and don't drive. Get seen today so a doctor can check your heart: "
+        "{heart_today}. Don't ride until a doctor has checked your heart."
     ),
     "heart": (
         "If your heart is racing or irregular right now, or it came with chest "
         "pain, faintness or breathlessness, stop and call {emergency} now. If "
-        "it has settled, get seen today for an ECG, a heart tracing: "
+        "it has settled, get seen today so a doctor can check your heart: "
         "{heart_today}. Don't ride until a doctor has checked your heart."
+    ),
+    # Skipped or extra beats at rest with nothing else (round 2, L2): their
+    # GP within days, hard efforts held; never 999 or A&E for that alone.
+    "ectopic": (
+        "A heart that skips, flips or thumps now and then at rest, with nothing "
+        "else, needs checking by {gp} in the next few days, before any race. Until "
+        "then, easy riding only: no hard efforts or racing. Call {emergency} now if "
+        "it comes with chest pain, breathlessness, dizziness or fainting, or your "
+        "heart races and doesn't settle."
     ),
     "head": (
         "After a blow to the head: if you were knocked out, have a headache "
@@ -341,16 +447,41 @@ _CARD_TEXT = {
         "cleared you. If you were wearing a helmet, replace it, even if it looks "
         "fine."
     ),
+    # Black or tarry poo, or vomiting blood: it can mean bleeding in the
+    # stomach or gut, and anti-inflammatory painkillers are a common cause.
+    # A prescribed medicine is never stopped on Forma's word.
+    "bleed": (
+        "Black, tarry or dark red poo, or vomit with blood in it or that looks like "
+        "coffee grounds, can mean bleeding in the stomach or gut. Call {emergency} "
+        "now if you're vomiting blood or anything like coffee grounds, or you feel "
+        "faint or dizzy, collapse, are breathless or your heart is racing. Otherwise "
+        "go to {hospital} today, with someone else driving. Don't take any more "
+        "ibuprofen, naproxen or aspirin you bought yourself until a doctor has seen "
+        "you. If a doctor prescribed one of them or a blood thinner, don't stop it "
+        "yourself: tell the doctor who sees you. Don't ride until a doctor has "
+        "checked you."
+    ),
+    # {danger} is the line for anyone who has already acted or may act: the
+    # emergency number now, even if they feel fine.
     "crisis": (
         "I'm really glad you told me. If you're thinking about ending your life "
         "or hurting yourself, please talk to someone now. {crisis} {danger}"
     ),
+    # An act, an interrupted attempt or preparing for one (round 3, L13: rode
+    # to the cliffs and sat there an hour thinking about jumping): the
+    # emergency first, never "if you feel you might act".
+    "crisis_acted": (
+        "I'm really glad you told me. " + CRISIS_ACTED_LINE + " You can also talk to "
+        "someone now. {crisis}"
+    ),
     "fever": (
         "With a fever, don't ride or train at all: rest until it has been gone for "
-        "24 hours without paracetamol or ibuprofen. Call {emergency} if you're "
-        "struggling to breathe, your lips turn blue, you're confused or you have "
-        "chest pain. Get seen today ({today_short}) if you cough up blood, the "
-        "fever lasts more than three days or you're getting worse."
+        "24 hours without paracetamol or ibuprofen, and stay away from others and "
+        "club rides until then. Call {emergency} if you're struggling to breathe or "
+        "breathing very fast, your lips or skin turn blue, grey or blotchy, you're "
+        "confused or you have chest pain. Get seen today ({today_short}) if you "
+        "cough up blood, the fever lasts more than three days or you're getting "
+        "worse."
     ),
     "heat": (
         "In heat like this, know the signs. If you or anyone with you becomes "
@@ -360,43 +491,199 @@ _CARD_TEXT = {
         "exhaustion: stop, get into the shade, cool down and drink. If you're "
         "not better within 30 minutes, call {emergency}."
     ),
+    # Heatstroke happening now (a heat hit at emergency severity): the
+    # emergency card, written so whoever is with a confused rider can act on
+    # it (round 2, L17 and L18).
+    "heatstroke": (
+        "This sounds like heatstroke, which is an emergency. Call {emergency} now. "
+        "If you're with someone, show them this; if you're alone, ask someone nearby "
+        "to stay with you and tell {emergency} exactly where you are. Stop riding, get "
+        "into the shade, take your helmet off, loosen your kit and cool down with cold "
+        "water on your skin and moving air while you wait. Don't drink if you feel "
+        "confused or drowsy, and don't ride on."
+    ),
+    # The injury red flags that need a doctor today or now, never a physio
+    # next week (round 2, L19 to L21): each holds all riding until a doctor
+    # has checked it.
+    "fracture": (
+        "After a crash, a lump or a bone that looks out of place, not being able to "
+        "lift your arm or put weight on your leg, or a joint that has popped out can "
+        "mean a break or a dislocation. Go to {xray} today, with someone else "
+        "driving, so it can be X-rayed. Don't ride at all, not even on the turbo, "
+        "until a doctor has checked it. Call {emergency} if a bone is through the "
+        "skin, or your hand or foot goes cold, pale, blue or numb."
+    ),
+    "dvt": (
+        "A calf that is swollen, hot, red or tender, especially after a long flight "
+        "or drive, can mean a blood clot. Get seen today at {hospital}. Call "
+        "{emergency} now if you get chest pain, sudden breathlessness or cough up "
+        "blood. Don't ride, and don't massage it or use a massage gun on it, until a "
+        "doctor has checked it."
+    ),
+    "cauda_equina": (
+        "Numbness around your bottom, genitals or inner thighs, new trouble "
+        "controlling or passing pee or poo, or new weakness in your legs, with back "
+        "pain, needs emergency care now, not a physio or a bike fit. If you've had "
+        "any change in your bladder or bowels, call {emergency} now or go straight "
+        "to {hospital}. Otherwise go to {hospital} now, with someone else driving. "
+        "Don't ride until a doctor has seen you."
+    ),
+    "compartment": (
+        "Severe pain in your calf, shin, thigh or forearm that keeps getting worse, "
+        "with the muscle swollen and hard, or numbness or pins and needles below it, "
+        "needs {hospital} now, with someone else driving. Call {emergency} if you "
+        "can't get there quickly. Take off anything tight around it and don't ride."
+    ),
+    # The red flags that hold hard work rather than all riding: what to do,
+    # who sees it and when, in fixed words.
+    "injury": (
+        "Don't ride through pain. Until a physio or doctor has seen it, rest it "
+        "from anything that brings the pain on, climbing included. Get it seen "
+        "today ({today_short}) if a joint turns hot, red and swollen with a fever, "
+        "you can't put weight on it, or you get numbness or tingling; within a day "
+        "or two if it locks, gives way, swells or hurts at night. Otherwise book a "
+        "physio or sports medicine doctor within the next week.{physio_route}"
+    ),
+    "pregnancy": (
+        "Call {emergency} for chest pain, sudden breathlessness, heavy bleeding, a "
+        "fit or collapse. Early in pregnancy, go to {hospital} now for pain low on "
+        "one side of your tummy, pain in the tip of your shoulder, or bleeding with "
+        "feeling faint. Contact your maternity unit, midwife or {gp} now for any "
+        "bleeding, leaking fluid, regular painful contractions, fewer baby "
+        "movements, a severe headache, dizziness or feeling faint, or calf pain or "
+        "swelling. Hard efforts and tests wait for your midwife or {gp}: ride easy, "
+        "by the talk test, not by power or heart-rate numbers, and keep cool and "
+        "drink regularly."
+    ),
+    "postnatal": (
+        "Call {emergency} for chest pain, sudden breathlessness, heavy bleeding, a "
+        "fit or collapse. Contact your midwife or {gp} straight away for heavier "
+        "bleeding, a fever, a severe headache, calf pain or swelling, or feeling "
+        "faint. Hard efforts wait until your postnatal check, or your doctor or "
+        "physio says you're ready."
+    ),
+    "medication": (
+        "Don't skip, change or re-time your medicine to train: ask {gp} or the "
+        "doctor who prescribes it. While riding, stop and call {emergency} for "
+        "chest pain, fainting, or a racing or irregular heartbeat, and stop and get "
+        "off the bike if you feel dizzy or light-headed. Hard sessions wait until a "
+        "doctor has cleared you."
+    ),
+    "restriction": (
+        "Forma won't set calorie or weight targets, or add training to lose weight. "
+        "Eating too little for the training you do (RED-S, Relative Energy "
+        "Deficiency in Sport) means getting ill more often, stress fractures and "
+        "slower riding, not faster. Talk to {gp} and a registered sports "
+        "dietitian.{beat}"
+    ),
 }
 
 # How the app styles each card. The app knows "emergency" (red, with a call
-# button) and "crisis"; "warning" is the quieter fever and heat card.
+# button) and "crisis"; "warning" is the quieter card for everything else.
 CARD_STYLE = {
     "chest": "emergency",
     "faint": "emergency",
     "heart": "emergency",
     "head": "emergency",
+    "bleed": "emergency",
+    "heatstroke": "emergency",
+    "cauda_equina": "emergency",
+    "compartment": "emergency",
+    "dvt": "emergency",
+    "fracture": "emergency",
     "crisis": "crisis",
+    "crisis_acted": "crisis",
     "fever": "warning",
     "heat": "warning",
+    "ectopic": "warning",
+    "injury": "warning",
+    "pregnancy": "warning",
+    "postnatal": "warning",
+    "medication": "warning",
+    "restriction": "warning",
 }
 
-# The card each red flag brings. One emergency-style card at most: the
-# highest of these is shown, since each one already carries the call.
+# The injury red flags that need a doctor today or now, not a physio: each
+# is its own kind, so its card, its hold (all riding, cleared by a doctor
+# only) and its lines can never be the ordinary injury's (round 2, L19 to
+# L21). An ordinary niggle stays "injury".
+INJURY_RED_FLAGS = frozenset({"fracture", "dvt", "cauda_equina", "compartment"})
+
+# The card each red flag brings: a hit's card always matches its kind. One
+# emergency-style card at most, since each one already carries the call: the
+# one whose red flag is most severe, then the first in this order.
 CARD_FOR_KIND = {
     "chest_pain": "chest",
     "fainting": "faint",
     "palpitations": "heart",
+    "ectopic": "ectopic",
     "head_injury": "head",
+    "gi_bleed": "bleed",
     "crisis": "crisis",
     "fever": "fever",
     "heat": "heat",
+    "fracture": "fracture",
+    "dvt": "dvt",
+    "cauda_equina": "cauda_equina",
+    "compartment": "compartment",
+    "injury": "injury",
+    "pregnancy": "pregnancy",
+    "medication": "medication",
+    "restriction": "restriction",
 }
-_EMERGENCY_CARD_ORDER = ("chest", "faint", "heart", "head")
+_EMERGENCY_CARD_ORDER = (
+    "chest", "faint", "heart", "head", "bleed", "heatstroke", "cauda_equina", "compartment",
+    "dvt", "fracture",
+)
+# The quieter cards, in the order they're shown after any emergency card.
+_OTHER_CARD_ORDER = (
+    "crisis_acted", "crisis", "fever", "heat", "ectopic", "pregnancy", "postnatal", "medication", "injury",
+    "restriction",
+)
+# The cards about how to train: an account that may be a child's gets none
+# of them, since it gets no training content at all.
+_TRAINING_CARDS = frozenset({"injury", "pregnancy", "postnatal", "medication", "restriction"})
 # The card styles the chat page actually shows (SafetyCard.tsx). Only these
 # count as already said when the reply check decides what a reply still
-# needs: until the app shows "warning" cards, the reply carries the fever and
-# heat lines itself.
+# needs: until the app shows "warning" cards, the reply carries their lines
+# itself.
 RENDERED_CARD_STYLES = frozenset({"emergency", "crisis"})
 _STYLE_ORDER = ("emergency", "crisis", "warning")
+
+# Pregnant now, rather than after a birth.
+_PREGNANT_NOW_RX = re.compile(
+    r"pregnan|trimester|\bexpecting\b|\bcarrying\b|\bpositive\b|"
+    r"(?:weeks?|wks?|months?)[- ](?:along|gone)"
+)
+
+
+def _card_fields(country: str | None) -> dict:
+    loc = _local(country)
+    beat = f" {_BEAT_LINE}" if loc["label"] in ("the UK", "unknown") else ""
+    return {**loc, "beat": beat}
 
 
 def card_text(card: str, country: str | None = None) -> str:
     """A fixed card, word for word, in the numbers for the rider's country."""
-    return _CARD_TEXT[card].format(**_local(country))
+    return _CARD_TEXT[card].format(**_card_fields(country))
+
+
+def card_for_hit(hit) -> str | None:
+    """The card a red flag brings: a pregnancy now gets the maternity card,
+    a recent birth the postnatal one, heatstroke happening now (a heat hit
+    at emergency severity) the emergency heatstroke card, and a crisis at
+    the acted tier (Hit.tier) the acted crisis card."""
+    kind = getattr(hit, "kind", None)
+    name = CARD_FOR_KIND.get(kind)
+    if name == "heat" and getattr(hit, "severity", None) == "emergency":
+        return "heatstroke"
+    if name == "crisis" and getattr(hit, "tier", None) == "acted":
+        return "crisis_acted"
+    if name == "pregnancy" and not _PREGNANT_NOW_RX.search(
+        (getattr(hit, "matched", "") or "").lower()
+    ):
+        return "postnatal"
+    return name
 
 
 # The country-unknown versions: what a rider with no country on file sees.
@@ -417,8 +704,17 @@ HOLD_FOR = {
     "palpitations": "hold_all",
     "fainting": "hold_all",
     "head_injury": "hold_all",
+    # Never a hit kind: the red flag on the hold for a fit after a head
+    # injury (safety_service.HEAD_SEIZURE_FLAG, screen_message).
+    "head_seizure": "hold_all",
+    "gi_bleed": "hold_all",
     "fever": "hold_all",
     "minor": "hold_all",
+    "fracture": "hold_all",
+    "dvt": "hold_all",
+    "cauda_equina": "hold_all",
+    "compartment": "hold_all",
+    "ectopic": "easy_only",
     "injury": "easy_only",
     "pregnancy": "easy_only",
     "medication": "easy_only",
@@ -429,16 +725,74 @@ HOLD_FOR = {
 HOLD_REASONS = {
     "chest_pain": "Chest pain, pressure or tightness, or breathlessness at rest, mentioned in chat",
     "palpitations": "Palpitations mentioned in chat",
+    "ectopic": "Skipped or extra heartbeats at rest mentioned in chat",
     "fainting": "Fainting or nearly fainting mentioned in chat",
     "head_injury": "A blow to the head or a damaged helmet mentioned in chat",
+    "head_seizure": "A fit or seizure after a blow to the head mentioned in chat",
+    "gi_bleed": "Black or tarry poo, or vomiting blood, mentioned in chat",
     "fever": "Fever or illness below the neck mentioned in chat",
     "minor": "The rider said they are under 18. Forma is for adults",
+    "fracture": "Signs of a possible break or dislocation after a crash mentioned in chat",
+    "dvt": "A swollen, hot, red or tender calf mentioned in chat",
+    "cauda_equina": "Numbness, leg weakness or bladder or bowel changes with back pain "
+                    "mentioned in chat",
+    "compartment": "Severe, worsening pain with a tight, swollen limb mentioned in chat",
     "injury": "An injury or worrying pain mentioned in chat",
     "pregnancy": "Pregnancy, or a recent birth, mentioned in chat",
     "medication": "A medicine that changes how to train mentioned in chat",
     "condition": "A health condition mentioned in chat",
+    "restriction": "Signs of eating too little for your training mentioned in chat",
     "layoff": "Easing back in after a break from riding",
+    "heat": "Very hot weather today",
 }
+
+# What an easy hold means for this red flag beyond "easy riding only": the
+# limit the reply sets, kept on the hold itself so the notice, the plan, the
+# briefings and every later reply carry the same limit.
+HOLD_LIMITS = {
+    "ectopic": "easy riding only, no hard efforts or racing, until a doctor has checked "
+               "your heart",
+    "injury": "pain-free, flat or indoor riding only, with no climbing or big-gear work",
+    "pregnancy": "ride by the talk test, not power or heart-rate numbers, with ERG off "
+                 "and no tests or all-out efforts",
+    "restriction": "easy riding only, no ride over 90 minutes, and eat on every ride, "
+                   "until a doctor has seen you",
+    "layoff": "ride by feel with ERG off, since FTP is from before the break",
+    "heat": "easy riding only, before 9am or after 7pm, or a rest day",
+}
+_HR_LIMIT = "ride by power or effort out of 10, never by heart rate"
+
+
+def hold_reason(kind: str, matched: str = "") -> str:
+    """The reason a detector hold carries: what was said, then the limit it
+    sets (HOLD_LIMITS), so the plan and every surface read the same rule."""
+    reason = HOLD_REASONS[kind]
+    limit = HOLD_LIMITS.get(kind)
+    if kind == "medication" and _BETA_BLOCKER_RX.search((matched or "").lower()):
+        limit = _HR_LIMIT
+    return f"{reason}: {limit}"[:200] if limit else reason
+
+
+def hold_level_for(hit, text: str = "") -> str | None:
+    """The hold a red flag opens: its kind's (HOLD_FOR), all riding for
+    heatstroke, today kept easy for hot weather alone, and easy riding for
+    the red flags of eating too little (a restriction hit at urgent
+    severity: periods stopped for three months or more, an underweight
+    rider afraid of food, long rides planned without food). Code decides
+    the level, never the model."""
+    kind = getattr(hit, "kind", None)
+    if kind == "restriction":
+        return "easy_only" if getattr(hit, "severity", None) in ("urgent", "emergency") else None
+    if kind == "injury" and getattr(hit, "severity", None) in ("urgent", "emergency"):
+        # An injury that needs a doctor today (a hot swollen joint, unable to
+        # bear weight) holds all riding, cleared by a doctor (round 2: the
+        # classifier's urgent injury opened only easy riding).
+        return "hold_all"
+    if kind == "heat":
+        if _heatstroke(hit):
+            return "hold_all"
+        return "easy_only" if heat_today(getattr(hit, "matched", ""), text) else None
+    return HOLD_FOR.get(kind)
 
 # Where a hold says it came from. A break the rider tells us about is not a
 # symptom: the app shows it as "Easing back in", not as a medical hold.
@@ -448,9 +802,15 @@ HOLD_SOURCE_FOR = {"layoff": "layoff"}
 LAW_RULE = {
     "chest_pain": "2a",
     "palpitations": "2a",
+    "ectopic": "2a",
     "fainting": "2b",
     "head_injury": "2c",
+    "gi_bleed": "2o",
     "fever": "2d",
+    "fracture": "2e",
+    "dvt": "2e",
+    "cauda_equina": "2e",
+    "compartment": "2e",
     "injury": "2e",
     "pregnancy": "2f",
     "medication": "2g",
@@ -474,8 +834,8 @@ SOFT_KINDS = frozenset({"distress_check", "safety_question"})
 # The red flags a general or hypothetical question can be about: the ones
 # that bring a card or a hold. Never crisis or an age: those are always real.
 QUESTION_KINDS = frozenset(
-    {"chest_pain", "palpitations", "fainting", "head_injury", "fever", "heat", "injury",
-     "pregnancy"}
+    {"chest_pain", "palpitations", "fainting", "head_injury", "gi_bleed", "fever", "heat",
+     "injury", "pregnancy"}
 )
 # Kinds that are not about the rider's own body, so leave no safety record.
 UNRECORDED_KINDS = frozenset({"safety_question"})
@@ -529,19 +889,36 @@ _LIFT = {
         "cleared on the hold notice (or Settings, then Health), and add the "
         "tests they did and anything they told you to avoid."
     ),
-    # UK grassroots concussion guidance: symptom-free first, then a gradual
-    # return, and nothing high-risk before day 21.
+    # UK grassroots concussion guidance: symptom-free first, then a graded
+    # return, and nothing high-risk before day 21. The tap never ends the
+    # hold outright: safety_service.lift_head_injury leaves easy riding until
+    # two weeks after the injury, and racing waits for day 21.
     "head_injury": (
-        "Once a doctor has checked you and you've had no symptoms for 24 to 48 "
-        "hours, tap I've been cleared on the hold notice (or Settings, then "
-        "Health). Then build back gradually from easy riding, drop back a step "
-        "if any symptom returns, and no racing or group riding before day 21 "
-        "after the injury."
+        "Once a doctor has checked you and said you can start riding again, and "
+        "you've had no symptoms for at least 24 hours, tap I've been cleared on "
+        "the hold notice (or Settings, then Health). That doesn't end the hold: "
+        "Forma keeps you to easy riding until two weeks after the injury, starting "
+        "on the indoor trainer before the road, with no racing or group riding "
+        "before day 21. If any symptom comes back, stop and get checked again."
+    ),
+    # A fit after a head injury: a doctor assesses the seizure, never the
+    # routine head-injury check, and how they build back follows that doctor
+    # (safety_service.lift_head_seizure; round 3, L7).
+    "head_seizure": (
+        "Once a doctor has assessed the seizure after your head injury and cleared "
+        "you to ride, tap I've been cleared on the hold notice (or Settings, then "
+        "Health), and add what they told you about riding, driving and anything else "
+        "to avoid. How and when you build back up follows their advice."
     ),
     "injury": (
         "Once a physio or doctor has looked at it and cleared you, tap I've "
         "been cleared on the hold notice (or Settings, then Health) and add "
         "anything they told you to avoid."
+    ),
+    "gi_bleed": (
+        "Once a doctor has checked you and cleared you to ride, tap I've been "
+        "cleared on the hold notice (or Settings, then Health), and add what they "
+        "told you about painkillers and anything else to avoid."
     ),
     "pregnancy": (
         "Once your midwife or obstetrician has said you can ride harder, tap "
@@ -554,7 +931,9 @@ _LIFT = {
         "When the fever has been gone for 24 hours without paracetamol or "
         "ibuprofen and your chest has cleared, tap My fever has gone on the hold "
         "notice. Your first week back after that is easy riding only, with no "
-        "intervals or tests, and it ends by itself."
+        "intervals or tests, and it ends by itself. If you still have a cough, "
+        "chest pain, a racing heart or unusual breathlessness when it ends, don't "
+        "start intervals until you've seen your GP."
     ),
     "screening": (
         "Once a doctor has cleared you, tap I've been cleared on the hold notice "
@@ -565,15 +944,21 @@ _LIFT = {
 _LIFT_KEY = {
     "chest_pain": "heart",
     "palpitations": "heart",
+    "ectopic": "heart",
     "fainting": "heart",
 }
 
 # A break isn't a medical hold, but a break for a medical reason needs a
-# doctor first (terms section 2), so the layoff sentence says both.
+# doctor first (terms section 2), so the layoff sentence says both. These
+# are reasons to see a doctor, never an emergency: the reason they stopped
+# means a doctor before hard training, and chest pain or fainting during
+# exercise a doctor before any riding (round 2, R11).
 _LAYOFF_LIFT = (
-    "This hold keeps your first {weeks} back to easy riding by feel{until}. If "
-    "you stopped because of illness, injury, surgery, a heart problem, "
-    "concussion or pregnancy, see a doctor before you start."
+    "If you stopped because of illness, injury, surgery, a heart problem, "
+    "concussion or pregnancy, see a doctor before you train hard. If you've had "
+    "chest pain or fainting during exercise, see a doctor before you ride at all. "
+    "Otherwise this hold keeps your first {weeks} back to easy riding by "
+    "feel{until}, with ERG off, since your FTP is from before the break."
 )
 
 
@@ -601,6 +986,11 @@ def lift_sentence(hold) -> str | None:
     source = getattr(hold, "source", None)
     if red_flag == "minor" or source == "admin":
         return None
+    if safety_service.doctor_only(hold):
+        # The coach's reply sent the rider for care: a doctor clears it, never
+        # a physio, a midwife or the rider's own word that a fever has gone.
+        key = _LIFT_KEY.get(red_flag or "", red_flag or "")
+        return _LIFT[key] if key in ("heart", "gi_bleed") else _LIFT["default"]
     ends = _as_datetime(getattr(hold, "expires_at", None))
     if source == "layoff" or red_flag == "layoff":
         opened = _as_datetime(getattr(hold, "opened_at", None))
@@ -626,13 +1016,20 @@ def lift_sentence(hold) -> str | None:
                 days=safety_service.HEAD_NO_RACING_DAYS - safety_service.HEAD_EASY_DAYS
             )
             return (
-                f"Easy riding only until {when} after your head injury, then build "
-                f"back gradually. No racing or group riding before "
-                f"{back.day} {back.strftime('%B')}."
+                f"Easy riding only until {when} after your head injury, starting on "
+                "the indoor trainer before the road, then build back gradually. No "
+                f"racing or group riding before {back.day} {back.strftime('%B')}. If "
+                "any symptom comes back, stop and get checked again."
             )
+        if red_flag == "heat":
+            return "It's for today's heat only, and it ends by itself at midnight."
         return f"This hold ends by itself on {when}."
     if source == "screening":
         return _LIFT["screening"]
+    if red_flag == "injury" and getattr(hold, "level", None) == "hold_all":
+        # An injury bad enough to stop all riding is cleared by a doctor,
+        # never a physio.
+        return _LIFT["default"]
     key = _LIFT_KEY.get(red_flag or "", red_flag or "")
     return _LIFT.get(key, _LIFT["default"])
 
@@ -1623,6 +2020,143 @@ _GASTRO_GUARDS = (
     _g("before", r"\b(?:gels?|caffeine|beetroot|energy drink|bars?|sports drink|carbs?)\b"
                  r"(?:\s+\w+){0,4}\s*$"),
 )
+# A possible bleed in the stomach or gut: vomiting blood or something like
+# coffee grounds (an emergency), or black, tarry or dark red poo (seen
+# today, an emergency with feeling faint or dizzy). Anti-inflammatory
+# painkillers taken often, around rides, are a common cause: with one, poo
+# that is only "dark" counts too, and iron tablets or bismuth no longer
+# explain the colour away.
+_NSAID = (
+    r"(?:ibuprofen|ibuprophen|ibruprofen|nurofen|advil|motrin|brufen|naproxen|naprosyn|"
+    r"aleve|aspirins?|diclofenac|voltarol|voltaren|ketoprofen|mefenamic acid|indomethacin|"
+    r"celecoxib|etoricoxib|nsaids?|anti[- ]?inflammator(?:y|ies)|painkillers?|pain killers?)"
+)
+_NSAID_RX = re.compile(rf"\b{_NSAID}\b")
+_STOOL = (
+    r"(?:poo|poos|poop|poops|stools?|faeces|feces|bowel movements?|number twos?|"
+    r"number 2s?|diarrh?o?ea|diarrhea)"
+)
+# Slang only counts said as the rider's own: "my shit's been black". "Black
+# crap" is as often chain grease.
+_STOOL_SLANG = r"(?:shits?|crap|craps|turds?)"
+_BLACK_STOOL = (
+    r"(?:black|jet[- ]black|pitch[- ]black|blackish|tarry|tar[- ]like|tar[- ]black|"
+    r"tar[- ]colou?red|dark red|maroon)"
+)
+_STOOL_ADJ = (
+    rf"(?:{_BLACK_STOOL}|sticky|runny|loose|watery|smelly|foul|really|very|dark|red|weird|"
+    r"funny|horrible|strange|and|&)"
+)
+# The few words that can sit between the poo and its colour: "has been
+# really", "this morning was", "it's gone". Never a new verb ("poo, then
+# rode the black route") or a denial.
+_STOOL_FILLER = (
+    r"(?:is|are|was|were|has|have|had|been|gone|going|goes|went|turned|turning|turns|look|"
+    r"looks|looked|looking|seems?|seemed|appears?|appeared|came|comes|coming|out|it|it's|"
+    r"its|they|they're|they've|really|very|quite|a|bit|little|totally|completely|properly|"
+    r"all|still|always|now|today|again|this|that|morning|week|weekend|since|for|two|three|"
+    r"few|couple|of|days?|pretty|super|literally|almost|more|so|kind|sort|and|sticky|"
+    r"tarry|runny|loose|smelly|definitely|honestly|like)"
+)
+# Not the colour of the poo: a bag, the bike, the kit.
+_NOT_STOOL_COLOUR = (
+    r"(?! (?:bags?|bins?|car|cars|bike|bikes|kit|shorts|bibs?|jersey|lycra|tyres?|tires?|"
+    r"shoes?|cleats?|dog|cat|bird|emoji)\b)"
+)
+_GI_STOOL_PATTERNS = (
+    # "black poo", "black, tarry stools", "dark red poo".
+    rf"\b(?P<gistool>{_BLACK_STOOL}(?:[ ,]+{_STOOL_ADJ})*[ ,]+{_STOOL})\b{_NOT_STOOL_COLOUR}",
+    # "my poo's gone black", "stools have been black and sticky", "poo looked
+    # like tar", "had a poo, it was black". Only linking words in between
+    # (_STOOL_FILLER), so "poo isn't black" never matches.
+    rf"\b(?P<gistool>(?:{_STOOL}|my {_STOOL_SLANG})(?:'s)?,?(?: {_STOOL_FILLER}){{0,4}}? "
+    rf"(?:{_BLACK_STOOL}|like (?:black )?tar|tar[- ]like))\b"
+    rf"{_NOT_STOOL_COLOUR}",
+    # "pooing black", "pooped tar".
+    rf"\b(?P<gistool>(?:pooing|pooping|pooed|pooped|shitting) (?:\w+ ){{0,2}}?(?:{_BLACK_STOOL}|"
+    r"tar))\b",
+    r"\b(?P<gistool>melaena|melena)\b",
+)
+# Poo that is only "dark": a red flag beside an anti-inflammatory painkiller
+# (checked below: _gi_bleed).
+_GI_DARK_PATTERNS = (
+    rf"\b(?P<gidark>(?P<gistool>(?:dark|darker|very dark|really dark)(?:[ ,]+{_STOOL_ADJ})*"
+    rf"[ ,]+{_STOOL}))\b",
+    rf"\b(?P<gidark>(?P<gistool>{_STOOL}(?:'s)?,?(?: {_STOOL_FILLER}){{0,4}}? "
+    r"(?:dark|darker|very dark)))\b",
+)
+_VOMIT = (
+    r"(?:vomit|vomited|vomiting|vomits|puke|puked|puking|threw up|throwing up|thrown up|throw "
+    r"up|being sick|been sick|was sick|were sick|got sick|spewed|spewing|retching|retched)"
+)
+# Blood, not a blood test, blood pressure or blood sugar.
+_BLOOD = (
+    r"blood\b(?! ?(?:tests?|pressure|sugars?|glucose|oranges?|work|results?|donations?|"
+    r"bank|type|count|levels?|vessels?|flow|lactate|samples?|panel|draw|thinners?|"
+    r"blisters?))"
+)
+_GI_VOMIT_PATTERNS = (
+    # "vomiting blood", "threw up some blood". Not "sick of blood tests".
+    rf"\b{_VOMIT} (?:up )?(?:(?!of\b)\w+ ){{0,3}}?{_BLOOD}",
+    rf"\bblood (?:in|on|through|with) (?:my |the )?(?:vomit|sick|puke)\b",
+    rf"\b(?:vomit|sick|puke)\b(?: (?!of\b)[\w']+){{0,5}}? (?:had|has|with|was|were|is|full of|"
+    rf"contained|containing|streaked with|flecked with|mixed with|tinged with|looked like)"
+    rf"(?: \w+){{0,3}}? {_BLOOD}",
+    r"\b(?:bloody|blood-?stained|bloodstained|blood-?streaked) (?:vomit|puke)\b",
+    r"\b(?:blood-?stained|bloodstained) sick\b",
+    r"\b(?:haematemesis|hematemesis)\b",
+    # Vomit like coffee grounds: old blood.
+    rf"\b(?:{_VOMIT}|sick)\b[^.!?;\n]{{0,60}}?\bcoffee[- ]grounds?\b",
+    r"\bcoffee[- ]grounds? (?:vomit|sick|puke)\b",
+    rf"\bcoffee[- ]grounds?\b[^.!?;\n]{{0,40}}?\b{_VOMIT}\b",
+)
+# Feeling faint with a bleed is an emergency.
+_GI_FAINT_RX = re.compile(
+    r"\b(?:faint|fainted|fainting|light-?headed|light headed|dizzy|dizziness|woozy|passed out|"
+    r"pass out|passing out|blacked out|collapsed|collapse|keeled over)\b"
+)
+# What turns poo black without a bleed: iron, bismuth (Pepto-Bismol) and a
+# few foods. Never with a painkiller, tar-like poo or feeling faint.
+_STOOL_EXPLAINED_RX = re.compile(
+    r"\b(?:iron (?:tablets?|supplements?|pills?|tabs|infusions?|injections?)|(?:on|taking|take|"
+    r"takes|started|starting|the|my|from|because of|due to) iron\b|ferrous \w+|ferritin "
+    r"(?:tablets?|supplements?)|bismuth|pepto(?:[- ]?bismol)?|black pudding|liquorice|licorice|"
+    r"blueberr\w*|activated charcoal|charcoal (?:tablets?|capsules?)|squid ink)"
+)
+_TAR_RX = re.compile(r"\btar\b|\btarry\b|\btar-|\bsticky\b|\bmelaena\b|\bmelena\b")
+# A stool to sit on, not to pass.
+_FURNITURE_BEFORE_RX = re.compile(
+    r"\b(?:bar|step|folding|wooden|metal|kitchen|swivel|piano|foot|turbo|ikea|tall|high|"
+    r"sit on|sitting on|perched on|stand on|standing on|bought|ordered)\s+(?:\w+\s+){0,2}$"
+)
+_FURNITURE_IN_RX = re.compile(
+    r"\b(?:garage|kitchen|bar|workshop|pain cave|turbo|desk|seat|chair|ikea|furniture)\b"
+)
+_FURNITURE_AFTER_RX = re.compile(
+    r"^\s*(?:to (?:sit|stand|perch)|for (?:the |my )?(?:turbo|trainer|garage|kitchen|bar|desk|"
+    r"pain cave|workshop)|by the|next to|beside|in the (?:garage|kitchen|pain cave|workshop)|"
+    r"from ikea)"
+)
+# A denial a few words before: "not dizzy", "no iron tablets".
+_DENIED_BEFORE_RX = re.compile(
+    r"(?:\b(?:no|not|never|without|nor|stopped)\b|n't\b)(?:\s+[\w']+){0,3}\s*$"
+)
+# A sign of a bleed denied in the rider's words: "haven't seen any black
+# poo", "no sign of blood in my sick".
+_GI_DENIED_RX = re.compile(
+    r"(?:\b(?:no|not|never|without|nor)\b|n't)(?:\s+(?:seen|had|have|noticed|notice|been|got|"
+    r"get|passed|passing|any|a|an|more|sign|signs|of))*\s*$"
+)
+
+
+def _said_plainly(rx: re.Pattern, text: str) -> bool:
+    """Whether any match of `rx` in the text is said, not denied."""
+    return any(
+        not _DENIED_BEFORE_RX.search(text[max(0, m.start() - 30):m.start()])
+        for m in rx.finditer(text)
+    )
+
+
 # Hot and cold together, or burning up: a fever in the rider's words.
 _FEVERISH_PATTERNS = (
     r"\b(?P<feverish>(?:shiver\w*|chills|teeth chattering|freezing cold|cold sweats?|can't get "
@@ -1777,7 +2311,8 @@ _QUESTION_TOPICS = (
     r"concussions?|head injur(?:y|ies)|(?:a )?(?:knock|blow|bang) (?:to|on) the head|"
     r"hit(?:s|ting)? (?:your|my|their|his|her|one's) head|heat ?stroke|heat exhaustion|"
     r"sun ?stroke|overheating|fevers?|(?:a )?high temperature|covid|flu|chest infections?|"
-    r"gastro\w*|sickness bugs?|food poisoning)\b"
+    r"gastro\w*|sickness bugs?|food poisoning|stomach bleeds?|gut bleeds?|bleeding ulcers?|"
+    r"stomach ulcers?|internal bleeding)\b"
 )
 
 # Eating only when it's earned, or so little it can't fuel the riding,
@@ -1907,6 +2442,131 @@ _PREGNANCY_ALONG = (
     r"through|since|now since)\b)"
 )
 
+# ── The tiers inside a red flag: the words that set them ───────────────────
+#
+# Round 2's judges found the right kind with the wrong tier: a suspected
+# fracture, a clot and nerve pressure at the base of the spine all got the
+# knee-niggle card and an easy hold; skipped beats on the sofa got A&E and
+# 999; "indigestion" on a climb that spread to the neck with clamminess was
+# not chest pain at all. These words set the tier, in code (tier_hits).
+
+# Discomfort a rider calls indigestion or heartburn, said with effort and
+# with spreading or clamminess (checked below: _exertional_indigestion).
+_INDIGESTION = r"\b(?P<indig>indigestion|heart ?burn|acid reflux|reflux|acidy)\b"
+_CHEST_SPREAD_RX = re.compile(
+    r"\b(?:spread\w*|radiat\w*|shot|shoot\w*|went|goes|going|mov(?:ed|es|ing)|travell?\w*|"
+    r"crept|creeping)(?: \w+){0,2}? (?:up |down )?(?:into|to|through|across|up|down) "
+    r"(?:my |the )?(?:left |right )?(?P<site>neck|jaw|throat|arms?|shoulders?|back|"
+    r"shoulder ?blades?)\b"
+)
+# What came with it that makes it the emergency rung, whether or not it has
+# settled. Sweating on a climb is just effort; clammy or a cold sweat is not.
+_CHEST_COMPANION_RX = re.compile(
+    r"\b(?:clammy|cold sweats?|cold and sweaty|grey and sweaty|gray and sweaty|sweaty and "
+    r"(?:sick|faint|dizzy|grey|gray|pale)|went (?:all |really |very )?(?:grey|gray|pale)|"
+    r"(?:felt|feel|feeling|went) (?:really |very |a bit |all )?(?:sick|faint|dizzy|"
+    r"light-?headed|woozy)|nause\w*|breathless\w*|short of breath)\b"
+)
+
+# Skipped, extra or thumping beats: ectopics when they come at rest with
+# nothing else (checked below: _ectopic_only).
+_ECTOPIC = (
+    r"\b(?P<ect>(?:skips?|skipped|skipping|misses|missed|missing|drops?|dropped|dropping) "
+    r"(?:a |the odd |an odd |the occasional |occasional |the |odd )?beats?|"
+    r"(?:extra|ectopic|early) (?:heart ?)?beats?|ectopics?|"
+    r"flip[- ]?flop\w*|"
+    r"heart (?:\w+ ){0,4}?(?:flips?|flipped|flipping|flip-flops?|thumps?|thumped|thumping|"
+    r"thuds?|lurch\w*|jolts?)|"
+    r"(?:flip|thump|thud|jolt|lurch|flop)s? in (?:my|the) chest)\b"
+)
+_ECTOPIC_RX = re.compile(_ECTOPIC)
+# Where it happens: at rest, rather than with effort.
+_REST_RX = re.compile(
+    r"\b(?:at rest|resting|rest days?|(?:sat|sitting|lying|laying|lie|lay|sat down|sitting "
+    r"down) (?:down|still|on|in|at|around|about|watching|reading|there)|(?:on|from) the "
+    r"(?:sofa|couch|settee)|in bed|watching (?:tv|telly|the telly|a film|the news)|at my desk|"
+    r"at work|in the evenings?|evenings|at night|in the night|when i'm still|relaxing|"
+    r"doing nothing|not doing anything|off the bike|after (?:dinner|meals?|eating|coffee|"
+    r"a coffee))\b"
+)
+_EXERTION_ONSET_RX = re.compile(
+    r"\b(?:(?:during|on|in|while|when|mid)[- ](?:the |a |my |an |hard |big )?(?:ride|rides|"
+    r"riding|interval|intervals|climb|climbs|climbing|effort|efforts|session|sessions|workout|"
+    r"race|racing|sprint|sprints|training|exercise|exercising|turbo|trainer|threshold|"
+    r"vo2\w*|reps?|descent)|on the bike|on a ride|on my ride|(?:when|while|as) i (?:ride|"
+    r"push|go hard|climb|sprint|train|exercise|race)|going hard|pushing hard|under load)\b"
+)
+# A heart that races or won't settle: not ectopics, whatever else is said.
+_SUSTAINED_RX = re.compile(
+    r"\b(?:racing|races|raced|really fast|so fast|very fast|fast and|rapid|pounding|won't "
+    r"(?:stop|settle|slow down)|wouldn't (?:stop|settle|slow down)|doesn't (?:stop|settle)|"
+    r"didn't (?:stop|settle)|for (?:ages|minutes|hours|\d+ (?:minutes?|mins|hours?))|"
+    r"(?:1[5-9]\d|2\d\d) ?bpm|afib|a-?fib|atrial)\b"
+)
+# The signs that make any heartbeat complaint the emergency rung.
+_HEART_RED_FLAG_RX = re.compile(
+    r"\b(?:dizz\w*|light-?headed\w*|woozy|faint\w*|pass(?:ed|ing)? out|black(?:ed|ing)? out|"
+    r"collaps\w*|chest (?:pains?|tight\w*|pressure|discomfort|hurts?|aches?)|(?:pain|tightness|"
+    r"pressure) (?:in|across) (?:my |the )?chest|short of breath|shortness of breath|"
+    r"breathless\w*|(?:can't|cannot|couldn't|struggl\w* to) (?:breathe|catch my breath)|"
+    r"(?:vision|everything) (?:went|goes|going) (?:grey|gray|black|dark))\b"
+)
+
+# The injury red flags (SAFETY LAW 2e): the anchors, with the whole
+# message read by the checks below (_fracture, _dvt, _cauda, _compartment).
+_FRACTURE_SITE = (
+    r"(?:collar ?bone|clavicle|shoulder|wrist|arm|forearm|elbow|hand|finger|thumb|leg|shin|"
+    r"ankle|foot|hip|ribs?|bone|knee ?cap|jaw|nose|pelvis)"
+)
+_FRACTURE_PATTERNS = (
+    # A lump, a step or a bone that looks wrong.
+    rf"\b(?P<frac>(?:lump|bump|bulge|step|knot|bone)\b[^.!?;\n]{{0,40}}?\b(?:sticking (?:up|out)|"
+    r"poking (?:up|out)|stuck out|out of place|not where it should be|wasn't there before|"
+    rf"that wasn't there)|{_FRACTURE_SITE}\b[^.!?;\n]{{0,40}}?\b(?:lump|bump|bulge|step|"
+    r"sticking (?:up|out)|poking (?:up|out)|looks? (?:wrong|bent|deformed|out of place|weird|"
+    r"odd|funny|crooked|squashed|flat)|(?:at|is at|sits at) (?:a |an )?(?:funny|weird|odd|"
+    r"strange|wrong|unnatural) angle|out of place|deformed|crooked|bent (?:the wrong way|back|"
+    r"sideways)))\b",
+    # Can't lift the arm, or put weight on the leg.
+    r"\b(?P<frac>(?:can't|cannot|can not|couldn't|could not|unable to|struggling to|struggle "
+    r"to) (?:\w+ ){0,2}?(?:lift|raise|move|use) (?:my |the )?(?:arm|shoulder|wrist|hand|leg)|"
+    r"(?:painful|agony|agonising|hurts?|hurting|excruciating|impossible|killing me) (?:\w+ ){0,2}?"
+    r"(?:to|when i|if i) (?:lift|raise|move) (?:my |the )?(?:arm|shoulder)|(?:can't|cannot|"
+    r"can not|couldn't|could not|unable to) (?:put|bear|take|stand) (?:any )?(?:weight|on it|"
+    r"on my))\b",
+    # Heard or felt it go, thinks it's broken, or it popped out.
+    r"\b(?P<frac>(?:heard|felt) (?:a |it |something )?(?:crack|snap|crunch|pop)|(?:think|thought|"
+    r"pretty sure|reckon|worried|might have|may have|could have|probably|feels? like)(?: i(?:'ve| "
+    r"have)?| it(?:'s| is)?| it might be| it's been)? (?:\w+ ){0,2}?(?:broken|broke|fractured|"
+    r"cracked|snapped|dislocated)|dislocated|popped out|(?:came )?out of (?:its|the) socket)\b",
+)
+_CALF_SITE = (
+    r"(?:calf|calves|calf's|lower leg|leg|legs|behind (?:my |the )?knee|back of (?:my |the )?"
+    r"knee)"
+)
+_DVT_PATTERNS = (rf"\b(?P<dvt>{_CALF_SITE})\b",)
+_CES_ANCHORS = (
+    r"\b(?P<ces>bladder|bowels?|pee|wee|urine|urinat\w*|toilet|incontinen\w*|wet myself|"
+    r"soiled myself|numb\w*|tingl\w*|pins and needles)\b",
+)
+_ACS_SITE = r"(?:calf|calves|shin|shins|lower leg|leg|thigh|forearm|arm|foot)"
+_ACS_PATTERNS = (rf"\b(?P<acs>{_ACS_SITE})\b",)
+
+# The red flags of eating too little (SAFETY LAW 2h): periods stopped for
+# three months or more, a height and weight that make the rider underweight
+# beside a fear of food, long rides planned without food to stay light
+# (checked below: _reds_red_flag).
+_REDS_PATTERNS = (
+    r"\b(?P<reds>periods? (?:has |have |had )?(?:stopped|gone|disappeared|dried up)|"
+    r"(?:no|not had a|haven't had a|have not had a) periods? (?:for|since|in)|"
+    r"(?:make|makes|making|made|will make|they'll make|it'll make|would make|they make) me "
+    r"(?:fat|gain weight|put on weight)|(?:scared|afraid|terrified|frightened) (?:of|to) "
+    r"(?:get|getting|be|being|look|looking) fat)\b",
+    r"\b(?P<reds>(?:ride|riding|do|doing) (?:\w+ ){0,2}?(?:\d+(?:\.\d)?|two|three|four|five|six|"
+    r"seven|eight)[- ]?(?:hours?|hrs?|h)\b(?: \w+){0,3}? (?:on|with|without) (?:no|zero|nothing|"
+    r"any|eating|food|fuel))\b",
+)
+
 RULES: tuple[_Rule, ...] = (
     _Rule(
         "chest_pain", "emergency",
@@ -1993,6 +2653,30 @@ RULES: tuple[_Rule, ...] = (
         "chest_pain", "emergency",
         _rx(*_CHEST_NIGHT_PATTERNS),
         guards=_CHEST_NIGHT_GUARDS,
+    ),
+    # "Indigestion" or heartburn on a climb that spread to the neck, jaw or
+    # arm, or came with clamminess (checked below: _exertional_indigestion).
+    _Rule(
+        "chest_pain", "emergency",
+        _rx(_INDIGESTION),
+    ),
+    # Skipped, extra or thumping beats. Ectopics at rest with nothing else
+    # are their GP within days; anything more is palpitations (tier_hits).
+    _Rule(
+        "ectopic", "info",
+        _rx(_ECTOPIC),
+        guards=(
+            # "My heart skipped a beat when I saw my FTP": excitement.
+            _g("after", r"^\s*(?:\w+\s+){0,2}(?:when|as|at) (?:i |we )?(?:saw|see|heard|hear|"
+                        r"read|got|opened|found|realised|realized|the (?:sight|news|result|"
+                        r"finish|line))\b"),
+            _g("before", r"\b(?:music|song|track|drum|drummer|band|dj|playlist|rhythm)\b"
+                         r"(?:\s+\w+){0,4}\s*$"),
+            # The strap or the head unit dropping beats, not the heart.
+            _g("before", rf"\b(?:{_KIT}|{_READOUT})\s+(?:is |was |keeps |kept |has been |"
+                         r"started |just |seems to be |seemed to be )?$"),
+            _g("match", rf"^heart (?:\w+ ){{0,4}}?(?:{_READOUT}|{_KIT})\b"),
+        ),
     ),
     _Rule(
         "palpitations", "urgent",
@@ -2286,6 +2970,22 @@ RULES: tuple[_Rule, ...] = (
         _rx(*_GASTRO_PATTERNS),
         guards=_GASTRO_GUARDS,
     ),
+    # A possible bleed in the stomach or gut (SAFETY LAW 2o). Vomiting blood
+    # or coffee grounds is an emergency, and so is black poo with feeling
+    # faint or dizzy; black, tarry or dark red poo on its own is seen today.
+    # Same kind, so the first that matches sets the severity (checked below:
+    # _gi_bleed).
+    _Rule(
+        "gi_bleed", "emergency",
+        _rx(
+            *_GI_VOMIT_PATTERNS,
+            *(f"(?P<gifaint>{p})" for p in (*_GI_STOOL_PATTERNS, *_GI_DARK_PATTERNS)),
+        ),
+    ),
+    _Rule(
+        "gi_bleed", "urgent",
+        _rx(*_GI_STOOL_PATTERNS, *_GI_DARK_PATTERNS),
+    ),
     # A general question about a red flag the symptom rules have no words for:
     # "what are the signs of a heart attack?", "if I ever pass out on a ride
     # what should my mates do?". Only ever a safety_question (checked in
@@ -2332,6 +3032,41 @@ RULES: tuple[_Rule, ...] = (
                         r"carbon|bars|handlebars?|crank|mech|pedal)\b"),
         ),
     ),
+    # A possible break or dislocation after a crash or a fall: a lump, a bone
+    # out of place, an arm they can't lift, a leg they can't stand on
+    # (checked below: _fracture).
+    _Rule(
+        "fracture", "urgent",
+        _rx(*_FRACTURE_PATTERNS),
+    ),
+    # A calf that is swollen, hot, red or tender, above all after a flight or
+    # a long drive: a possible clot. With chest pain or breathlessness, an
+    # emergency (checked below: _dvt).
+    _Rule(
+        "dvt", "emergency",
+        _rx(*(p.replace("(?P<dvt>", "(?P<dvtx>") for p in _DVT_PATTERNS)),
+    ),
+    _Rule(
+        "dvt", "urgent",
+        _rx(*_DVT_PATTERNS),
+    ),
+    # Numbness around the bottom or genitals, new bladder or bowel trouble,
+    # or new leg weakness, with back pain. Any bladder or bowel change is an
+    # emergency (checked below: _cauda).
+    _Rule(
+        "cauda_equina", "emergency",
+        _rx(*(p.replace("(?P<ces>", "(?P<cesx>") for p in _CES_ANCHORS)),
+    ),
+    _Rule(
+        "cauda_equina", "urgent",
+        _rx(*_CES_ANCHORS),
+    ),
+    # Severe, worsening pain in a tight, swollen calf, shin, thigh or forearm
+    # (checked below: _compartment).
+    _Rule(
+        "compartment", "emergency",
+        _rx(*_ACS_PATTERNS),
+    ),
     _Rule(
         "pregnancy", "info",
         _rx(
@@ -2370,6 +3105,12 @@ RULES: tuple[_Rule, ...] = (
             # said by the partner.
             r"\b(?P<we>(?:we're|we are|were) expecting) (?:a baby|our (?:first|second|third|1st|"
             r"2nd|3rd|fourth|next)(?: (?:baby|child|little one))?|twins|a little one|another)\b",
+            # "Tested positive this morning, not told anyone yet": a positive
+            # test with no illness named, beside the signs of a pregnancy
+            # test (checked below: _positive_pregnancy_test). SAFETY LAW 2f:
+            # pregnancy, never an infection.
+            r"\b(?P<postest>(?:tested|testing|test (?:came back|was|is|came up|showed)) "
+            r"positive|positive (?:test|result))\b(?! (?:for|on)\b)",
         ),
         guards=(
             _g("before", r"\btrying (?:to get|for|to be)\s+$"),
@@ -2501,6 +3242,12 @@ RULES: tuple[_Rule, ...] = (
                         r"i was busy|i forgot|traffic|a blood test|surgery|an operation|"
                         r"ramadan)\b"),
         ),
+    ),
+    # Periods stopped, a fear of fuel making them fat, long rides planned
+    # without food (checked below: _reds_red_flag for the long ride).
+    _Rule(
+        "restriction", "info",
+        _rx(*_REDS_PATTERNS),
     ),
     # An age the rider gives as their own. Each pattern names the age it
     # implies (_minor_age): "age" is the age itself, "turning" the birthday
@@ -2993,6 +3740,14 @@ class Hit:
     # comma-separated in the order they matched ("chest_pain,heat"). None on
     # every other kind.
     topic: str | None = None
+    # How urgent the help is for a crisis hit, from the rider's whole
+    # message (crisis_tier): "acted", "plan" or "thoughts". Set by tier_hits
+    # wherever the hit came from, so the card (card_for_hit: an act, an
+    # interrupted attempt or preparing for one gets the acted card) and the
+    # reply check read the same tier. None on every other kind, and on a
+    # crisis hit no message has been read for yet. Derived from the words,
+    # so it never decides whether two hits are the same.
+    tier: str | None = field(default=None, compare=False)
 
     def as_dict(self) -> dict:
         out = {"kind": self.kind, "matched": self.matched, "severity": self.severity}
@@ -3002,6 +3757,8 @@ class Hit:
             out["new_event"] = self.new_event
         if self.kind == "safety_question":
             out["topic"] = self.topic
+        if self.kind == "crisis":
+            out["tier"] = self.tier
         return out
 
 
@@ -3377,6 +4134,49 @@ _HEAT_TOLL_RX = re.compile(
 )
 
 
+# Heat that is here today, said in the present: "it's 36 today", "36 degrees
+# at midday", "I'm going out in this heat". Not a day still to come.
+_HEAT_TODAY_RX = re.compile(
+    r"\btoday\b|\bthis (?:morning|afternoon|lunchtime)\b|\bmidday\b|\bnoon\b|\blunchtime\b|"
+    r"\bright now\b|\bat the moment\b|\bcurrently\b|\bit's (?:already )?(?:\d|hitting|"
+    r"touching|over|about|nearly|well over)|\bit is (?:already )?\d"
+)
+_HEAT_LATER_RX = re.compile(
+    r"\btomorrow\b|\bnext (?:week|weekend|month|\w+day)\b|\bon (?:mon|tues|wednes|thurs|fri|"
+    r"satur|sun)day\b|\bthis (?:weekend|week)\b|\bin (?:a|two|three|\d+) (?:days?|weeks?)\b"
+)
+# The heat that holds the day at easy riding (SAFETY LAW 2j): 30C (86F) or
+# above means no hard session, indoors or out, unless the room is properly
+# cooled.
+HEAT_EASY_DAY_C = 30
+
+
+def heat_today(matched: str, text: str) -> bool:
+    """Whether a heat hit is 30C (86F) or more, today: then the whole day is
+    easy riding only, indoors or out, and an easy hold ends with the day."""
+    celsius = _heat_celsius(matched or "")
+    if celsius is None or celsius < HEAT_EASY_DAY_C:
+        return False
+    words = _normalise(text or "")
+    return bool(_HEAT_TODAY_RX.search(words)) and not _HEAT_LATER_RX.search(words)
+
+
+# The hold reason after heatstroke: everything held until a doctor has
+# cleared them (SAFETY LAW 2j), not just today's heat.
+HEATSTROKE_REASON = "Signs of heatstroke mentioned in chat: no riding until a doctor has cleared you"
+
+
+def _heatstroke(hit) -> bool:
+    """A heat hit at emergency severity: heatstroke signs, as the classifier
+    reads them (the regex gives heat only "info")."""
+    return getattr(hit, "kind", None) == "heat" and getattr(hit, "severity", None) == "emergency"
+
+
+def _end_of_today() -> datetime:
+    """Midnight at the end of today (UTC): when a hold for today's heat ends."""
+    return datetime.combine(datetime.utcnow().date() + timedelta(days=1), datetime.min.time())
+
+
 def _past_heat(match: re.Match, text: str) -> bool:
     """A temperature that has been and gone, with nothing in the message
     about heat now or to come, or about what it did to them."""
@@ -3541,6 +4341,36 @@ def _feverish(match: re.Match, text: str, lo: int, hi: int) -> bool:
     return not _FEVERISH_EFFORT_RX.search(text[lo:hi])
 
 
+# An illness or a non-pregnancy test named anywhere in the message: then a
+# positive test is that, not a pregnancy.
+_ILLNESS_TEST_RX = re.compile(
+    r"\b(?:covid\w*|corona\w*|flu|influenza|strep\w*|virus\w*|viral|infection\w*|"
+    r"cold|uti|chlamydia|sti|std|hiv|hepatitis|tb|tuberculosis|norovirus|rsv|"
+    r"glandular|lyme|lateral flow|lft|pcr|antigen|antibod\w*|swab\w*|drug test\w*|"
+    r"doping|anti-?doping|blood test\w*|allerg\w*|ferritin|iron|thyroid|coeliac|"
+    r"celiac|diabet\w*|anaemi\w*|anemi\w*|asthma)\b"
+)
+# What makes a bare positive test a pregnancy test: keeping it quiet, the
+# lines on the stick, a missed period, a baby.
+_PREG_TEST_SIGN_RX = re.compile(
+    r"\b(?:not|haven't|havent|have not|hasn't|hadn't|didn't|did not|not yet) "
+    r"(?:\w+ )?(?:told|telling|said|tell)\b|\btold no ?(?:one|body)\b|"
+    r"\bkeep(?:ing)? it (?:quiet|secret|to (?:myself|ourselves))\b|"
+    r"\b(?:two|2) (?:pink |blue |faint )?lines\b|\bclear ?blue\b|\bfirst response\b|"
+    r"\bpregnancy test\b|\bmissed (?:my |a )?period\b|\bperiod(?:'s| is| was)? "
+    r"(?:late|missed)\b|\blate period\b|\bbaby\b|\bbump\b|\bmorning sickness\b|"
+    r"\bmidwife\b|\bgp to confirm\b"
+)
+
+
+def _positive_pregnancy_test(text: str) -> bool:
+    """"Tested positive" with no illness named, beside something that marks it
+    as a pregnancy test ("not told anyone yet", "two lines", "missed my
+    period")."""
+    words = _normalise(text)
+    return not _ILLNESS_TEST_RX.search(words) and bool(_PREG_TEST_SIGN_RX.search(words))
+
+
 def _crisis_plan(match: re.Match, text: str, lo: int, hi: int) -> bool:
     """A plan or an arrangement that means ending their life. Goodbye
     letters, letters to the family and affairs put in order count on their
@@ -3586,6 +4416,469 @@ def _scant_for_weight(match: re.Match, text: str) -> bool:
     return bool(_LIGHT_FOR_RIDING_RX.search(text))
 
 
+# Someone or something else's poo: the dog's, a newborn's.
+_ANIMAL_BEFORE_RX = re.compile(
+    r"\b(?:dog|dogs|dog's|puppy|puppy's|cat|cats|cat's|horse|horse's|bird|pigeon|sheep|cow|"
+    r"fox|badger|baby|baby's|newborn|newborn's)\s+$"
+)
+
+
+def _gi_bleed(match: re.Match, before: str, after: str, text: str) -> bool:
+    """A sign of a bleed in the stomach or gut, said as the rider's own and not
+    explained away. Poo that is only dark needs an anti-inflammatory
+    painkiller beside it; black poo from iron tablets, bismuth or black
+    pudding is not a bleed, unless a painkiller, tar-like poo or feeling faint
+    comes with it; a stool to sit on is furniture. The emergency reading of
+    poo (the gifaint group) needs feeling faint or dizzy said plainly."""
+    if _GI_DENIED_RX.search(before) or _ANIMAL_BEFORE_RX.search(before):
+        return False
+    stool = _group(match, "gistool")
+    if stool is not None:
+        if re.search(r"\bstools?\b", stool) and (
+            _FURNITURE_BEFORE_RX.search(before)
+            or _FURNITURE_AFTER_RX.match(after)
+            or _FURNITURE_IN_RX.search(stool)
+        ):
+            return False
+        painkiller = _said_plainly(_NSAID_RX, text)
+        if _group(match, "gidark") and not painkiller:
+            return False
+        if (
+            not painkiller
+            and not _said_plainly(_TAR_RX, text)
+            and not _said_plainly(_GI_FAINT_RX, text)
+            and _said_plainly(_STOOL_EXPLAINED_RX, text)
+        ):
+            return False
+    if _group(match, "gifaint") and not _said_plainly(_GI_FAINT_RX, text):
+        return False
+    return True
+
+
+# ── The tiers inside a red flag: the checks ────────────────────────────────
+
+
+def _exertional_indigestion(text: str) -> bool:
+    """"Indigestion" or heartburn said with effort, and with spreading to the
+    neck, jaw, arm or back or with clamminess, sickness, faintness or
+    breathlessness: the heart until a doctor says otherwise."""
+    return bool(_HEART_EFFORT_RX.search(text)) and (
+        _said_plainly(_CHEST_SPREAD_RX, text) or _said_plainly(_CHEST_COMPANION_RX, text)
+    )
+
+
+def _ectopic_only(text: str) -> bool:
+    """Skipped, extra or thumping beats at rest, with no chest pain,
+    breathlessness, dizziness or fainting, not during exercise, and not a
+    heart that races or won't settle: their GP within days, not A&E."""
+    return (
+        bool(_ECTOPIC_RX.search(text) or re.search(
+            r"\b(?:skipping|missing|skipped|missed) (?:a )?(?:heart ?)?beats?\b|"
+            r"\bheart (?:\w+ ){0,4}?(?:skipping|flipping|flip-flopping)\b", text))
+        and bool(_REST_RX.search(text))
+        and not _EXERTION_ONSET_RX.search(text)
+        and not _said_plainly(_HEART_RED_FLAG_RX, text)
+        and not _said_plainly(_SUSTAINED_RX, text)
+    )
+
+
+_INJURY_EVENT_RX = re.compile(
+    r"\b(?:rolled|twisted|went over on|landed (?:on|awkwardly|badly|heavily)|tripped|slipped|"
+    r"fell|jumped|kicked|stamped|crushed|trapped|knocked|whacked|smashed|hit)\b"
+)
+# A break or a dislocation already seen to: a cast, a sling, a plate, an
+# X-ray read, or weeks into the healing. Not a suspicion now.
+_TREATED_RX = re.compile(
+    r"\b(?:cast|plaster|sling|plate|plated|pinned|pins|screws|surgery|operation|op\b|fracture "
+    r"clinic|x-?rayed|x-?ray (?:showed|said|came back|was clear)|scan (?:showed|said)|been "
+    r"seen|was seen|got it checked|had it checked|they said|doctor said|gp said|a&e said|"
+    r"consultant|surgeon|weeks ago|months ago|years ago|last (?:year|month|season|summer|"
+    r"winter|spring|autumn)|healed|mended|healing|rehab|back on the bike since)\b"
+)
+
+
+def _fracture(match: re.Match, text: str) -> bool:
+    """A possible break or dislocation now: the signs after a crash, a fall
+    or a blow, or the rider saying they think it's broken. Not one already
+    X-rayed, set or long healed."""
+    if _old_and_healed(text, match):
+        return False
+    lo, hi = _clause(text, match.start(), match.end())
+    if _TREATED_RX.search(text):
+        return False
+    words = match.group(0)
+    suspected = re.search(
+        r"\b(?:broken|broke|fractured|cracked|snapped|dislocated|popped out|socket|crack|snap|"
+        r"crunch|pop)\b", words)
+    return bool(suspected) or _incident(text) is not None or bool(_INJURY_EVENT_RX.search(text))
+
+
+_DVT_SWOLLEN_RX = re.compile(r"\b(?:swollen|swelling|swelled|swell|puffy|puffed up|bigger "
+                             r"than the other|fatter than the other|tight and shiny)\b")
+_DVT_HOT_RX = re.compile(r"\b(?:hot|warm|burning to (?:the )?touch|heat coming off)\b")
+_DVT_RED_RX = re.compile(r"\b(?:red|redness|reddish|flushed|purple|purplish|discolou?red|"
+                         r"blotchy)\b")
+_DVT_TENDER_RX = re.compile(r"\b(?:tender|sore to (?:the )?touch|painful to (?:the )?touch|"
+                            r"hurts to touch|aching|achy|throbbing)\b")
+_TRAVEL_RX = re.compile(
+    r"\b(?:flight|flights|flew|flying|plane|long-?haul|airport|long drive|drove|driving back|"
+    r"drive back|drive home|car journey|in the car for|coach (?:trip|journey)|train journey|"
+    r"road trip|travel\w*|journey|sat (?:still )?for hours)\b"
+)
+_CALF_CAUSE_RX = re.compile(
+    r"\b(?:pulled|tore|torn|tear|strain\w*|tweak\w*|cramp\w*|kicked|bruis\w*|knock\w*|"
+    r"whacked|hit it|crashed|came off|fell)\b"
+)
+# A clot that may have reached the lungs: the emergency rung.
+_CLOT_LUNG_RX = re.compile(
+    r"\b(?:chest (?:pains?|tight\w*|hurts?)|pain in my chest|short of breath|shortness of "
+    r"breath|breathless\w*|(?:can't|cannot|struggling to|struggle to) (?:breathe|catch my "
+    r"breath)|cough\w* (?:up )?blood|hurts to breathe|pain when i breathe)\b"
+)
+
+
+def _dvt(match: re.Match, text: str) -> bool:
+    """A calf (or the back of the knee) that is swollen, hot, red or tender
+    in a way that can mean a clot: two of swollen, hot and red, or one of
+    them with a flight or long drive, tenderness or the back of the knee.
+    A knock or a strain with only one sign and no travel is the ordinary
+    injury."""
+    near = text[max(0, match.start() - 80):match.end() + 140]
+    signs = sum(bool(rx.search(near)) for rx in (_DVT_SWOLLEN_RX, _DVT_HOT_RX, _DVT_RED_RX))
+    if signs == 0:
+        return False
+    travel = bool(_TRAVEL_RX.search(text))
+    knee = "knee" in match.group(0)
+    tender = bool(_DVT_TENDER_RX.search(near))
+    if signs >= 2:
+        return True
+    if travel:
+        return True
+    if _CALF_CAUSE_RX.search(text):
+        return False
+    return knee or tender
+
+
+_CES_BLADDER_RX = re.compile(
+    r"\b(?:control(?:ling)?\b[^.!?;\n]{0,15}\b(?:bladder|bowels?|pee|wee|poo|urine)|"
+    r"(?:bladder|bowels?|pee|wee|urine)\b[^.!?;\n]{0,30}\b(?:control|leak\w*|accident|"
+    r"problems?|trouble|issues?|won't (?:come|go|start)|wouldn't (?:come|go|start)|can't feel|"
+    r"couldn't feel|numb|stopped working)|(?:can't|cannot|couldn't|could not|unable to|"
+    r"struggl\w* to|haven't been able to|not been able to|trouble|difficulty) (?:\w+ ){0,2}?"
+    r"(?:pee|wee|urinate|go to the toilet|empty my bladder|hold (?:it|my bladder|my bowels)|"
+    r"control (?:my )?(?:bladder|bowels?))|(?:wet|soiled) myself|incontinen\w*|lost control "
+    r"of my (?:bladder|bowels?)|(?:can't|couldn't|cannot) feel (?:when|if) i (?:need|needed) "
+    r"(?:to (?:pee|wee|go)|the toilet))\b"
+)
+_CES_SADDLE_RX = re.compile(
+    r"\b(?:numb\w*|tingl\w*|pins and needles|no feeling|can't feel (?:anything )?)\b"
+    r"[^.!?;\n]{0,40}?\b(?:bum|bottom|backside|buttocks?|groin|genitals?|crotch|perineum|"
+    r"between my legs|down there|saddle area|saddle region|inner thighs?|privates|penis|"
+    r"vagina|scrotum)\b|\b(?:bum|bottom|backside|buttocks?|groin|genitals?|crotch|perineum|"
+    r"between my legs|down there|saddle area|inner thighs?|privates)\b[^.!?;\n]{0,30}?"
+    r"\b(?:numb\w*|tingl\w*|pins and needles|no feeling|(?:is|are|feels?|went|gone) dead)\b"
+)
+_CES_LEG_RX = re.compile(
+    r"\b(?:numb\w*|weak\w*|tingl\w*|pins and needles|giving way|gave way|dragging|floppy|foot "
+    r"drop)\b[^.!?;\n]{0,30}?\b(?:legs?|feet|foot|thighs?)\b|\b(?:legs?|feet|foot)\b"
+    r"[^.!?;\n]{0,25}?\b(?:numb\w*|weak\w*|tingl\w*|pins and needles|giving way|gave way|keeps? "
+    r"giving way|dragging|(?:went|gone|feels?) dead)\b"
+)
+_CES_BACK_RX = re.compile(
+    r"\b(?:back|spine|lumbar)(?:'s)?\b[^.!?;\n]{0,30}?\b(?:pain\w*|sore|hurt\w*|ach\w*|agony|"
+    r"killing|stiff|bad|tweak\w*|spasm\w*|went|gone)\b|\b(?:pain\w*|sore|hurt\w*|ach\w*|agony|"
+    r"bad|stiff|bad) (?:\w+ ){0,2}?(?:back|spine)\b|\bsciatica\b|\bslipped disc\b|\bdisc "
+    r"(?:bulge|prolapse|herniation)\b"
+)
+
+
+def _cauda(text: str) -> str | None:
+    """Pressure on the nerves at the base of the spine, in the rider's words:
+    "emergency" for any bladder or bowel change with back pain, leg
+    numbness or weakness, or numbness around the bottom; "urgent" for that
+    numbness with back pain or leg weakness. Numbness from the saddle alone
+    is a bike fit question, not this."""
+    bladder = _said_plainly(_CES_BLADDER_RX, text)
+    saddle = _said_plainly(_CES_SADDLE_RX, text)
+    leg = _said_plainly(_CES_LEG_RX, text)
+    back = _said_plainly(_CES_BACK_RX, text)
+    if bladder and (back or leg or saddle):
+        return "emergency"
+    if saddle and (back or leg):
+        return "urgent"
+    return None
+
+
+_ACS_HARD_RX = re.compile(
+    rf"\b{_ACS_SITE}\b[^.!?;\n]{{0,50}}?\b(?:rock hard|hard as (?:a )?(?:rock|stone|wood)|"
+    r"really (?:tight|hard|tense)|so tight|tight and (?:swollen|shiny|hard)|swollen and "
+    r"(?:tight|hard|shiny)|tense|shiny|(?:going to|about to) (?:burst|explode|split))\b|"
+    r"\b(?:rock hard|swollen and hard|hard and swollen|tight and swollen|swollen and tight)\b"
+    rf"[^.!?;\n]{{0,30}}?\b{_ACS_SITE}\b"
+)
+_ACS_PAIN_RX = re.compile(
+    r"\b(?:agony|agonising|agonizing|excruciating|unbearable|severe|worst pain|screaming|"
+    r"getting worse|worse and worse|keeps getting worse|worse by the (?:hour|minute)|"
+    r"painkillers (?:aren't|don't|do not|are not|haven't) (?:touching|helping|working|"
+    r"touched|helped|worked)|(?:can't|cannot|couldn't) (?:move|wiggle|feel) (?:my )?(?:toes|"
+    r"fingers|foot)|numb\w*|pins and needles|out of proportion|even at rest|won't (?:ease|"
+    r"settle|go)|hasn't (?:eased|settled|gone))\b"
+)
+_EASES_WITH_REST_RX = re.compile(
+    r"\b(?:goes|went|eases|eased|stops|stopped|settles|settled|disappears|gone) (?:\w+ ){0,3}?"
+    r"(?:when|once|after|as soon as) i (?:stop|rest|get off|ease off|slow down)\b"
+)
+
+
+def _compartment(text: str) -> bool:
+    """Severe, worsening pain in a tight, swollen calf, shin, thigh or
+    forearm, or with numbness below it: A&E now. Pain that goes when they
+    stop riding is the ordinary injury's."""
+    return (
+        _said_plainly(_ACS_HARD_RX, text)
+        and _said_plainly(_ACS_PAIN_RX, text)
+        and not _EASES_WITH_REST_RX.search(text)
+    )
+
+
+def injury_red_flag(text: str) -> str | None:
+    """The injury red flag in the rider's words, most urgent first:
+    cauda_equina, compartment, dvt or fracture, or None for an ordinary
+    injury (SAFETY LAW 2e)."""
+    norm = _normalise(text)
+    for kind in ("cauda_equina", "compartment", "dvt", "fracture"):
+        if _injury_red_flag_severity(kind, norm) is not None:
+            return kind
+    return None
+
+
+def _injury_red_flag_severity(kind: str, norm: str) -> str | None:
+    """The severity of one injury red flag in these words, or None when
+    they don't show it."""
+    if kind == "cauda_equina":
+        return _cauda(norm)
+    if kind == "compartment":
+        return "emergency" if _compartment(norm) else None
+    if kind == "dvt":
+        for m in re.finditer(_DVT_PATTERNS[0], norm):
+            if _dvt(m, norm):
+                return "emergency" if _said_plainly(_CLOT_LUNG_RX, norm) else "urgent"
+        return None
+    if kind == "fracture":
+        for pattern in _FRACTURE_PATTERNS:
+            for m in re.finditer(pattern, norm):
+                before = norm[max(0, m.start() - _WINDOW):m.start()]
+                if _negated(before, norm[m.end():m.end() + 40]) or _someone_else(before):
+                    continue
+                if _fracture(m, norm):
+                    return "urgent"
+        return None
+    return None
+
+
+_FIT_RX = re.compile(
+    r"\b(?:had|having|took|went into|been having|have had|having had) (?:a |another |some |"
+    r"two |several )?(?:fit|fits|seizures?|convulsions?)\b|\bseizures?\b|"
+    # "I seized" is a fit; legs, a back or a chain that "seized up" is not.
+    r"\b(?:i|i've|i have|i was|been|then) seiz(?:ed|ing)\b(?! up)|"
+    r"\bconvuls\w*"
+)
+
+
+def _head_fit(text: str) -> bool:
+    """A fit or seizure, said of the rider: after a head injury, 999 now."""
+    for m in _FIT_RX.finditer(text):
+        before = text[max(0, m.start() - _WINDOW):m.start()]
+        if _negated(before, text[m.end():m.end() + 40]) or _someone_else(before):
+            continue
+        return True
+    return False
+
+
+_PERIOD_WORDS_RX = re.compile(
+    r"\b(?:periods?|menstruat\w*|my cycle)\b[^.!?;\n]{0,40}?\b(?:stopped|gone|disappeared|"
+    r"dried up|missing|absent|not (?:had|come|came)|haven't (?:come|had)|none)\b|"
+    r"\b(?:no|missed|missing|lost|stopped having|haven't had|have not had|not had|without) "
+    r"(?:a |my |any )?periods?\b"
+)
+_NUM_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+    "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "a few": 3, "several": 3, "many": 6,
+}
+_MONTHS_RX = re.compile(
+    r"\b(?P<n>\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a few|"
+    r"several|many) months?\b|\b(?P<year>(?:a|over a|more than a|\d+) years?)\b"
+)
+_HEIGHT_RX = re.compile(
+    r"\b(?P<m>[12]\.\d{1,2}) ?m\b|\b(?P<cm>1[4-9]\d|2[0-2]\d) ?cm\b|"
+    r"\b(?P<ft>[4-7]) ?(?:'|ft|foot|feet) ?(?P<inch>\d{1,2})? ?(?:\"|''|in|inch|inches)?"
+)
+_WEIGHT_RX = re.compile(
+    r"\b(?P<kg>[3-9]\d(?:\.\d)?|1[0-4]\d(?:\.\d)?) ?(?:kg|kgs|kilos?|kilograms?)\b|"
+    r"\b(?P<st>[5-9]|1\d) ?(?:st|stone)(?: ?(?P<lb>\d{1,2}) ?(?:lb|lbs|pounds)?)?\b|"
+    r"\b(?P<lbs>[89]\d|1\d\d|2\d\d) ?(?:lb|lbs|pounds)\b"
+)
+_FOOD_FEAR_RX = re.compile(
+    r"\b(?:(?:make|makes|making|made|will make|they'll make|it'll make|would make) me "
+    r"(?:fat|gain weight|put on weight)|(?:get|getting|be|being|look|looking|feel|feeling) "
+    r"fat|put(?:ting)? on weight|gain(?:ing)? weight|(?:scared|afraid|terrified|frightened) "
+    r"(?:of|to) (?:food|eat|eating|carbs|gels|gaining)|fear of food|(?:don't|do not|won't) "
+    r"(?:want to eat|want gels|want food|want carbs|eat)|not eating|guilty (?:about|after|"
+    r"when) (?:i )?eat|stay (?:light|lean|thin|skinny)|keep (?:my )?weight (?:down|off)|"
+    r"earn (?:my )?food|burn (?:it|that|them) off)\b"
+)
+_UNFUELLED_RX = re.compile(
+    r"\b(?:on|with) (?:no|zero|nothing but water|just water|only water) ?(?:food|fuel|gels|"
+    r"carbs|eating)?\b|\bwithout (?:eating|food|fuel|gels|carbs|anything)\b|\bno (?:food|fuel|"
+    r"gels)\b|\bfasted\b|\bon an empty stomach\b|\bnot eating\b"
+)
+_LONG_RIDE_RX = re.compile(
+    r"\b(?P<h>\d+(?:\.\d)?|two|three|four|five|six|seven|eight)[- ]?(?:hours?|hrs?|h)\b|"
+    r"\blong rides?\b|\bcentury\b|\b100 ?(?:miles|km)\b|\bsportive\b"
+)
+_ALWAYS_COLD_RX = re.compile(r"\b(?:always|constantly|permanently|forever|so) (?:feel )?cold\b")
+
+
+def _bmi(text: str) -> float | None:
+    """Body mass index from a height and a weight the rider gave, or None."""
+    h = _HEIGHT_RX.search(text)
+    w = _WEIGHT_RX.search(text)
+    if not h or not w:
+        return None
+    if h.group("m"):
+        metres = float(h.group("m"))
+    elif h.group("cm"):
+        metres = int(h.group("cm")) / 100
+    else:
+        metres = (int(h.group("ft")) * 12 + int(h.group("inch") or 0)) * 0.0254
+    if w.group("kg"):
+        kilos = float(w.group("kg"))
+    elif w.group("st"):
+        kilos = (int(w.group("st")) * 14 + int(w.group("lb") or 0)) * 0.4536
+    else:
+        kilos = int(w.group("lbs")) * 0.4536
+    if not 1.2 <= metres <= 2.3:
+        return None
+    return kilos / (metres * metres)
+
+
+def _periods_gone_months(text: str) -> bool:
+    """Periods stopped for three months or more, in the rider's words."""
+    for m in _PERIOD_WORDS_RX.finditer(text):
+        before = text[max(0, m.start() - _WINDOW):m.start()]
+        if _someone_else(before):
+            continue
+        near = text[max(0, m.start() - 60):m.end() + 60]
+        for d in _MONTHS_RX.finditer(near):
+            if d.group("year"):
+                return True
+            n = d.group("n")
+            count = int(n) if n.isdigit() else _NUM_WORDS.get(n, 0)
+            if count >= 3:
+                return True
+    return False
+
+
+def _reds_red_flag(text: str) -> bool:
+    """The red flags of eating too little that hold training to easy riding
+    until a doctor has seen them (SAFETY LAW 2h): periods stopped for three
+    months or more; always cold beside another sign; an underweight height
+    and weight beside a fear of food; a long ride planned without food to
+    stay light."""
+    if _periods_gone_months(text):
+        return True
+    fear = _said_plainly(_FOOD_FEAR_RX, text)
+    bmi = _bmi(text)
+    if bmi is not None and bmi < 18.5 and (fear or _UNFUELLED_RX.search(text)):
+        return True
+    long_ride = next(
+        (m for m in _LONG_RIDE_RX.finditer(text)
+         if not m.group("h") or _count(m.group("h")) >= 2),
+        None,
+    )
+    if long_ride is not None and _UNFUELLED_RX.search(text) and (
+        fear or re.search(r"\b(?:weight|kg|kilos|light|lean|fat|lose|losing)\b", text)
+    ):
+        return True
+    return bool(_ALWAYS_COLD_RX.search(text)) and (
+        fear or bool(_PERIOD_WORDS_RX.search(text)) or (bmi is not None and bmi < 18.5)
+    )
+
+
+def _heart_tier(hit, norm: str):
+    """A heartbeat hit at the rung its words set: the emergency rung with
+    chest pain, breathlessness, dizziness or fainting; ectopics (their GP
+    within days, hard efforts held) for skipped or extra beats at rest with
+    none of that; palpitations, seen today, otherwise."""
+    flags = _said_plainly(_HEART_RED_FLAG_RX, norm)
+    if hit.kind == "palpitations":
+        if flags:
+            return replace(hit, severity="emergency")
+        if _ectopic_only(norm):
+            # The words decide, whatever severity the classifier gave.
+            return replace(hit, kind="ectopic", severity="info")
+        return hit
+    if flags:
+        return replace(hit, kind="palpitations", severity="emergency")
+    if not _ectopic_only(norm):
+        return replace(hit, kind="palpitations", severity="urgent")
+    return hit
+
+
+def tier_hits(hits: list, text: str) -> list:
+    """The hits at the tier the rider's words set, whichever check found
+    them (the regex, or the regex merged with the classifier):
+      - an injury that shows a red flag (a possible break, a clot, pressure
+        on the nerves at the base of the spine, a tight swollen limb in
+        severe pain) becomes that red flag, and the ordinary injury goes;
+      - a heartbeat hit becomes ectopics, palpitations or the emergency
+        rung by what came with it;
+      - a head injury with a fit is an emergency, and so is a blackout;
+      - a crisis carries its tier (Hit.tier: acted, plan or thoughts);
+      - eating too little with the red flags of RED-S is urgent, which
+        holds training to easy riding.
+    One hit per kind, in the order given. Pure: no database, no model."""
+    norm = _normalise(text)
+    have = {h.kind for h in hits}
+    red = injury_red_flag(norm) if "injury" in have else None
+    out = []
+    for hit in hits:
+        if hit.kind == "injury" and (red or have & INJURY_RED_FLAGS):
+            if red is None or red in have:
+                continue
+            hit = replace(hit, kind=red, severity=_injury_red_flag_severity(red, norm) or "urgent")
+            have.add(red)
+        elif hit.kind in INJURY_RED_FLAGS and hit.severity != "emergency":
+            worse = _injury_red_flag_severity(hit.kind, norm)
+            if worse == "emergency":
+                hit = replace(hit, severity="emergency")
+        elif hit.kind in ("palpitations", "ectopic"):
+            hit = _heart_tier(hit, norm)
+        elif hit.kind == "head_injury" and hit.severity != "emergency" and _head_fit(norm):
+            hit = replace(hit, severity="emergency")
+        elif hit.kind == "fainting" and hit.severity != "emergency" and blackout_said(norm):
+            # Lost consciousness during or after exercise: the emergency
+            # number now, even if they feel fine (round 3, L4 and L5).
+            hit = replace(hit, severity="emergency")
+        elif hit.kind == "crisis":
+            # The tier the card and the reply check read: the whole
+            # message, and the words the hit matched.
+            hit = replace(hit, tier=crisis_tier(" ".join([norm, _normalise(hit.matched)])))
+        elif hit.kind == "restriction" and hit.severity == "info" and _reds_red_flag(norm):
+            hit = replace(hit, severity="urgent")
+        out.append(hit)
+    if any(h.kind == "palpitations" for h in out):
+        out = [h for h in out if h.kind != "ectopic"]
+    seen: set[str] = set()
+    final = []
+    for hit in out:
+        if hit.kind in seen:
+            continue
+        seen.add(hit.kind)
+        final.append(hit)
+    return final
+
+
 def _passes_check(
     kind: str,
     match: re.Match,
@@ -3602,6 +4895,26 @@ def _passes_check(
     of a head injury, a few seconds lost after an effort."""
     text = text or match.string
     hi = hi or len(text)
+    if kind == "gi_bleed":
+        return _gi_bleed(match, before, after, text)
+    if kind == "chest_pain" and _group(match, "indig"):
+        return _exertional_indigestion(text)
+    if kind == "fracture":
+        return _fracture(match, text)
+    if kind == "dvt":
+        if not _dvt(match, text):
+            return False
+        return not _group(match, "dvtx") or _said_plainly(_CLOT_LUNG_RX, text)
+    if kind == "cauda_equina":
+        tier = _cauda(text)
+        return tier == "emergency" if _group(match, "cesx") else tier is not None
+    if kind == "compartment":
+        return _compartment(text)
+    if kind == "restriction" and _group(match, "reds"):
+        words = match.group(0)
+        if re.search(r"\b(?:hours?|hrs?|h)\b", words):
+            return _reds_red_flag(text)
+        return True
     if kind == "injury":
         return not _effort_burn(match, before, after) and not _old_and_healed(text, match)
     if kind == "fever":
@@ -3656,6 +4969,8 @@ def _passes_check(
         return bool(_UNSURE_AFTER.search(text[match.end():hi]))
     if kind == "pregnancy" and _group(match, "we"):
         return bool(_CARRYING_RX.search(text))
+    if kind == "pregnancy" and _group(match, "postest"):
+        return _positive_pregnancy_test(text)
     if kind == "heat" and _group(match, "temp"):
         return not _past_heat(match, text)
     if kind == "restriction":
@@ -3716,19 +5031,19 @@ def _detect(text: str) -> list[Hit]:
     if "head_injury" in found and "head_knock" in found:
         # A knock about the house beside a real head injury is that injury.
         hits = [h for h in hits if h.kind != "head_knock"]
-    return hits
+    # Each red flag at the tier its words set (round 2: the right kind with
+    # the wrong card or hold was the commonest unsafe result).
+    return tier_hits(hits, norm)
 
 
 # ── A general or hypothetical question, not a symptom now ───────────────────
 
 # The frames of a general question: "what should I do if I ever get", "what
-# are the signs of", "how do I know if I've got", "hypothetically".
+# are the signs of", "how do I know if I've got", "hypothetically". "What
+# should I do if" on its own is not one: "what should I do if I'm having
+# chest pain?" may be happening now, so it still gets the card and the hold.
 _QUESTION_FRAME_RX = re.compile(
-    r"what (?:happens|would happen|will happen|could happen|should (?:i|you|we|one|someone|"
-    r"a rider) do|do (?:i|you|we) do|to do|would you do|would you (?:advise|recommend|"
-    r"suggest)|is the (?:right|best|correct) thing to do|are you (?:meant|supposed) to do)\b"
-    r"[^.!?\n]{0,30}?\b(?:if|when|after|in case)\b"
-    r"|\bwhat(?:'s| is| are|'re)? (?:the )?(?:main |common |typical |usual |early |first |key |"
+    r"\bwhat(?:'s| is| are|'re)? (?:the )?(?:main |common |typical |usual |early |first |key |"
     r"warning |tell-?tale |classic |obvious )?(?:signs?|symptoms?|red flags?|warning signs?|"
     r"causes?|difference|protocol|rules?|guidelines?|first aid|treatment|risks?|dangers?)\b"
     r"|\bhow (?:do|would|can|could|should|will|does|to)(?: (?:i|you|we|one|someone|anyone|a "
@@ -3818,6 +5133,13 @@ def _matched_words(rule: _Rule, m: re.Match, text: str) -> str:
     too ("headache since the crash"), so the record and the coach both see
     why a headache was held."""
     words = m.group(0).strip()
+    if rule.kind in ("dvt", "cauda_equina", "compartment") or (
+        rule.kind == "chest_pain" and _group(m, "indig")
+    ):
+        # The anchor is one word ("calf", "numbness"): the record and the
+        # coach see the sentence that set the tier.
+        lo, hi = _clause(text, m.start(), m.end())
+        words = text[lo:hi].strip()[:160] or words
     if rule.kind == "head_knock":
         # Where it happened too: "hit my head on the cupboard door".
         lo, hi = _clause(text, m.start(), m.end())
@@ -3949,6 +5271,19 @@ class ScreenResult:
         """The age an under-18 hit implies, or None without one."""
         return next((h.stated_age for h in self.hits if h.kind == "minor"), None)
 
+    @property
+    def crisis_tier(self) -> str | None:
+        """The tier of this message's crisis ("acted", "plan" or
+        "thoughts"), as the card and the reply check read it, or None
+        without a crisis. Hit.tier when the hit carries it, else read from
+        the rider's words."""
+        hit = next((h for h in self.hits if h.kind == "crisis"), None)
+        if hit is None:
+            return None
+        return getattr(hit, "tier", None) or crisis_tier(
+            " ".join([self.message or "", hit.matched or ""])
+        )
+
     def card_chunks(self) -> list[dict]:
         """The SSE payloads, sent before any model text."""
         names = self.card_names or [None] * len(self.cards)
@@ -3963,17 +5298,30 @@ class ScreenResult:
 
 def _cards_for(hits: list[Hit], country: str | None) -> list[tuple[str, str, str]]:
     """(style, text, name) for each card this message brings: at most one
-    emergency-style card (the first of chest, faint, heart, head), then the
-    crisis card, then the fever and heat warnings."""
-    names = {CARD_FOR_KIND[h.kind] for h in hits if h.kind in CARD_FOR_KIND}
-    chosen = [n for n in _EMERGENCY_CARD_ORDER if n in names][:1]
-    chosen += [n for n in ("crisis", "fever", "heat") if n in names]
+    emergency-style card (the one whose red flag is most severe, then the
+    first of chest, faint, heart, head, bleed), then the crisis card, then
+    the quieter warnings. An account that may be a child's gets no card about
+    how to train."""
+    rank = {s: i for i, s in enumerate(SEVERITIES)}
+    severest: dict[str, int] = {}
+    for h in hits:
+        name = card_for_hit(h)
+        if name:
+            severest[name] = min(severest.get(name, len(rank)), rank.get(h.severity, len(rank)))
+    names = set(severest)
+    if any(h.kind == "minor" for h in hits):
+        names -= _TRAINING_CARDS
+    chosen = sorted(
+        (n for n in _EMERGENCY_CARD_ORDER if n in names),
+        key=lambda n: (severest[n], _EMERGENCY_CARD_ORDER.index(n)),
+    )[:1]
+    chosen += [n for n in _OTHER_CARD_ORDER if n in names]
     return [(CARD_STYLE[n], card_text(n, country), n) for n in chosen]
 
 
 def _card_shown_for(hit: Hit, shown: list[str]) -> str | None:
     """The style of the card that covered this hit, for the record."""
-    name = CARD_FOR_KIND.get(hit.kind)
+    name = card_for_hit(hit)
     if name is None:
         return None
     if name in shown:
@@ -4047,7 +5395,7 @@ _TERMS: dict[str, tuple[tuple[str, str], ...]] = {
         ("asthma", r"asthma"), ("long covid", r"long covid"),
     ),
     "pregnancy": (
-        ("pregnancy", r"pregnan|trimester|\bexpecting\b|\bcarrying\b|"
+        ("pregnancy", r"pregnan|trimester|\bexpecting\b|\bcarrying\b|\bpositive\b|"
                       r"(?:weeks?|wks?|months?)[- ](?:along|gone)"),
         ("after a birth", r"\b(?:post-?partum|post partum|post-?natal|post natal|baby|son|"
                           r"daughter|little one|twins|birth|c-section|c section|"
@@ -4204,6 +5552,7 @@ def _settled_hits(hits: list[Hit], text: str) -> list[Hit]:
     is also there for real is that red flag, and a head injury the
     classifier added is marked new when the words describe a fresh crash or
     blow."""
+    hits = tier_hits(list(hits), text)
     real = {h.kind for h in hits}
     settled: list[Hit] = []
     for h in hits:
@@ -4223,6 +5572,20 @@ def _settled_hits(hits: list[Hit], text: str) -> list[Hit]:
         for h in hits
         if h.kind != "head_knock"
     ]
+
+
+def hold_flag(hit, text: str = "") -> str:
+    """The red flag the hold for this hit carries: its kind, except a head
+    injury with a fit or seizure after it, which carries its own
+    (safety_service.HEAD_SEIZURE_FLAG): all riding held until a doctor has
+    assessed the seizure, never the head injury's routine check (round 3,
+    L7)."""
+    kind = getattr(hit, "kind", None)
+    if kind == "head_injury" and _head_fit(
+        _normalise(" ".join([text or "", getattr(hit, "matched", "") or ""]))
+    ):
+        return safety_service.HEAD_SEIZURE_FLAG
+    return kind
 
 
 def _new_event_kwargs(hit: Hit) -> dict:
@@ -4306,7 +5669,12 @@ def screen_message(
     try:
         for hit in result.hits:
             hold = None
-            level = HOLD_FOR.get(hit.kind)
+            # The level is code's (hold_level_for): heatstroke holds
+            # everything until a doctor has cleared them (SAFETY LAW 2j), hot
+            # weather alone holds today to easy, and the red flags of eating
+            # too little hold to easy riding (2h).
+            heatstroke = _heatstroke(hit)
+            level = hold_level_for(hit, text)
             if level:
                 quiet = _quiet_after_mistake(db, user.id, hit.kind)
                 if quiet is not None:
@@ -4328,13 +5696,28 @@ def screen_message(
                     # else (a clearance included) lifts it.
                     ends = (
                         safety_service.layoff_hold_ends(layoff_days_from(hit.matched))
-                        if hit.kind == "layoff" else None
+                        if hit.kind == "layoff"
+                        else _end_of_today() if hit.kind == "heat" and not heatstroke
+                        else None
                     )
+                    # A full hold never carries the easy limit of a red flag
+                    # whose own hold is easy riding ("pain-free, flat or
+                    # indoor riding only" on a hold that stops all riding).
+                    reason = (
+                        HEATSTROKE_REASON if heatstroke
+                        else HOLD_REASONS[hit.kind]
+                        if level == "hold_all" and HOLD_FOR.get(hit.kind) == "easy_only"
+                        else hold_reason(hit.kind, hit.matched)
+                    )
+                    flag = hold_flag(hit, text)
+                    if flag != hit.kind:
+                        reason = HOLD_REASONS[flag]
                     hold = safety_service.open_hold(
-                        db, user, level, HOLD_REASONS[hit.kind],
+                        db, user, level, reason,
                         HOLD_SOURCE_FOR.get(hit.kind, "detector"),
-                        red_flag=hit.kind, note=f'Matched "{hit.matched}"',
-                        expires_at=ends, commit=False, **_new_event_kwargs(hit),
+                        red_flag=flag, note=f'Matched "{hit.matched}"',
+                        expires_at=ends, commit=False,
+                        **({} if flag != hit.kind else _new_event_kwargs(hit)),
                     )
                     if before is not None and before.id == hold.id:
                         notes[hit.kind] = f"a {hold.level} hold was already open"
@@ -4389,137 +5772,524 @@ def screen_message(
 
 # ── What the reply must say, per red flag (the SAFETY CONTEXT line) ─────────
 
+# The fixed lines a reply carries word for word. The SAFETY CONTEXT quotes
+# them, the reply check adds any the reply left out, and the fixed reply is
+# built from them, so the rider reads the same words whichever path ran.
+# "{gp}" and "{emergency}" are filled in for the rider's country.
+
+# Heart history goes to the clinician, not to Forma: Forma has no need to
+# hold special-category data about the rider's relatives.
+HISTORY_FOR_DOCTOR = (
+    "When you're seen, tell them if you have a known heart condition or if anyone "
+    "in your family died suddenly before 50. Don't be on your own until you've "
+    "been seen."
+)
+# A near-faint on the trainer: the rider may still be clipped in, in ERG.
+OFF_THE_BIKE = (
+    "Press Stop, unclip and get off the bike carefully, sitting on the floor first "
+    "if you feel light-headed."
+)
+# The one limit on riding an injury, until a physio has seen it. Anything
+# more (gears, cadence, terrain tips) is self-management, which is theirs.
+INJURY_LIMIT = (
+    "Until a physio has seen it, rest it from anything that brings the pain on, "
+    "including climbing."
+)
+INDOOR_IN_PREGNANCY = (
+    "From now, indoor riding is the safer choice; check with your midwife before "
+    "riding on the road."
+)
+# What a beta blocker changes, and what it doesn't: power and effort still
+# read true, heart-rate zones don't.
+BETA_BLOCKER_METRICS = (
+    "Power and effort out of 10 still work normally on a beta blocker; heart-rate "
+    "zones don't, and need resetting with your doctor."
+)
+# A request for more load next to a restriction: refused, and why.
+KEEP_VOLUME = (
+    "Piling on training this close to an event is how people get injured or ill, "
+    "so I'm keeping your training volume where it is."
+)
+# Honest about what Forma can't do, without reading as "go away".
+NOT_MONITORED = (
+    "No one at Forma reads chats as they happen, so I can't get help to you; those "
+    "numbers can, right now."
+)
+# The quiet window after crisis words (wellbeing_quiet_until), said to the
+# rider: the briefings, check-ins and nudges all honour it.
+WELLBEING_LINE = (
+    "For the next two weeks, Forma won't send you anything about missed sessions "
+    "or keeping up with the plan."
+)
+# How a crisis reply ends: the door left open, and the question that matters.
+STILL_HERE = "I'm still here if you want to keep talking. Are you safe right now?"
+# Means safety, in every crisis reply (SAFETY LAW rule 4), word for word.
+MEANS_SAFETY = (
+    "If you've got pills or anything you've thought of using, put them out of "
+    "reach or give them to someone you trust right now."
+)
+# The pieces of a place they went to, or sat or stood at, to do it.
+_PREP_GO = (
+    r"rode|ridden|cycled|biked|drove|driven|went|gone|walked|ran|got|climbed|headed|"
+    r"travelled|traveled|made it"
+)
+_PREP_STAY = (
+    r"stood|sat|was standing|was sitting|been standing|been sitting|stand|sit|standing|"
+    r"sitting|waited|was waiting|stayed|parked up|stopped"
+)
+_PREP_PLACE = (
+    r"(?:top of (?:the |a )?|edge of (?:the |a )?|side of (?:the |a )?)?(?:cliffs?|cliff ?tops?|"
+    r"bridge|edge|ledge|railings?|railway(?: line)?|tracks|level crossing|station|platform|"
+    r"river|canal|sea|pier|quarry|viaduct|multi-?storey|car park|roof|rooftop|tower|motorway|"
+    r"dual carriageway|main road|road)"
+)
+_PREP_ACT = (
+    r"(?:jump\w*|end(?:ing)? (?:it|my life|things)|go(?:ing)? over|throw(?:ing)? myself|"
+    r"kill(?:ing)? myself|step(?:ping)? (?:off|out)|let(?:ting)? go|do(?:ing)? it\b|"
+    r"(?:considering|contemplating|thinking about|thought about|thinking of|wondering about|"
+    r"working up to|building up to|deciding whether) (?:it|that|whether|doing|going|"
+    r"stepping|riding|throwing|ending|jumping))"
+)
+# Having taken something, hurt themselves, an attempt they stopped or that
+# someone stopped, preparing for one, or a plan for today: an emergency, not
+# passive thoughts (SAFETY LAW rule 4). Read only in a crisis turn, on the
+# rider's words.
+_CRISIS_ACTED_RX = re.compile(
+    r"\b(?:took|taken|swallowed|downed)\b[^.?!\n]{0,30}\b(?:pills?|tablets?|paracetamol|"
+    r"co-?codamol|an overdose|too many|the lot|everything)\b|"
+    r"\boverdos(?:e|ed|ing)\b|"
+    r"\b(?:cut|hurt|harmed|burned|burnt)\s+myself\b|"
+    r"\b(?:tried|attempted|try|trying) to (?:kill myself|end (?:it|my life|things)|"
+    r"take my (?:own )?life)\b|\battempted suicide\b|\bsuicide attempt\b|"
+    r"\b(?:stopped|talked) me\b[^.?!\n]{0,40}\b(?:jump|jumping|end it|kill|bridge|edge)\b|"
+    r"\bwent (?:to|up to|out to|down to)\b[^.?!\n]{0,40}\bto (?:end it|end my life|"
+    r"kill myself|jump)\b|"
+    r"\b(?:going|about|ready) to (?:end it|end my life|kill myself|jump)\b[^.?!\n]{0,40}"
+    r"\b(?:stopped|didn't|did not|couldn't|could not|backed out|changed my mind)\b|"
+    r"\b(?:end it|end my life|kill myself|take my (?:own )?life)\b[^.?!\n]{0,30}"
+    r"\b(?:tonight|today|this evening)\b|"
+    r"\b(?:tonight|today|this evening)\b[^.?!\n]{0,40}\b(?:end it|end my life|kill myself)\b|"
+    # Preparing, treated as an attempt (SAFETY LAW rule 4): going to the
+    # place to do it, or sitting or standing there considering it, and
+    # coming back (round 2 and 3, L13: "rode out to the cliffs and sat there
+    # for an hour thinking about jumping"; "went to the bridge last night
+    # considering doing it"; "sat at the edge of the road thinking about
+    # doing it").
+    rf"\b(?:{_PREP_GO})(?: \w+){{0,3}}? (?:out |up |down |over |back )?(?:to|onto|on to|"
+    rf"as far as|up on) (?:the |a |that |this )?{_PREP_PLACE}\b[^.?!\n]{{0,80}}\b{_PREP_ACT}|"
+    rf"\b(?:{_PREP_STAY})(?: there)?(?: \w+){{0,3}}? (?:on|at|by|near|beside|over|in front of) "
+    rf"(?:the |a |that |this )?{_PREP_PLACE}\b[^.?!\n]{{0,60}}\b{_PREP_ACT}|"
+    # Rehearsing it, or coming close and stopping.
+    r"\brehears(?:e|ed|es|ing|al)\b|\b(?:a |did a |done a |doing a )?(?:dry|test|trial|"
+    r"practice) run\b|\bpracti[sc](?:ed|ing) (?:it|how|tying|with (?:the |a )?(?:rope|noose|"
+    r"belt|pills|knife))\b|"
+    r"\b(?:nearly|almost|very nearly|came close to|so close to) (?:did it|doing it|jumped|"
+    r"jumping|went over|going over|ended it|ending it|killed myself|stepped off|stepping off|"
+    r"took them|took the (?:pills|tablets))\b"
+)
+# A plan, a method, a place or something got ready: urgent now, never "your
+# GP today" (round 2, R14, L9 and L12). Read only in a crisis turn, on the
+# rider's words.
+_CRISIS_METHOD_RX = re.compile(
+    r"\b(?:not brak\w*|(?:without|stop|stopped|no) braking|let(?:ting)? go of the bars|"
+    r"(?:go|going|gone|went|jump\w*|throw\w* myself|step\w*|fall\w*|driv\w*|rid(?:e|ing)|"
+    r"steer\w*|swerv\w*|veer\w*) (?:off|over|from|in front of|into|under) (?:the |a |that |"
+    r"this |some )?(?:\w+ )?(?:bridge|cliffs?|edge|ledge|roof|building|car park|multi-?storey|"
+    r"motorway|railway|tracks?|train|lorry|lorries|truck|bus|traffic|river|sea|quarry|"
+    r"viaduct)|(?:the|that|this|a) (?:bridge|cliffs?|ledge|railway|viaduct|quarry|tracks|"
+    r"motorway|edge)\b[^.!?\n]{0,60}?\b(?:jump\w*|go(?:ing)? over|end (?:it|my life)|throw "
+    r"myself|step off|fall|thinking about|think about)|overdos\w*|hang(?:ing)? myself|a rope|"
+    r"noose|stockpil\w*|sav(?:ed|ing) up (?:my |some )?(?:pills|tablets)|(?:pills|tablets|"
+    r"paracetamol|insulin)\b[^.!?\n]{0,30}\b(?:take (?:them )?all|all at once|enough to)|"
+    r"(?:know|knew|worked out|planned|decided|picked|chosen) (?:exactly )?(?:how|where|when) "
+    r"(?:i'?d|i would|i will|i'll|to)|on the descents?\b[^.!?\n]{0,60}\b(?:brak\w*|let go|"
+    r"crash\w*|end it|over the edge))\b"
+)
+
+
+def crisis_tier(text: str) -> str:
+    """How urgent the help is, from the rider's words in a crisis turn:
+    "acted" (taken something, hurt themselves, an aborted or interrupted
+    attempt, a plan for today: the emergency number or A&E now), "plan" (a
+    plan, a method, a place or anything got ready: urgent crisis care now)
+    or "thoughts" (the crisis lines, their GP within days, someone today)."""
+    norm = _normalise(text)
+    if _CRISIS_ACTED_RX.search(norm):
+        return "acted"
+    if _CRISIS_METHOD_RX.search(norm) or _PLAN_ANY_RX.search(norm):
+        return "plan"
+    return "thoughts"
+
+
+# A method tied to riding: not braking on a descent, riding into traffic,
+# a cliff or bridge they ride to or pass on their route (round 3, L9, L12,
+# L13). Read only in a crisis turn, on the rider's words.
+_CRISIS_RIDING_RX = re.compile(
+    r"\b(?:not brak\w*|(?:without|stop|stopped|no|never) braking|let(?:ting)? go of the "
+    r"(?:bars|brakes|handlebars)|on (?:the|a|my|that|those) descents?\b|descents?\b[^.!?\n]{0,60}"
+    r"\b(?:brak\w*|let go|crash\w*|end it|over the edge)|(?:ride|riding|rode|steer\w*|swerv\w*|"
+    r"veer\w*|cycl\w*|pull(?:ing)? out)\b[^.!?\n]{0,20}\b(?:into|in front of|under) (?:the |a |"
+    r"an |some |that |oncoming )?(?:\w+ )?(?:traffic|lorry|lorries|truck|bus|car|cars|van|train)|"
+    rf"(?:rode|ridden|cycled|biked)(?: \w+){{0,3}}? (?:out |up |down |over |back )?(?:to|onto|"
+    rf"as far as) (?:the |a |that |this )?{_PREP_PLACE}|"
+    r"(?:on|during|in the middle of) (?:a |my |the )?(?:ride|rides|commute|route|loop)\b"
+    r"[^.!?\n]{0,60}\b(?:jump\w*|end it|go(?:ing)? over|let go|swerv\w*|steer\w*|not brak\w*)|"
+    r"(?:bridge|cliffs?|edge|road|descent|hill|viaduct)\b[^.!?\n]{0,30}\b(?:on|along|by) my "
+    r"(?:commute|route|ride|rides|loop))"
+)
+# Means safety when the method involves riding: no riding at all until they
+# have spoken to a crisis team or a doctor, and someone with them (SAFETY
+# LAW rule 4). Never "move your rides indoors" in its place.
+RIDING_MEANS_LINE = (
+    "Please don't ride your bike at all until you've spoken to a crisis team or a "
+    "doctor, and have someone with you."
+)
+# A reply already says it: no riding at all, until a crisis team or a doctor.
+RIDING_MEANS_CHECK = r"\bride\b[^.!?\n]{0,30}\bat all\b[^.!?\n]{0,60}\b(?:crisis|doctor)"
+
+
+def crisis_riding_method(text: str) -> bool:
+    """Whether the method in a crisis message involves riding: not braking
+    on a descent, riding into traffic, a cliff or bridge they rode to or
+    pass on their route. Read only in a crisis turn."""
+    return bool(_CRISIS_RIDING_RX.search(_normalise(text)))
+
+
+CRISIS_PLAN_LINE = (
+    "Because you've thought about how or where, please get urgent help today, not "
+    "later: {crisis_now}. If you feel you might act on it, call {emergency} now."
+)
+_CRISIS_PLAN_CHECK = (
+    r"(?:\b111\b|crisis team|\b988\b|\b3114\b)[^.!?\n]{0,80}\b(?:now|today|straight away)\b|"
+    r"\b(?:go|get|head) (?:straight |now )?to (?:the )?(?:{hospital_rx})[^.!?\n]{0,30}"
+    r"\b(?:now|today|straight away)\b"
+)
+# Thoughts with no plan: their GP within days, whatever happens tonight,
+# never on the condition that their mood stays low (round 2, R16, L10, L11).
+GP_SOON_LINE = "Please see {gp} in the next few days as well, whatever happens tonight."
+_GP_SOON_CHECK = r"\b(?:GP|doctor)\b(?![^.!?\n]{0,40}\bif your mood\b)"
+# The line for anyone who has already acted or may act, said once (the
+# crisis card carries it too).
+_DANGER_CHECK = (
+    r"(?:already|taken|hurt yourself|act on it)[^.!?\n]{0,80}(?:{emergency_rx})|"
+    r"(?:{emergency_rx})[^.!?\n]{0,60}\b(?:even if you feel|now)\b"
+)
+# A reply already says it when it sends them to call now and gets someone
+# with them, in any order.
+# The call itself, said as a conclusion: in a sentence with no "if" in it
+# (round 3, L13: "If you feel at any point like you might act on this ...
+# call 999 now" is a condition, not the acted tier).
+_CRISIS_CALL_NOW_CHECK = (
+    r"(?:^|[.!?\n]\s*)(?![^.!?\n]*(?:\b(?<!even )if\b|\bshort of\b|\bshould you\b|"
+    r"\bin case\b|\bwhenever\b|\bat any point\b|\bunless\b))[^.!?\n]*\b(?:call|ring|dial)\b"
+    r"[^.?!\n]{0,40}(?:{emergency_rx})[^.?!\n]{0,60}\bnow\b"
+)
+_CRISIS_ACTED_CHECK = (
+    r"(?=[\s\S]*" + _CRISIS_CALL_NOW_CHECK + r")"
+    r"(?=[\s\S]*\b(?:be|stay) with you\b)"
+)
+# The encouragement to tell a person how they feel (SAFETY LAW rule 4): a
+# telling verb next to "someone you trust", so MEANS_SAFETY never counts as it.
+_TELL_SOMEONE_RX = (
+    r"\b(?:tell|talk(?:ing)? to|speak(?:ing)? to|reach(?:ing)? out to|confide in|"
+    r"lean on|open up to|let)\b[^.?!\n]{0,25}\bsomeone (?:you|they) trust|"
+    r"\bsomeone (?:you|they) trust\b[^.?!\n]{0,30}\b(?:tell|talk|speak|know)\b"
+)
+HEAT_FLUIDS = (
+    "Start well hydrated, carry more than you think you'll need and plan a refill "
+    "stop, drink regularly with electrolytes, and ice in your bottles or a wet buff "
+    "helps."
+)
+NO_COLD_TEST = (
+    "An all-out effort with no warm-up after a long break is a sudden jolt for your "
+    "heart, muscles and tendons, and the number wouldn't be accurate anyway."
+)
+# The screen before any word that a rider back from a break can ride: who
+# needs a doctor first, then the permission (terms section 2).
+LAYOFF_SCREEN = (
+    "If you stopped because of illness, injury, surgery, a heart problem, concussion "
+    "or pregnancy, or anyone in your family died suddenly before 50, see {gp} before "
+    "you train hard. If you've had chest pain or fainting during exercise, see {gp} "
+    "before you ride at all. If none of that applies, start with easy riding by feel."
+)
+# Reasons to see a GP before a big event, never an emergency (round 2, R12).
+BIG_JUMP_SCREEN = (
+    "If you have a heart condition, diabetes or any other health condition, have "
+    "had chest pain or fainting during exercise, or you're over 35, see {gp} "
+    "before an event this big."
+)
+# The answer to "is Forma responsible if I'm hurt?", from section 9 of the
+# terms: Forma's own duty first, then what it isn't responsible for.
+LIABILITY_LINE = (
+    "Short answer: Forma has to coach you with reasonable care and skill, and the "
+    "terms never limit Forma's responsibility if its negligence causes you injury. "
+    "Forma isn't responsible for injury it didn't cause, for example from crashes, "
+    "traffic or road surfaces."
+)
+UNSAFE_REPORT = (
+    "If I ever say something that seems unsafe, please email gareth@ridewithforma.com."
+)
+# Signs of a bleed: the painkillers stop, a prescribed medicine never does on
+# Forma's word, and the doctor hears everything they take.
+GI_PAINKILLERS = (
+    "No more ibuprofen, naproxen or other anti-inflammatory painkillers until a "
+    "doctor has seen you. Tell the doctor everything you take, including any "
+    "aspirin or blood thinner you're prescribed, and don't stop a prescribed one "
+    "yourself."
+)
+
 # Each kind's must-dos, filled with the rider's own numbers. Word for word
 # lines are quoted so the coach can't soften them.
 _MUSTS: dict[str, tuple[str, ...]] = {
     "chest_pain": (
         "If they asked whether to ride, train or carry on, the reply opens with "
-        "\"No.\" Then ask whether it is happening now, and say what each answer means "
-        "in the same breath: happening now, lasted more than a few minutes, or came "
-        "with sweating, sickness, faintness, breathlessness or pain spreading to the "
-        "arm, jaw, neck or back means call {emergency} now, even if it has settled. "
-        "Settled without any of those still means being seen today: {heart_today}, "
-        "for an ECG (a heart tracing) and a blood test. They don't drive themselves. "
-        "Being short of breath at rest counts the same as chest pain here.",
+        "\"No.\" If they asked an open question (\"what should I do?\"), open with "
+        "what to do, never with \"No.\". Then ask whether it is happening now, and "
+        "say what each answer means in the same breath, without deciding which "
+        "applies: happening now, lasted more than a few minutes, or came with "
+        "sweating or clamminess, sickness, faintness, breathlessness or pain spreading "
+        "to the arm, jaw, neck or back means call {emergency} now, even if it has "
+        "settled. Discomfort they call indigestion or heartburn that came on with "
+        "effort counts as chest pain. When their own words already give one of those "
+        "signs, don't ask: tell them to call {emergency} now, even though it has "
+        "settled, and offer no other route. For the other branch say \"If it settled "
+        "quickly and hasn't come back, you still need to be seen today\": "
+        "{heart_today}, so a doctor can check their heart. "
+        "Never predict which tests they'll have. They don't drive themselves. Being "
+        "short of breath at rest counts the same as chest pain here.",
         'Say "No riding of any kind, including easy spins, indoor sessions and '
         'commuting", and no other hard exertion (the gym, heavy lifting, running for '
         "a train) until a doctor has cleared them.",
-        "Ask whether they have a known heart condition and whether anyone in their "
-        "family died suddenly before 50. If it comes back, they shouldn't be alone.",
+        f"Say, word for word: \"{HISTORY_FOR_DOCTOR}\" Don't ask them for that "
+        "history yourself.",
+        "One safety net, once, at the end: if it comes back, call {emergency} "
+        "straight away. Don't give the emergency number again in other words.",
     ),
     "palpitations": (
         "If they asked whether to ride, train or carry on, the reply opens with "
         "\"No.\" Ask whether it is happening now. Racing or irregular now, or it came "
-        "with chest pain, faintness or breathlessness: call {emergency} now. Settled: "
-        "get seen today for an ECG (a heart tracing): {heart_today}.",
+        "with chest pain, dizziness, faintness or breathlessness: call {emergency} now. "
+        "If their own words already give one of those, don't ask: tell them to call "
+        "{emergency} now. Settled, with none of those: "
+        "get seen today so a doctor can check their heart: {heart_today}. Never "
+        "predict which tests they'll have.",
         'Say "No riding of any kind, including easy spins, indoor sessions and '
         'commuting" until a doctor has cleared them.',
-        "Ask about a known heart condition and any family history of sudden death "
-        "before 50.",
+        f"Say, word for word: \"{HISTORY_FOR_DOCTOR}\" Don't ask them for that "
+        "history yourself.",
     ),
     "fainting": (
-        "Open with the action, and a plain no if they asked to carry on: \"Stop "
-        "riding now.\" Then: sit or lie down with legs raised, sip a sugary drink if "
-        "they haven't eaten, cool down, don't stay alone, don't drive or ride.",
-        "If they had chest pain, a racing or irregular heartbeat or breathlessness "
-        "with it, or actually lost consciousness, tell them to call {emergency} now, "
-        "in the same sentence you ask about those.",
-        "Otherwise they get seen today for an ECG (a heart tracing): {heart_today}. "
-        "Ask about any family history of sudden death before 50. No riding of any "
-        "kind until a doctor has checked their heart.",
+        "Open with the action, and a plain no if they asked to carry on. On the "
+        f"trainer, word for word: \"{OFF_THE_BIKE}\" Outdoors: stop somewhere off the "
+        "road and get off the bike carefully. Then: lie down with legs raised, don't "
+        "get back on the bike, not even for an easy spin, don't stay alone, don't "
+        "drive. Only once they feel steady: sip something sugary if they haven't "
+        "eaten.",
+        "A blackout during or after exercise (fainted, passed out, blacked out, a gap "
+        "they can't remember, found slumped) is always {emergency} now, even if they "
+        "feel fine now and it was earlier in the ride: never {today_short}, never "
+        "\"today\", never \"if it hasn't settled\". Fainting means they lost "
+        "consciousness: never ask again whether they really did. If they had chest "
+        "pain, a racing or irregular heartbeat or breathlessness with it, the same: "
+        "{emergency} now. When you ask about any of those, say in the same sentence "
+        "that a yes means calling {emergency} now.",
+        "Only if they nearly fainted, with no blackout: they get seen today so a "
+        "doctor can check their heart: "
+        "{heart_today}. Never predict which tests they'll have, or that one test "
+        f"will clear them. Say, word for word: \"{HISTORY_FOR_DOCTOR}\" No riding of "
+        "any kind until a doctor has checked their heart.",
+        "After a blackout they don't drive at all until a doctor says they can; in "
+        "the UK they may need to tell the DVLA.",
+    ),
+    "ectopic": (
+        "Skipped, extra or thumping beats at rest, with no chest pain, "
+        "breathlessness, dizziness or fainting and not during exercise, are not an "
+        "emergency: never tell them to call {emergency} or go to {hospital} for that "
+        "alone. If they asked about racing or hard efforts, open with \"No.\" Tell "
+        "them to see {gp} in the next few days, before any race, so their heart can "
+        "be checked. The context holds hard efforts and racing until then; easy "
+        "riding can carry on.",
+        "Ask once whether it ever comes with chest pain, breathlessness, dizziness "
+        "or fainting, happens during exercise, or races and doesn't settle, and say "
+        "in the same sentence that any of those means calling {emergency} now if it "
+        "is happening, or being seen today if it has stopped.",
     ),
     "head_injury": (
         "If they asked about riding, the reply opens with \"No.\": no riding, "
         "training or racing until a doctor has checked them and they're free of "
         "symptoms.",
         "Include, word for word: \"Don't be alone for the next 24 hours, and don't "
-        "drive.\" No alcohol for the next 24 hours.",
+        "drive.\" And: no driving until they're free of symptoms and a doctor says "
+        "they can. No alcohol for the next 24 hours.",
         "Ask whether they were knocked out, have a memory gap, have been sick, have "
         "neck pain, or take blood thinners. A headache that has lasted since the "
         "injury, or any of those: {hospital} today, with someone else driving. If "
         "their own message already says one of those, don't ask: tell them directly "
-        "that it means {hospital} today, with someone else driving. Call {emergency} "
-        "for a fit, drowsiness or being hard to wake, confusion, weakness or "
-        "numbness, slurred speech, trouble with vision or balance, repeated vomiting, "
-        "clear fluid from the nose or ears, or a headache that gets worse.",
+        "that it means {hospital} today, with someone else driving. Give this list "
+        "once, in one place: call {emergency} for a fit, drowsiness or being hard to "
+        "wake, confusion, weakness or numbness, slurred speech, trouble with vision "
+        "or balance, repeated vomiting, clear fluid from the nose or ears, or a "
+        "headache that gets worse.",
+        "A fit or seizure after the blow is an emergency: call {emergency} now, "
+        "never {hospital} today, and never a softer route after it. After a fit or "
+        "a blackout they don't drive until a doctor says they can; in the UK, DVLA "
+        "rules apply.",
         "Never say they have concussion, and never say they were sick unless they "
-        "did. Describe the return as \"UK grassroots guidance after a suspected "
-        "concussion: 24 to 48 hours of relative rest, a gradual return only once "
-        "symptom-free, and no racing or group riding before day 21 after the "
-        "injury.\" Replace the helmet, even if it looks fine.",
+        "did. Describe no return-to-riding protocol of your own: the hold's lift "
+        "sentence says how it steps down, and the doctor decides the rest. Replace "
+        "the helmet, even if it looks fine.",
+    ),
+    # The injury red flags: a doctor today or now, never a physio, and none
+    # of the ordinary injury's lines (SAFETY LAW 2e).
+    "fracture": (
+        "If they asked about riding, the reply opens with \"No.\": no riding of any "
+        "kind, the turbo and one-handed riding included, until a doctor has checked "
+        "it. Say in their words that this can mean a break or a dislocation and needs "
+        "{xray} today, with someone else driving, so it can be X-rayed. Name no "
+        "diagnosis beyond that.",
+        "No physio, no rehab, no sling or strapping advice and nothing on how to ride "
+        "it. If they crashed, ask once whether they hit their head or the helmet took "
+        "a knock (any yes: 2c as well). One safety net: call {emergency} if a bone is "
+        "through the skin, or the hand or foot beyond it goes cold, pale, blue or numb.",
+    ),
+    "dvt": (
+        "Open with a plain no to riding and to massage, a massage gun or stretching "
+        "it. Say in their words that a swollen, hot, red or tender calf, especially "
+        "after a long flight or drive, can mean a blood clot and needs a doctor "
+        "today: {hospital}. Never call it a strain, and never send it to a physio.",
+        "Ask whether they have chest pain, breathlessness or have coughed up blood, "
+        "and say in the same sentence that any yes means calling {emergency} now. No "
+        "riding until a doctor has checked it.",
+    ),
+    "cauda_equina": (
+        "Open with what to do, not with the bike: this needs emergency care now. "
+        "With any change in bladder or bowel control, they call {emergency} now or go "
+        "straight to {hospital}; otherwise {hospital} now, with someone else driving. "
+        "Say why in plain words without naming a condition: these signs together can "
+        "mean pressure on the nerves at the base of the spine, which needs treating "
+        "within hours.",
+        "No bike fit, saddle, physio or stretching advice, and no riding until a "
+        "doctor has seen them. One safety net: worse weakness, more numbness or any "
+        "new bladder or bowel change means calling {emergency} now.",
+    ),
+    "compartment": (
+        "Open with what to do: {hospital} now, with someone else driving, or call "
+        "{emergency} if they can't get there quickly. Severe pain that keeps getting "
+        "worse in a tight, swollen calf, shin, thigh or forearm needs checking within "
+        "hours. Take off anything tight around it; no ice pressed hard on it, no "
+        "stretching and no riding.",
+    ),
+    "gi_bleed": (
+        "If they asked whether to ride, train or carry on, the reply opens with "
+        "\"No.\" Say plainly, in their words, that this can mean bleeding in the "
+        "stomach or gut and needs a doctor today, never later. Name no condition "
+        "(never an ulcer), and never treat it as an injury.",
+        "Vomiting blood or anything like coffee grounds, or feeling faint or dizzy, "
+        "collapsing, breathlessness or a racing heart with it: call {emergency} now. "
+        "Otherwise {hospital} today, with someone else driving.",
+        f"Say, word for word: \"{GI_PAINKILLERS}\" Never suggest another painkiller, "
+        "an antacid or any stomach remedy.",
+        'Say "No riding or training of any kind" until a doctor has cleared them.',
     ),
     "fever": (
         "If they asked to train, the reply opens with \"No.\": no riding or training "
-        "at all with a fever. Name no condition: say \"training hard with a fever and "
-        "a chest infection can put strain on the heart\", and that the fitness lost "
-        "in a few days off is small.",
+        "at all with a fever. Name no condition, and keep to their words (a chesty "
+        "cough stays a chesty cough, never a chest infection): say \"training hard "
+        "with a fever can put strain on your heart\", and that the fitness lost in a "
+        "few days off is small.",
         "No riding at all until the fever has been gone 24 hours without paracetamol "
         "or ibuprofen and the chest has cleared, then at least 7 days of easy riding "
-        "only, with no intervals or tests. An event date never changes this: say so, "
+        "only, with no intervals or tests. Say: \"Stay away from others and skip club "
+        "rides until the fever's gone.\" An event date never changes this: say so, "
         "and that they should be ready to miss it.",
-        "Call {emergency} for breathing difficulty at rest, blue lips, confusion or "
-        "chest pain. Get seen today ({today_short}) for coughing up blood, a fever "
-        "lasting more than three days, or getting worse.",
+        "Call {emergency} for breathing difficulty at rest or breathing very fast, "
+        "lips or skin that turn blue, grey or blotchy, confusion or chest pain. Get "
+        "seen today ({today_short}) for coughing up blood, a fever lasting more than "
+        "three days, or getting worse. With asthma or another heart or lung "
+        "condition, or a cough that lasts more than three weeks, they see {gp}.",
         "Include: \"If you get chest pain or a racing or irregular heartbeat when you "
         "ride again, stop and call {emergency}. If you're breathless out of "
         "proportion to the effort, stop and see {gp} before riding again.\"",
     ),
     "injury": (
         "Open with a plain answer: don't ride through it, and not the session they "
-        "named. Skip that session with skip_workout. Never put a ride you prescribe "
-        "in its place: the plan tools refuse it.",
-        "Say: \"If you ride, keep it completely pain-free, flat, light gear, high "
-        "cadence, and stop at the first twinge. Until a physio has seen it, that's "
-        "the limit.\"",
-        "Tell them to book a physiotherapist or sports medicine doctor soon. Get it "
-        "seen today ({today_short}) for a hot, swollen or red joint with a fever or "
-        "feeling unwell, not being able to bear weight, or numbness or tingling; "
-        "within a day or two for locking, giving way, swelling or night pain.",
+        "named. Call skip_workout before you write, on the next planned session on or "
+        "after today that matches what they named, then say once which one you "
+        "skipped, by day. Never put a ride you prescribe in its place: the plan tools "
+        "refuse it.",
+        f"Say, word for word: \"{INJURY_LIMIT}\" Give no other advice on how to ride "
+        "it: that's for the physio.",
+        "Tell them to book a physiotherapist or sports medicine doctor within the "
+        "next week.{physio_say}",
+        "One safety net, in one paragraph, with both parts: get it seen today "
+        "({today_short}) if a joint turns hot, red and swollen with a fever, they "
+        "can't put weight on it, or they get numbness or tingling; within a day or "
+        "two if it locks, gives way, swells or hurts at night.",
         "Describe the pain only in their words: never add worsening, sudden or under "
         "load. Ask once whether anything changed on the bike recently (fit, cleats, "
         "saddle), and suggest they tell the physio, without telling them to change it.",
     ),
     "pregnancy": (
         "If they asked for hard efforts or targets, open with no. No power, "
-        "heart-rate or intensity targets for hard work: hard efforts wait for their "
-        "midwife or obstetrician. The talk test (still able to talk in full "
-        "sentences), no exhaustion or overheating, and riding indoors is safer as "
-        "pregnancy goes on.",
-        "Contact their maternity unit or midwife now for vaginal bleeding, leaking "
-        "fluid, regular painful contractions, chest pain, dizziness or feeling faint, "
-        "a severe headache, calf pain or swelling, breathlessness before exercise, or "
-        "reduced baby movements; {emergency} if severe.",
+        "heart-rate or intensity targets for hard work: hard efforts, FTP tests and "
+        "all-out efforts wait for their midwife or GP, who can say what suits this "
+        "pregnancy. Ride easy by the talk test (still able to talk in full "
+        "sentences), not by power or heart-rate numbers, with ERG off. Keep cool, "
+        "with a fan on the trainer, and drink regularly: overheating matters most "
+        "early in pregnancy.",
+        "Early in pregnancy, with no midwife yet: their GP, or in England they can "
+        "refer themselves to their local maternity service. Pain low on one side of "
+        "the tummy, pain in the tip of the shoulder, or bleeding with feeling faint "
+        "means {hospital} now.",
+        f"If they're pregnant now, say: \"{INDOOR_IN_PREGNANCY}\"",
+        "Two tiers, never merged: call {emergency} for chest pain, sudden "
+        "breathlessness, heavy bleeding, a fit or collapse; contact their maternity "
+        "unit or midwife now for any bleeding, leaking fluid, regular painful "
+        "contractions, fewer baby movements, a severe headache, dizziness or feeling "
+        "faint, or calf pain or swelling.",
     ),
     "medication": (
-        "Easy riding by feel only (the talk test, or effort out of 10), with no power "
-        "or heart-rate targets, until a doctor clears them. Ask what the medicine is "
-        "for and whether their doctor set exercise limits.",
+        "Keep riding easy until a doctor clears them. Ask what the medicine is for "
+        "and whether their doctor set exercise limits before any word on intensity.",
         "On a beta blocker, heart-rate zones don't apply: if they want to push harder "
-        "to reach their zones, open with no, because the heart rate is held down on "
-        "purpose and chasing it means riding far too hard. Heat tolerance is lower too.",
+        "to reach their zones, open with no. Say why accurately: \"Pushing harder to "
+        "force your heart rate up means riding much harder than the session "
+        f"intends.\" And: \"{BETA_BLOCKER_METRICS}\" Heat tolerance may be lower: "
+        "say may, never that it is.",
         "Safety net: chest pain, fainting or a racing or irregular heartbeat while "
-        "riding means stop and call {emergency}, never \"speak to your doctor\".",
+        "riding means stop and call {emergency}; dizziness or light-headedness means "
+        "stop and get off the bike. Never \"speak to your doctor\" for those.",
         "Include, word for word: \"Don't skip, change or re-time your medication to "
         "train; ask {gp} or the doctor who prescribes it.\"",
         "If they say their doctor already knows, that is a clearance (I've been "
         "cleared), never a mistake.",
+        "Someone else's medicine, a stimulant or a drug that wasn't prescribed to "
+        "them is not this rule: none of the lines about their own medicine apply. "
+        "With a racing heart, chest pain or shaking, it is an emergency: call "
+        "{emergency} now, take no more, keep the packet and tell the paramedics what "
+        "they took, how much and when. No racing today, and no caffeine.",
     ),
     "condition": (
-        "Easy riding by feel only (the talk test, or effort out of 10), with no power "
-        "or heart-rate targets, until a doctor clears them. Ask whether their doctor "
-        "set exercise limits. Safety net: chest pain, fainting or a racing or "
-        "irregular heartbeat while riding means stop and call {emergency}.",
+        "Easy riding only until a doctor clears them: the easy sessions in their "
+        "plan, kept conversational (the talk test). Ask whether their doctor set "
+        "exercise limits. Safety net: chest pain, fainting or a racing or irregular "
+        "heartbeat while riding means stop and call {emergency}.",
     ),
     "restriction": (
         "If they asked for a calorie, weight or training target, open by declining "
         "it plainly. Set no calorie, deficit, weight or rate-of-loss numbers, and use "
-        "no W/kg or body-weight figures at all, the rider's own included. Never call "
-        "any rate of loss safe or unsafe. Don't add or increase training: the plan "
-        "tools refuse increases for 28 days.",
-        "Explain RED-S once, plainly: Relative Energy Deficiency in Sport, when you "
-        "eat too little for the training you do. Its signs include missed or "
-        "irregular periods, low libido, getting ill often, stress fractures and "
-        "dizziness.",
+        "no W/kg or body-weight figures at all, the rider's own included: the check "
+        "removes any sentence with one, so never repeat their figures. Never call "
+        "any rate of loss safe or unsafe.",
+        f"If they asked for more training, say: \"{KEEP_VOLUME}\" The plan tools "
+        "refuse increases for 28 days. Then say what happens instead: no extra "
+        "training, they fuel every session, and weight goes to a registered sports "
+        "dietitian, not to you. Never say the plan stays as it is or that nothing "
+        "changes.",
+        "Explain RED-S once, in whole sentences: eating too little for the training "
+        "you do can lead to RED-S (Relative Energy Deficiency in Sport), which means "
+        "getting ill more often, stress fractures, dizziness, low libido and, for "
+        "women, missed or irregular periods, and slower riding, not faster.",
         "Refer to {gp} and a registered sports dietitian.{beat} No guesses about "
         "their motives, and one open question at most.",
     ),
@@ -4527,50 +6297,82 @@ _MUSTS: dict[str, tuple[str, ...]] = {
         "Open warmly: you've read what they wrote and you're glad they said it. "
         "Then ask directly and kindly whether they are having thoughts of ending "
         "their life or hurting themselves.",
-        "Give these numbers and only these: {crisis} {danger} Then {gp}, as the "
-        "follow-up.",
-        "Say, word for word: \"No one at Forma reads chats as they happen, so please "
-        "use these numbers now.\"",
-        "Encourage them to tell someone they trust today, and offer to pause the plan.",
+        "Match the help to what they said, and never send any of it to a GP "
+        "appointment today. Already taken something or hurt themselves, or an "
+        "aborted or interrupted attempt (they went somewhere or got something ready "
+        "to end their life and stopped, or someone stopped them): an emergency: tell "
+        "them to call {emergency} now or go to {hospital}, even if they feel fine, "
+        "and to get someone to be with them. A plan, a method, a place or anything "
+        "got ready: urgent now, not later: {crisis_now}, and {emergency} if they feel "
+        "they might act. Thoughts with no plan: the numbers below, {gp} in the next "
+        "few days whatever happens tonight, and someone they trust today.",
+        "Give these numbers once, and only these: {crisis} {danger}",
+        f"Means safety, every time, word for word: \"{MEANS_SAFETY}\" If what they've "
+        "thought of is on their rides or their route (a descent, a bridge, a cliff, a "
+        "road), tell them plainly not to go there at all, and to take a different "
+        "route. Never give conditional permission: no \"on your own\", \"alone\", "
+        "\"for now\" or \"until you've talked to someone\" about going there. Where "
+        "the method involves riding (not braking, riding into traffic, a descent, a "
+        "cliff or bridge they ride to), they don't ride at all until they've spoken to "
+        "a crisis team or a doctor, and someone is with them.",
+        f"Say, word for word: \"{NOT_MONITORED}\" Never \"not this chat\", and never "
+        "repeat the numbers or ask them a second time to use them.",
+        f"Say, word for word: \"{WELLBEING_LINE}\" Encourage them, once, to tell "
+        "someone they trust today. Offer to take the pressure off: no targets or hard "
+        "sessions, or a full pause if they'd rather. If the bike is what keeps them "
+        "going, keep the easy rides they enjoy, unless the method involves riding.",
         "Never mention Gareth, a flag, a review or anyone at Forma, never promise "
-        "contact, and don't claim feelings of your own. End by pointing them to "
-        "people, never with \"I'm here whenever you want to talk\" or a question "
-        "to you.",
+        "contact, and don't claim feelings of your own. End by inviting them to keep "
+        f"talking, word for word, once, as the very last words: \"{STILL_HERE}\"",
     ),
     "minor": (
         "This context confirms the account is now on hold (hold_all). Tell them "
         "kindly that Forma is for adults, 18 and over, and you can't coach them, with "
-        "no training content and no more questions. Suggest {club} or a qualified "
-        "youth coach, with a parent or guardian involved.",
+        "no training content and no more questions. One warm line about their goal, "
+        "such as \"Winning your first race is a great goal; a club coach can build "
+        "the hard sessions in a way that's right for your age.\" Suggest {club} or "
+        "a qualified youth coach, with a parent or guardian involved.",
         "Never mention a flag, a review, Gareth or anyone at Forma.",
     ),
     "heat": (
-        "Open with the heat action, before anything else. No hard outdoor efforts "
-        "between 11am and 3pm; at 35C or above, no outdoor riding then at any "
-        "intensity, and a shorter, easy ride. Move it early or late, or indoors only "
-        "if the room is cool with a fan, and expect lower power.",
-        "The heatstroke signs are already on the card above your reply. If you "
-        "mention them, use: \"If you or anyone with you becomes confused or slurred, "
-        "has hot dry skin, collapses or has a fit, that's heatstroke: call "
-        "{emergency} and cool them down while you wait.\" If they ride alone, they "
-        "tell someone the route and when they'll be back.",
-        "Drink to thirst, with electrolytes (salt) when sweating heavily; drinking "
-        "far beyond thirst is risky too. Ask whether anything lowers their heat "
-        "tolerance (beta blockers, water tablets, a recent illness, not being used to "
-        "the heat). Never play the risk down. Any disagreement with the plan data "
-        "comes last, in one line.",
+        "Open with the heat action, before anything else. At 30C or above, or under "
+        "a heat-health alert: no hard session, indoors or out, unless the room is "
+        "properly cooled (air conditioning: a fan in a hot room is not enough, and a "
+        "hot room with no airflow is worse than riding outside). Any ride is easy, "
+        "and before 9am or after 7pm, or it's a rest day. Never move a hard session "
+        "to the evening.",
+        "If the context shows today held at easy riding for the heat, the plan "
+        "already holds today's session: say so. Otherwise, if today's planned "
+        "session is hard, offer to make it easy with update_workout.",
+        "Before any advice on how to ride, ask once whether anything lowers their "
+        "heat tolerance (beta blockers, water tablets, a recent illness, not being "
+        "used to the heat).",
+        "Heatstroke happening now (confusion, slurred speech, collapse, a fit, hot "
+        "dry skin): open with calling {emergency} now. They may be confused, so "
+        "write to whoever is with them too: \"If you're with someone, show them this.\" "
+        "If they're alone, they ask someone nearby to stay and tell {emergency} "
+        "exactly where they are. Cool hard: shade, helmet off, kit loosened, cold "
+        "water on the skin and moving air. No drinks while confused, and no riding on.",
+        "The heatstroke signs are on the card above your reply. If you mention them, "
+        "use: \"If you or anyone with you becomes confused or slurred, has hot dry "
+        "skin, collapses or has a fit, that's heatstroke: call {emergency} and cool "
+        "them down while you wait.\" If they ride alone, they tell someone the route "
+        "and when they'll be back.",
+        f"Fluids, word for word: \"{HEAT_FLUIDS}\" Never play the risk down (never "
+        "\"a touch lower\"). Any disagreement with the plan data comes last, in one "
+        "line.",
     ),
     "layoff": (
         "Open with a plain answer if they asked for a test or hard work: no maximal "
-        "test and no hard intervals now. Their first {weeks} back are easy riding by "
-        "feel. Say \"you can start with easy riding by feel\", never that it's fine. "
-        "Any hard effort, when it comes, starts with a proper warm-up of 15 to 20 "
-        "minutes.",
-        "Ask why they stopped: illness, injury, surgery, a heart problem, concussion "
-        "or pregnancy means seeing {gp} first. After three months or more off, also "
-        "ask about heart, lung or metabolic conditions (such as diabetes), chest pain "
-        "or fainting on exertion, and family history of sudden death before 50; any "
-        "yes means {gp} first.",
+        f"test and no hard intervals now. Say why, word for word: \"{NO_COLD_TEST}\"",
+        f"Before saying they can ride, say once, word for word: \"{LAYOFF_SCREEN}\" "
+        "Never give the permission before that, and never ask the same list again. "
+        "These are reasons to see {gp}, never an emergency: never tie {emergency} to "
+        "why they stopped, their age, family history or a condition.",
+        "Their first {weeks} back are easy riding by feel, with ERG off, since their "
+        "FTP is from before the break. If they're over 35, they see {gp} before hard "
+        "training. Any hard effort, when it comes, starts with a proper warm-up of 15 "
+        "to 20 minutes.",
         "Safety net: stop and call {emergency} for chest pain, faintness or a racing "
         "heart. Believe them about the break: any question about the data comes "
         "last, in one line.",
@@ -4580,27 +6382,35 @@ _MUSTS: dict[str, tuple[str, ...]] = {
         "in the last 8 weeks), or they say they're new, or they ask you to say it "
         "will be fine: open with, word for word, \"I don't recommend it, and I can't "
         "tell you you'll be fine.\" Say why in one line, then the better option (a "
-        "shorter route, a later event).",
+        "shorter route, a later event), and offer to build a plan towards a realistic "
+        "later event.",
+        f"Before any go-anyway advice, say: \"{BIG_JUMP_SCREEN}\" These are reasons "
+        "to see {gp}, never an emergency: {emergency} is only for chest pain, "
+        "collapse or confusion on the day.",
         "Only after that, the go-anyway list, built on what they told you: pace it "
-        "low, eat from the start (about 60 g of carbohydrate an hour), drink to "
-        "thirst with some salt rather than forcing down plain water, ride with others "
-        "but keep a gap until used to groups, plan bail-out points, carry a phone, ID "
-        "and money, know where the broom wagon is, tell someone the route, descend "
-        "with care, and stop and call {emergency} for chest pain, dizziness or "
-        "confusion.",
-        "Believe them. Any question about the data comes last, in one line, and "
-        "don't read back their stored rides or events: the account might not be "
-        "theirs.",
+        "low; eat from the start (30 to 60 g of carbohydrate an hour, using foods "
+        "they've tried on training rides, and adjusted for diabetes or a sensitive "
+        "stomach); drink regularly with some salt; check the cut-off times; have the "
+        "bike checked, carry a spare tube and know how to fit it, and take lights; "
+        "ride with others but keep a gap until used to groups; plan bail-out points; "
+        "carry a phone, ID and money; know where the broom wagon is; tell someone the "
+        "route; descend with care; stop and get off the bike if they feel faint, "
+        "dizzy or unusually breathless, and call {emergency} for chest pain, collapse "
+        "or confusion.",
+        "Believe them. Any question about the data comes last, in one line. Don't "
+        "read back their stored rides or events, and never ask whether the account "
+        "is theirs.",
     ),
     "responsibility": (
-        "No legal opinion either way, and no sentence of your own about who is "
-        "responsible or liable: the check removes them. The terms are at "
-        "ridewithforma.com/terms, they don't take away any rights the law gives the "
-        "rider, and questions about them go to gareth@ridewithforma.com.",
+        f"Open with, word for word: \"{LIABILITY_LINE}\" Then no sentence of your own "
+        "about who is or isn't responsible or liable: the check removes any.",
+        "The terms are at ridewithforma.com/terms, they don't take away any rights "
+        "the law gives the rider, and questions about them go to "
+        "gareth@ridewithforma.com.",
         "Include, word for word: \"If you have a health condition, symptoms or take "
         "medicine, check with {gp} before training.\" Say Forma is AI and can be "
         "wrong, it isn't medical advice, they decide what they ride, and they stop "
-        "and get help if anything feels wrong.",
+        f"and get help if anything feels wrong. Then: \"{UNSAFE_REPORT}\"",
         "Don't encourage them to ride the plan in this reply.",
     ),
     "head_knock": (
@@ -4653,13 +6463,14 @@ _QUESTION_FACTS = {
         "A racing, pounding or irregular heartbeat at rest, at low effort or out of "
         "proportion to the effort means stop. Call {emergency} if it is still going or "
         "comes with chest pain, faintness or breathlessness; if it settles, get seen the "
-        "same day for an ECG (a heart tracing): {heart_today}."
+        "same day so a doctor can check their heart: {heart_today}."
     ),
     "fainting": (
         "Fainting or nearly fainting on or after a ride: stop, sit or lie down with legs "
         "raised, and don't ride or drive on. Losing consciousness during exercise, or "
         "fainting with chest pain, a racing heart or breathlessness, means call "
-        "{emergency}; otherwise get seen the same day for an ECG: {heart_today}."
+        "{emergency}; otherwise get seen the same day so a doctor can check their "
+        "heart: {heart_today}."
     ),
     "head_injury": (
         "After any blow to the head: stop riding, don't be alone for 24 hours and don't "
@@ -4669,6 +6480,14 @@ _QUESTION_FACTS = {
         "with vision or balance. No riding until symptom-free, then a gradual return, and "
         "no racing or group riding before day 21 (UK grassroots guidance after a suspected "
         "concussion). Replace the helmet."
+    ),
+    "gi_bleed": (
+        "Black, tarry or dark red poo, or vomiting blood or something like coffee grounds, "
+        "can mean bleeding in the stomach or gut; anti-inflammatory painkillers such as "
+        "ibuprofen, naproxen and aspirin make it more likely. Vomiting blood, or any of "
+        "these with feeling faint or dizzy, means call {emergency}; otherwise go to "
+        "{hospital} the same day. Iron tablets and bismuth can turn poo black too, but "
+        "tar-like poo still needs seeing that day. No riding until a doctor has checked."
     ),
     "fever": (
         "No riding or training with a fever, or with an illness below the neck such as a "
@@ -4681,7 +6500,8 @@ _QUESTION_FACTS = {
         "Heat exhaustion (heavy sweating, dizziness, a headache, feeling sick, cramps) means "
         "stop, get into the shade, cool down and drink. Heatstroke (confusion or slurred "
         "speech, hot dry skin, collapsing or a fit) means call {emergency} and cool them "
-        "down while waiting. In hot weather, no hard outdoor efforts between 11am and 3pm."
+        "down while waiting. At 30C or above, no hard sessions, indoors or out, unless the "
+        "room is properly cooled, and any ride is easy, before 9am or after 7pm."
     ),
     "injury": (
         "Don't ride through pain: keep any riding pain-free, and see a physiotherapist or "
@@ -4705,6 +6525,10 @@ _QUESTION_TOPIC_WORDS = (
                  r"\bconscious|\bcame (?:to|round)"),
     ("head_injury", r"\bhead\b|\bconcuss|\bhelmet|\bknocked (?:out|unconscious)|\btemple|"
                     r"\bskull|\bforehead"),
+    ("gi_bleed", r"\bstomach bleed|\bgut bleed|\bbleeding (?:in|from) (?:the|your|my) "
+                 r"(?:stomach|gut)|\bulcer|\bblack (?:poo|stools?)|\btarry|\bmelaena|\bmelena|"
+                 r"\bvomit\w* (?:up )?blood|\bthr[eo]w\w* up blood|\bcoffee[- ]grounds?|"
+                 r"\binternal bleeding"),
     ("fever", r"\bfever|\btemperature|\btemp\b|\bflu\b|\bcovid|\binfection|\bchills|"
               r"\bdiarrh|\bsickness|\bgastro|\bnoro|\bfood poisoning|\bburning up"),
     ("heat", r"\bheat|\boverheat|\bsun ?stroke|\bdegrees|\b\d+ ?[cf]\b|\bsweating"),
@@ -4747,38 +6571,135 @@ def question_musts(hit, country: str | None) -> list[str]:
 # A rider who may be under 18 gets no training content at all, so only these
 # kinds' must-dos still apply alongside "minor".
 _STILL_APPLY_FOR_A_MINOR = frozenset(
-    {"minor", "crisis", "chest_pain", "palpitations", "fainting", "head_injury"}
+    {"minor", "crisis", "chest_pain", "palpitations", "fainting", "head_injury", "gi_bleed",
+     "fracture", "dvt", "cauda_equina", "compartment"}
 )
-
-# Beat, introduced rather than pasted bare: a number with no context reads
-# as an accusation.
-_BEAT_LINE = (
-    "If food or weight is feeling hard to manage, Beat, the UK eating disorder "
-    "charity, can help: 0808 801 0677 in England; other UK numbers at "
-    "beateatingdisorders.org.uk."
-)
-
 
 def _fill(template: str, loc: dict, weeks: str | None = None) -> str:
     beat = (
         f' Include, word for word: "{_BEAT_LINE}"'
         if loc["label"] in ("the UK", "unknown") else ""
     )
-    return template.format(**loc, beat=beat, weeks=weeks or layoff_weeks(None))
+    physio = (loc.get("physio_route") or "").strip()
+    physio_say = f' Then, word for word: "{physio}"' if physio else ""
+    return template.format(
+        **loc, beat=beat, physio_say=physio_say, weeks=weeks or layoff_weeks(None)
+    )
+
+
+# The tier inside a red flag, said first for that kind: what this rider's
+# own words already decide.
+_CRISIS_TIER_MUSTS = {
+    "acted": (
+        "Their words say they have already acted, nearly did, or were preparing to "
+        "(taken something, hurt themselves, an aborted or interrupted attempt, going "
+        "to a place to do it, sitting there considering it, rehearsing it): treat it "
+        "as an attempt, the emergency. Say first, after asking how they are: \""
+        + CRISIS_ACTED_LINE + "\" Say it as a conclusion, never on a condition such "
+        "as \"if you feel you might act\": what they've told you is the reason. No GP "
+        "line, and no softer route after it or offered instead of it (never \"short of "
+        "that\" or \"otherwise\")."
+    ),
+    "plan": (
+        "Their words name a plan, a method, a place or something got ready: this is "
+        "urgent now, not a helpline alone and never a GP appointment. Say: \""
+        + CRISIS_PLAN_LINE + "\" If the method or the place is on their rides or "
+        "their route, tell them not to go there at all."
+    ),
+}
+# The method involves riding: no riding at all until they've spoken to a
+# crisis team or a doctor, and someone with them (round 3, L9 and L13).
+_CRISIS_RIDING_MUST = (
+    "The method they named involves riding, so means safety is no riding at all. Say, "
+    "word for word: \"" + RIDING_MEANS_LINE + "\" Until then offer no easy rides, no "
+    "indoor riding and no different route in its place."
+)
+# A fit or seizure after a blow to the head: one route, 999 now, and a return
+# to riding that follows the doctor who assesses the seizure, never the
+# usual steps after a head injury (round 3, L7). In place of the head
+# injury's own lines.
+_HEAD_SEIZURE_MUSTS = (
+    "If they asked about riding or a plan, the reply opens with \"No.\": no riding, "
+    "training or racing until a doctor has assessed the seizure and cleared them to ride.",
+    "A fit or seizure after a blow to the head is an emergency, and it is the one route: "
+    "call {emergency} now, even though it has stopped and they feel fine, and even if they "
+    "left {hospital} before being scanned. Never {hospital} today, never "
+    "{today_short}, and nothing softer after it. Ask nothing whose answer could move it "
+    "to a slower route. Ask them to show this to someone with them, or to get someone "
+    "to be with them now.",
+    "Include, word for word: \"Don't be alone for the next 24 hours, and don't "
+    "drive.\" Then: no driving at all until a doctor says they can{dvla}. No alcohol.",
+    "How and when they ride again follows the advice of the doctor who assesses the "
+    "seizure. Never describe the usual return after a head injury (24 hours free of "
+    "symptoms, easy riding, two weeks, day 21), and never say a check at {hospital} "
+    "clears them. Never say they have epilepsy or concussion. Replace the helmet, even "
+    "if it looks fine.",
+)
+_URGENT_INJURY_MUST = (
+    "This injury needs a doctor today, not a physio: tell them to get it seen today "
+    "({today}), or at {hospital} if they can't put any weight on it. The context "
+    "holds all their riding until a doctor has cleared them: say \"No riding at all, "
+    "not even an easy spin, until a doctor has checked it.\" Give no advice on how to "
+    "ride it."
+)
+_RESTRICTION_RED_FLAG_MUST = (
+    "Their own words show red flags of eating too little (periods stopped for three "
+    "months or more, always cold, an underweight height and weight with a fear of "
+    "food, or a long ride planned without food). The context holds their plan to "
+    "easy riding until a doctor has seen them: say so plainly, and never say the "
+    "plan stays as it is or that nothing changes. Tell them to book {gp} within the "
+    "next week or two (they'll want to run tests and rule out other causes), and a "
+    "registered sports dietitian. If they plan a long ride without food, tell them "
+    "plainly not to: riding for hours without eating can make them dizzy or faint on "
+    "the road. No ride over 90 minutes until they've been seen, and eat on every ride. "
+    "Bone or shin pain means stopping and seeing {gp}."
+)
 
 
 def musts_for(
-    kinds: set[str], country: str | None, matched: dict[str, str] | None = None
+    kinds: set[str],
+    country: str | None,
+    matched: dict[str, str] | None = None,
+    *,
+    message: str = "",
+    severity: dict[str, str] | None = None,
 ) -> list[str]:
-    """What the reply must do for these red flags, in the rider's numbers."""
+    """What the reply must do for these red flags, in the rider's numbers.
+    With the rider's message and each hit's severity, the tier their words
+    set comes first for that kind (a crisis act or plan, the red flags of
+    eating too little)."""
     loc = _local(country)
     if "minor" in kinds:
         kinds = kinds & _STILL_APPLY_FOR_A_MINOR
     weeks = layoff_weeks(layoff_days_from((matched or {}).get("layoff", "")))
+    severity = severity or {}
     out: list[str] = []
     for kind in _MUSTS:
-        if kind in kinds:
-            out.extend(_fill(line, loc, weeks) for line in _MUSTS[kind])
+        if kind not in kinds:
+            continue
+        if kind == "crisis" and message:
+            words = " ".join([message, (matched or {}).get("crisis", "")])
+            tier = crisis_tier(words)
+            if tier in _CRISIS_TIER_MUSTS:
+                out.append(_fill(_CRISIS_TIER_MUSTS[tier], loc, weeks))
+            if crisis_riding_method(words):
+                out.append(_fill(_CRISIS_RIDING_MUST, loc, weeks))
+        if kind == "head_injury" and message and _head_fit(_normalise(message)):
+            # A fit after the blow: its own lines, never the routine ones.
+            dvla = "; in the UK, DVLA rules may apply after a fit" if loc["label"] in (
+                "the UK", "unknown") else ""
+            out.extend(
+                _fill(line.replace("{dvla}", dvla), loc, weeks) for line in _HEAD_SEIZURE_MUSTS
+            )
+            continue
+        if kind == "restriction" and severity.get("restriction") == "urgent":
+            out.append(_fill(_RESTRICTION_RED_FLAG_MUST, loc, weeks))
+        if kind == "injury" and severity.get("injury") in ("urgent", "emergency"):
+            # The hold stops all riding until a doctor clears it: no physio
+            # within the week, no advice on how to ride it.
+            out.append(_fill(_URGENT_INJURY_MUST, loc, weeks))
+            continue
+        out.extend(_fill(line, loc, weeks) for line in _MUSTS[kind])
     return out
 
 
@@ -4828,7 +6749,10 @@ def _context_line(
             + f". Follow SAFETY LAW {LAW_RULE.get(hit.kind, 'rule 3')}."
         )
     lines.append(numbers_line(result.country))
-    musts = musts_for(result.kinds, result.country, {h.kind: h.matched for h in result.hits})
+    musts = musts_for(
+        result.kinds, result.country, {h.kind: h.matched for h in result.hits},
+        message=result.message, severity={h.kind: h.severity for h in result.hits},
+    )
     question = next((h for h in result.hits if h.kind == "safety_question"), None)
     if question is not None:
         musts.extend(question_musts(question, result.country))
@@ -4840,6 +6764,20 @@ def _context_line(
         if direct:
             musts.insert(0, "Say this first (after a plain \"No.\" if they asked to ride), "
                             "word for word: \"" + _fill(direct, _local(result.country)) + "\"")
+    if "fainting" in result.kinds:
+        direct = faint_direct_line(result.message)
+        if direct:
+            musts.insert(0, "Say this first (after a plain \"No.\" if they asked to ride), "
+                            "word for word: \"" + _fill(direct, _local(result.country)) + "\" "
+                            "Never make the call depend on how they feel now, and offer no "
+                            "slower route beside it: no NHS 111 and no \"today\".")
+    if "chest_pain" in result.kinds:
+        direct = chest_direct_line(result.message)
+        if direct:
+            musts.insert(0, "Say this first (after a plain \"No.\" if they asked to ride), "
+                            "word for word: \"" + _fill(direct, _local(result.country)) + "\" "
+                            "Never make the call depend on it still being there, and offer "
+                            "no slower route beside it.")
     if musts:
         lines.append("This reply must:")
         lines.extend(f"- {m}" for m in musts)
@@ -4948,6 +6886,10 @@ _ALWAYS_HERE_RX = re.compile(
     r"\bwhenever you (?:want|need|feel like you need) to talk\b|"
     r"\bi'm (?:always |still |right )?here\b|\bi'll (?:always )?be here\b"
 )
+# The one exception: the crisis ending the SAFETY LAW gives word for word
+# (STILL_HERE, rule 4), which leaves the door open without casting the coach
+# as the support. Its first sentence, as the reply check sees it.
+_STILL_HERE_SENTENCE = STILL_HERE.split(". ", 1)[0].lower().rstrip(".") + "."
 # In a restriction turn: no weights, W/kg, calorie figures or rates of loss.
 _BODY_NUMBERS_RX = re.compile(
     r"\bw/kg\b|\bwatts per kilo|\bpower[- ]to[- ]weight\b|\b\d+(?:\.\d+)?\s?(?:kg|kgs|"
@@ -5019,6 +6961,117 @@ _SEE_DOCTOR_RX = re.compile(
     r"(?: straight away| immediately| urgently| right away| now| today| first)?",
     re.I,
 )
+# A screening sentence: history, age, family, a condition, why they stopped,
+# or something to do before riding, training or an event. These go to a GP,
+# never the emergency number.
+_SCREENING_RX = re.compile(
+    r"\b(?:have had|has had|you've had|i've had|ever had|had any|history|family|died|"
+    r"stopped because|stopped riding|over 35|aged? \d|years? old|condition|diabetes|"
+    r"diabetic|pregnan\w*|concussion|surgery|operation|previous\w*|in the past|"
+    r"before (?:you |we |i )?(?:ride|riding|train|training|start|starting|build|building|"
+    r"race|racing|an? event|the event|any|hard|your first|harder|returning|coming back|"
+    r"getting back)|before an? \w+ (?:this|that) big|first session|clearance|cleared)\b",
+    re.I,
+)
+# A safety net said as it happens: "if you get", "while riding", "now".
+_SAFETY_NET_RX = re.compile(
+    r"\b(?:if|when|should|whenever)\b[^.!?\n]{0,60}\b(?:get|gets|feel|feels|notice|have|"
+    r"has|develop|start|starts|come|comes|happen\w*)\b|\b(?:while|during|on) (?:the |a |"
+    r"your )?(?:ride|riding|session|interval|effort|bike)\b|\bnow\b|\bagain\b|\bcomes back\b",
+    re.I,
+)
+# In a crisis reply: a GP "today" (seeing the GP today, not telling someone
+# today), or a GP only if their mood stays low.
+_GP_WORD_RX = re.compile(r"\b(?:gp|doctor)\b(?! out-of-hours| out of hours)", re.I)
+_GP_TODAY_BREAK_RX = re.compile(
+    r"\b(?:someone|friend|friends|family|partner|tell|next few days|this week|soon|"
+    r"samaritans|shout|111)\b",
+    re.I,
+)
+_MOOD_CONDITION_RX = re.compile(r"\bif your mood (?:stays|is still|remains|keeps|gets)\b", re.I)
+
+
+def _crisis_gp_misrouted(low: str) -> bool:
+    """A crisis sentence that sends them to a GP today, or to a GP only if
+    their mood stays low."""
+    if _MOOD_CONDITION_RX.search(low):
+        return True
+    for m in _GP_WORD_RX.finditer(low):
+        window = re.split(r"[.!?\n]", low[m.end():m.end() + 70], maxsplit=1)[0]
+        today = re.search(r"\btoday\b", window)
+        if today and not _GP_TODAY_BREAK_RX.search(window[:today.start()]):
+            return True
+    return False
+
+
+# Means safety with conditional permission to go back: "don't go back to
+# those cliffs on your own for now", "don't ride that way, and don't ride it
+# alone" (round 2, L9, L12, L13). In a crisis turn the qualifiers come out of
+# any sentence that keeps them off a place or a route, so it reads as a
+# plain no.
+_KEEP_OFF_RX = re.compile(
+    r"\b(?:don't|do not|never|please don't|stay off|keep off|avoid|keep away from|not to)\b"
+    r"[^.!?\n]{0,60}\b(?:go|going|ride|riding|cycle|cycling|descend\w*|back|that way|there|"
+    r"them|it|route|bridge|cliffs?|descents?|road|hill)\b",
+    re.I,
+)
+_ALONE_AFTER_VERB_RX = re.compile(
+    r"\b(?P<verb>ride|riding|go|going|cycle|cycling|descend\w*|back)\b(?P<obj>(?: [\w']+){0,3}?)"
+    r",? (?:alone|on your own|by yourself)\b",
+    re.I,
+)
+_ALONE_CLAUSE_RX = re.compile(
+    r",? (?:and|or) (?:please )?(?:don't |do not |never )?(?:ride|go|cycle)(?: [\w']+){0,3}? "
+    r"(?:alone|on your own|by yourself)\b",
+    re.I,
+)
+_FOR_NOW_RX = re.compile(r",? (?:just )?for (?:now|the moment|the time being)\b", re.I)
+_UNTIL_TALKED_RX = re.compile(
+    r",? until (?:you've|you have|you) (?:talked|spoken|talk|speak)\b[^.!?\n]*|"
+    r",? until (?:this|things|it|you) (?:has |have |feel |feels )?(?:eased|settled|passed|"
+    r"improved|better)\b[^.!?\n]*",
+    re.I,
+)
+
+
+_RIDE_AT_ALL_RX = re.compile(
+    r"\b(?:ride|riding|cycle|cycling)\b(?: [\w']+){0,3}? at all\b[^.!?\n]{0,20}\buntil "
+    r"(?:you've|you have|you) (?:spoken|talked|speak|talk) to (?:a |the |your )?(?:crisis|"
+    r"doctor|gp)",
+    re.I,
+)
+
+
+def _unconditional_means(segment: str) -> str:
+    """A crisis sentence that keeps them off a place or a route, with no
+    "on your own", "alone", "for now" or "until you've talked to someone"
+    left in it. Any other sentence comes back unchanged."""
+    if not _KEEP_OFF_RX.search(segment):
+        return segment
+    tail = segment[len(segment.rstrip()):]
+    body = segment.rstrip()
+    out = _ALONE_CLAUSE_RX.sub("", body)
+    out = _ALONE_AFTER_VERB_RX.sub(lambda m: m.group("verb") + m.group("obj"), out)
+    out = _FOR_NOW_RX.sub("", out)
+    if not _RIDE_AT_ALL_RX.search(out):
+        # "Don't ride at all until you've spoken to a crisis team or a
+        # doctor" is the law's own line (RIDING_MEANS_LINE), not permission.
+        out = _UNTIL_TALKED_RX.sub("", out)
+    out = re.sub(r"\s+([,.;!?])", r"\1", out)
+    out = re.sub(r",\s*([.!?])$", r"\1", out)
+    return out + tail
+
+
+# "Your plan stays exactly as it is", "nothing changes in the plan".
+_PLAN_UNCHANGED_RX = re.compile(
+    r"\b(?:plan|training|schedule)\b[^.!?\n]{0,25}\b(?:stays?|remains?|is staying|is kept)\b"
+    r"[^.!?\n]{0,15}\b(?:as it is|the same|unchanged|as planned)\b|"
+    r"\b(?:plan|training|schedule)\b[^.!?\n]{0,25}\b(?:is unchanged|isn't changing|is not "
+    r"changing|won't change|doesn't change|will not change)\b|"
+    r"\bnothing (?:changes|is changing|will change) (?:in|to|about|with) (?:the|your) "
+    r"(?:plan|training)\b|\bkeep(?:ing)? (?:the|your) plan (?:as it is|the same|unchanged)\b",
+    re.I,
+)
 _PLAN_TOOLS = frozenset({"update_workout", "swap_workout_date", "add_workout", "skip_workout"})
 _PLAN_DONE = ("Updated", "Swapped", "Added", "Skipped")
 
@@ -5061,6 +7114,8 @@ _HEAD_HOSPITAL_RX = re.compile(
 # to the head, most serious first. When the rider says one, the reply tells
 # them so directly rather than listing conditions for them to match.
 _HEAD_SIGNS: tuple[tuple[str, re.Pattern], ...] = (
+    # A fit or seizure: the emergency number now, never "A&E today".
+    ("fit", _FIT_RX),
     ("knocked_out", re.compile(
         r"\bknocked (?:myself |me )?(?:out|unconscious)\b(?! of\b)|\bout cold\b|"
         r"\bblacked out\b|\bpassed out\b|\blost consciousness\b|\bunconscious\b|"
@@ -5179,6 +7234,10 @@ def head_direct_line(message: str) -> str | None:
         ger, perf = "the crash", "crashed"
     else:
         ger, perf = "a blow to the head", "had a blow to the head"
+    if sign == "fit":
+        # A fit after a head injury is the emergency rung: never "today"
+        # (round 2, L7).
+        return f"You had a fit after {ger}, so call {{emergency}} now."
     if sign == "knocked_out":
         opening = next(
             (line for key, line in _OUT_WORDS if key in words), "You were knocked out"
@@ -5187,6 +7246,117 @@ def head_direct_line(message: str) -> str | None:
     else:
         lead = _HEAD_LINE[sign].format(ger=ger, perf=perf)
     return lead + ", so go to {hospital} today, with someone else driving."
+
+
+def head_fit_said(message: str) -> bool:
+    """Whether the rider's own words give a fit or seizure after the blow."""
+    found = head_sign(message)
+    return found is not None and found[0] == "fit"
+
+
+# Chest pain whose own words already give an emergency sign: the reply says
+# so as a conclusion, "call 999 now, even if it has settled", never as a
+# condition on it still being there (round 2, L1; NICE CG95).
+_CHEST_DIRECT_SIGNS: tuple[tuple[re.Pattern, str], ...] = (
+    (_CHEST_SPREAD_RX, "spread into your {site}"),
+    (re.compile(r"\b(?:clammy|cold sweats?|cold and sweaty|grey and sweaty|gray and sweaty|"
+                r"sweaty and (?:sick|faint|dizzy|grey|gray|pale))\b"),
+     "came with clamminess"),
+    (re.compile(r"\b(?:felt|feel|feeling|went) (?:really |very |a bit |all )?(?:faint|"
+                r"light-?headed|woozy)\b"), "came with feeling faint"),
+    (re.compile(r"\b(?:felt|feel|feeling) (?:really |very |a bit )?sick\b|\bnause\w*"),
+     "came with feeling sick"),
+    # The card's other two signs (live round 3, tier check): it lasted more
+    # than a few minutes (five or more, said of the pain itself, never "for
+    # 20 minutes into the ride"), or came with breathlessness ("out of
+    # breath" on an effort is not one).
+    (re.compile(r"\b(?:lasted|lasting|went on|carried on|kept going|didn't (?:go|ease|settle)"
+                r"(?: off| away)? for|took)\b[^.!?\n]{0,15}?\b(?:(?:[5-9]|[1-9]\d+) ?(?:mins?|"
+                r"minutes)\b|(?:five|six|seven|eight|nine|ten|fifteen|twenty|thirty|forty|"
+                r"forty-five|sixty) minutes\b|half an hour\b|an hour\b|hours\b|ages\b|"
+                r"more than a few minutes\b|several minutes\b|a good few minutes\b)"),
+     "lasted more than a few minutes"),
+    (re.compile(r"\bbreathless\w*|\bshort(?:ness)? of breath\b|\b(?:couldn't|could not|"
+                r"can't|cannot|struggl\w* to|hard to|difficult to) breathe\b"),
+     "came with breathlessness"),
+)
+
+
+def chest_direct_line(message: str) -> str | None:
+    """The line that tells a rider whose chest pain (or "indigestion" on
+    effort) already came with an emergency sign to call now: "Because it
+    spread into your neck and came with clamminess, call {emergency} now,
+    even if it has settled." None without such a sign."""
+    text = _normalise(message)
+    parts: list[str] = []
+    for rx, words in _CHEST_DIRECT_SIGNS:
+        for m in rx.finditer(text):
+            if _DENIED_BEFORE_RX.search(text[max(0, m.start() - 30):m.start()]):
+                continue
+            site = _group(m, "site")
+            part = words.format(site=site or "arm")
+            if part not in parts:
+                parts.append(part)
+            break
+    if not parts:
+        return None
+    joined = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+    return f"Because it {joined}, call {{emergency}} now, even if it has settled."
+
+
+# A blackout in the rider's own words: they lost consciousness, which during
+# or after exercise is the emergency number now, even if they feel fine now
+# (SAFETY LAW 2b; round 3, L4 and L5). "Nearly blacked out" is not one.
+_BLACKOUT_RX = re.compile(
+    r"\b(?:passed out|blacked out|lost consciousness|out cold|(?:was|went) unconscious|"
+    r"(?<!feel )(?<!felt )(?<!feeling )(?<!a bit )fainted|(?<=to )faint|(?<=i )faint|"
+    r"(?:came|come) (?:to|round)\b(?= *(?:$|[.,!?;]|on|in|with|and|"
+    r"lying|i\b|after))|woke up on the (?:floor|ground|road|verge|grass|deck)|next thing i "
+    r"knew|slumped (?:over|on|against|onto|across)|(?:don't|do not|can't|cannot|couldn't) "
+    r"(?:\w+ )?remember (?:the next|what happened|anything|the last|a thing|it)|and went"
+    r"(?= *(?:$|[.!?;])))"
+)
+_NEARLY_RX = re.compile(
+    r"(?:\b(?:nearly|almost|close to|about to|going to|verge of|felt like|feel like|"
+    r"thought i)\b)(?:\s+[\w']+){0,3}\s*$"
+)
+BLACKOUT_LINE = (
+    "You lost consciousness, so call {emergency} now, even if you feel fine now. A "
+    "blackout during or after exercise means a doctor needs to check your heart "
+    "straight away."
+)
+
+
+def blackout_said(message: str) -> bool:
+    """Whether the rider's own words say they lost consciousness (passed
+    out, blacked out, fainted, a gap they can't remember, found slumped),
+    rather than nearly did, denied it, or said it of someone else."""
+    text = _normalise(message)
+    for m in _BLACKOUT_RX.finditer(text):
+        lo, hi = _clause(text, m.start(), m.end())
+        before = text[max(lo, m.start() - 40):m.start()]
+        if _SIGN_DENIED.search(before) or _someone_else(before) or _NEARLY_RX.search(before):
+            continue
+        return True
+    return False
+
+
+def faint_direct_line(message: str) -> str | None:
+    """The line that tells a rider whose own words give a blackout to call
+    the emergency number now, as a conclusion: never "if it hasn't settled",
+    never NHS 111 or "today" (round 3, L4). None without one. {emergency}
+    is left for the rider's country."""
+    return BLACKOUT_LINE if blackout_said(message) else None
+
+
+# The reply says it as a conclusion: "call 999 now" in a sentence that sets
+# no condition on it ("even if it has settled" is no condition), and is not
+# a list of signs to watch for ("call 999 now for a fit, ...").
+_CALL_NOW = (
+    r"(?:^|[.!?\n]\s*)(?![^.!?\n]*(?:\b(?<!even )if\b|\bfor (?:a|an|any)\b|\bshould\b|"
+    r"\bin case\b|\bwhenever\b))[^.!?\n]*\b(?:call|ring|dial)\b[^.!?\n]{0,30}"
+    r"(?:{emergency_rx})[^.!?\n]*\b(?:now|straight away|right away|immediately)\b"
+)
 
 
 # The reply says it as a conclusion, not a condition: "go to A&E today" in a
@@ -5219,12 +7389,14 @@ _NO_RIDE = (
 # Kinds that rule out riding altogether: next to one of these, advice on how
 # to ride (pain-free spins, heat tips, a go-anyway list) contradicts the ban.
 _NO_RIDING_KINDS = frozenset(
-    {"chest_pain", "palpitations", "fainting", "head_injury", "fever", "minor"}
+    {"chest_pain", "palpitations", "fainting", "head_injury", "gi_bleed", "fever", "minor",
+     "fracture", "dvt", "cauda_equina", "compartment"}
 )
 # The order a reply covers several red flags in: the most urgent first.
 _KIND_ORDER = (
-    "chest_pain", "palpitations", "fainting", "head_injury", "crisis", "minor",
-    "fever", "pregnancy", "medication", "condition", "injury", "restriction",
+    "chest_pain", "palpitations", "fainting", "head_injury", "gi_bleed", "cauda_equina",
+    "compartment", "dvt", "fracture", "crisis", "minor", "fever", "ectopic", "pregnancy",
+    "medication", "condition", "injury", "restriction",
     "heat", "layoff", "big_jump", "responsibility", "head_knock", "distress_check",
     "safety_question",
 )
@@ -5251,8 +7423,13 @@ class _Turn:
     @property
     def no_riding_advice(self) -> bool:
         """Advice on how to ride is left out: next to a red flag that rules
-        riding out it contradicts the ban, and in a crisis it is noise."""
-        return bool(self.kinds & _NO_RIDING_KINDS) or "crisis" in self.kinds
+        riding out it contradicts the ban (heatstroke included), and in a
+        crisis it is noise."""
+        return (
+            bool(self.kinds & _NO_RIDING_KINDS)
+            or "crisis" in self.kinds
+            or ("heat" in self.kinds and self.severity.get("heat") == "emergency")
+        )
 
 
 def _turn(
@@ -5283,18 +7460,20 @@ def _heat_celsius(matched: str) -> float | None:
     return value
 
 
-def _hot_enough_for_no_midday(turn: _Turn) -> bool:
-    celsius = _heat_celsius(turn.matched.get("heat", ""))
-    return celsius is None or celsius >= 35
-
-
 def _pregnant(turn: _Turn) -> bool:
     """Pregnant now, rather than after a birth: "pregnant", "second
     trimester", "I'm expecting", "I'm the one carrying"."""
     return bool(re.search(
-        r"pregnan|trimester|\bexpecting\b|\bcarrying\b|(?:weeks?|wks?|months?)[- ](?:along|gone)",
+        r"pregnan|trimester|\bexpecting\b|\bcarrying\b|\bpositive\b|"
+        r"(?:weeks?|wks?|months?)[- ](?:along|gone)",
         turn.matched.get("pregnancy", ""),
     ))
+
+
+def _urgent_injury(turn: _Turn) -> bool:
+    """An injury read as needing a doctor today (a hot swollen joint, unable
+    to bear weight): all riding is held, so no physio or riding lines."""
+    return turn.severity.get("injury") in ("urgent", "emergency")
 
 
 def _distance_only(turn: _Turn) -> bool:
@@ -5319,15 +7498,24 @@ class _Need:
     lift: bool = False
     # Builds the line from what the rider said, in place of `line`.
     make: Callable[[_Turn], str] | None = None
+    # A route for today: never added once the reply already says to call
+    # the emergency number now, as a conclusion (round 2, L7 and L22: "A&E
+    # today" after "999 now").
+    today: bool = False
 
 
+_HEAD_NO_RIDE = (
+    "Don't ride, train or race until a doctor has checked you and you're free of symptoms."
+)
 _GO_ANYWAY = (
-    "If you go anyway: pace it low, eat from the start (about 60 g of carbohydrate "
-    "an hour), drink to thirst with some salt rather than forcing down plain water, "
-    "ride with others but keep a gap until you're used to groups, plan bail-out "
-    "points, carry your phone, ID and money, know where the broom wagon is, tell "
-    "someone the route, descend with care, and stop and call {emergency} for chest "
-    "pain, dizziness or confusion."
+    "If you go anyway: pace it low, eat from the start (30 to 60 g of carbohydrate "
+    "an hour, from foods you've tried on training rides), drink regularly with some "
+    "salt rather than forcing down plain water, ride with others but keep a gap "
+    "until you're used to groups, plan bail-out points, carry your phone, ID and "
+    "money, know where the broom wagon is, tell someone the route, descend with "
+    "care, stop and get off the bike if you feel faint, dizzy or unusually "
+    "breathless, and call {emergency} for any emergency, including chest pain, "
+    "collapse, confusion, a bad crash or a head injury."
 )
 
 # Per red flag, in the order a reply needs them: the direct answer first,
@@ -5336,22 +7524,45 @@ _GO_ANYWAY = (
 # them (fallback_reply).
 _REQUIRED: dict[str, tuple[_Need, ...]] = {
     "chest_pain": (
+        # The rider's own words already give an emergency sign (it spread to
+        # the neck, it came with clamminess): call now, as a conclusion, and
+        # no slower route beside it.
+        _Need(_CALL_NOW, "",
+              when=lambda t: chest_direct_line(t.message) is not None,
+              make=lambda t: chest_direct_line(t.message) or ""),
         _Need(_NO_RIDE, "Don't ride, not even an easy spin, until a doctor has checked you."),
         _Need("{heart_rx}", "If it has settled, you still need to be seen today: "
-                            "{heart_today}. Don't drive yourself."),
+                            "{heart_today}. Don't drive yourself.",
+              when=lambda t: chest_direct_line(t.message) is None, today=True),
         _Need(_NET, "If it's happening now or comes back at any point, call {emergency} now."),
+    ),
+    # Skipped or extra beats at rest with nothing else: their GP within
+    # days, never 999 or A&E for that alone, and the emergency rung named
+    # for what would change it.
+    "ectopic": (
+        _Need(r"\b(?:GP|doctor)\b", "Please see {gp} in the next few days, before any race, "
+                                    "so your heart can be checked."),
+        _Need("{emergency_rx}", "Call {emergency} now if it comes with chest pain, "
+                                "breathlessness, dizziness or fainting, or your heart races "
+                                "and doesn't settle."),
     ),
     "palpitations": (
         _Need(_NO_RIDE, "Don't ride, not even an easy spin, until a doctor has checked you."),
         _Need(r"\bECG\b|heart tracing|{heart_rx}",
-              "If it has settled, you still need to be seen today for an ECG, a heart "
-              "tracing: {heart_today}."),
+              "If it has settled, you still need to be seen today so a doctor can "
+              "check your heart: {heart_today}.", today=True),
         _Need(_NET, "If it's happening now or comes back at any point, call {emergency} now."),
     ),
     "fainting": (
+        # The rider's own words give a blackout: the emergency number now, as
+        # a conclusion, and no slower route beside it (round 3, L4).
+        _Need(_CALL_NOW, "",
+              when=lambda t: blackout_said(t.message),
+              make=lambda t: faint_direct_line(t.message) or ""),
         _Need(_NO_RIDE, "Don't ride again until a doctor has checked your heart."),
         _Need(r"\bECG\b|heart tracing|{heart_rx}",
-              "Get seen today for an ECG, a heart tracing: {heart_today}."),
+              "Get seen today so a doctor can check your heart: {heart_today}.",
+              today=True),
         _Need("{emergency_rx}", "Call {emergency} now if you black out, or get chest pain, "
                                 "a racing or irregular heartbeat or breathlessness."),
     ),
@@ -5359,21 +7570,31 @@ _REQUIRED: dict[str, tuple[_Need, ...]] = {
         # The rider said they have a sign that means hospital today: say so,
         # as a conclusion, before anything else.
         _Need(_DIRECT_HOSPITAL, "",
-              when=lambda t: head_direct_line(t.message) is not None,
+              when=lambda t: head_direct_line(t.message) is not None
+              and not head_fit_said(t.message),
               make=lambda t: head_direct_line(t.message) or ""),
-        _Need(_NO_RIDE, "Don't ride, train or race until a doctor has checked you and "
-                        "you're free of symptoms."),
+        # A fit after the blow: the emergency number now, as a conclusion.
+        _Need(_CALL_NOW, "",
+              when=lambda t: head_fit_said(t.message),
+              make=lambda t: head_direct_line(t.message) or ""),
+        _Need(_NO_RIDE, _HEAD_NO_RIDE,
+              # After a fit, the doctor who assesses the seizure decides.
+              make=lambda t: SEIZURE_NO_RIDE_LINE if head_fit_said(t.message)
+              else _HEAD_NO_RIDE),
         _Need("{hospital_rx}",
               "A headache that hasn't gone away, being sick, a gap in your memory or "
               "having been knocked out means {hospital} today, with someone else "
               "driving.",
-              when=lambda t: t.says(_HEAD_HOSPITAL_RX)),
+              when=lambda t: t.says(_HEAD_HOSPITAL_RX) and not head_fit_said(t.message),
+              today=True),
         _Need(r"(?=[\s\S]*slurred)(?=[\s\S]*(?:vision|balance))"
               r"(?=[\s\S]*(?:gets|getting) worse)(?=[\s\S]*(?:{emergency_rx}))",
               "Call {emergency} now for a fit, drowsiness or being hard to wake, "
               "confusion, weakness or numbness, slurred speech, trouble with vision or "
               "balance, a headache that gets worse, repeated vomiting, or clear fluid "
-              "from the nose or ears."),
+              "from the nose or ears.",
+              # After a fit they're already told to call now (round 3, L7).
+              when=lambda t: not head_fit_said(t.message)),
         _Need(r"(?=[\s\S]*(?:alone[^.]{0,40}24 hours|24 hours[^.]{0,40}alone))"
               r"(?=[\s\S]*\b(?:don't|do not|not to) drive\b)",
               "Don't be alone for the next 24 hours, and don't drive."),
@@ -5382,6 +7603,14 @@ _REQUIRED: dict[str, tuple[_Need, ...]] = {
               r"new helmet|helmet[^.!?\n]{0,40}replace",
               "Replace the helmet before you ride again, even if it looks fine.",
               when=lambda t: t.says(r"\bhelmet\b"), card=True),
+    ),
+    "gi_bleed": (
+        _Need(_NO_RIDE, "Don't ride or train until a doctor has checked you."),
+        _Need("{emergency_rx}", "Call {emergency} now if you vomit blood or anything like "
+                                "coffee grounds, or you feel faint or dizzy."),
+        _Need("{hospital_rx}", "Even if you feel well, go to {hospital} today, with someone "
+                               "else driving.", today=True),
+        _Need(r"ibuprofen|naproxen|anti-?inflammator|painkiller", GI_PAINKILLERS),
     ),
     "fever": (
         _Need(r"\b(?:don't|do not|no|not) (?:train|training|ride|riding)\b|\brest\b",
@@ -5402,21 +7631,62 @@ _REQUIRED: dict[str, tuple[_Need, ...]] = {
               "again, stop and call {emergency}. If you're breathless out of proportion "
               "to the effort, stop and see {gp} before riding again."),
     ),
+    "fracture": (
+        _Need(_NO_RIDE, "Don't ride at all, not even on the turbo, until a doctor has "
+                        "checked it."),
+        _Need(r"{hospital_rx}|urgent treatment|urgent care|injury unit|x-?ray",
+              "Go to {xray} today, with someone else driving, so it can be X-rayed.",
+              card=True),
+    ),
+    "dvt": (
+        _Need(_NO_RIDE, "Don't ride, and don't massage it, until a doctor has checked it."),
+        _Need(r"{hospital_rx}|\b111\b|\btoday\b", "Get seen today at {hospital}.", card=True),
+        # The emergency number in the reply itself when the clot may have
+        # reached the lungs; otherwise the card carries it.
+        _Need("{emergency_rx}", "Call {emergency} now if you get chest pain, sudden "
+                                "breathlessness or cough up blood.",
+              when=lambda t: t.severity.get("dvt") == "emergency"),
+    ),
+    "cauda_equina": (
+        _Need("{emergency_rx}", "With any change in your bladder or bowel control, call "
+                                "{emergency} now or go straight to {hospital}.",
+              when=lambda t: t.severity.get("cauda_equina") == "emergency"),
+        _Need("{hospital_rx}", "Go to {hospital} now, with someone else driving.",
+              card=True, when=lambda t: t.severity.get("cauda_equina") != "emergency"),
+        _Need(_NO_RIDE, "Don't ride until a doctor has seen you."),
+    ),
+    "compartment": (
+        _Need(r"{hospital_rx}|{emergency_rx}",
+              "Go to {hospital} now, with someone else driving, or call {emergency} if you "
+              "can't get there quickly."),
+        _Need(_NO_RIDE, "Don't ride until a doctor has checked it."),
+    ),
     "injury": (
+        # An injury that needs a doctor today holds all riding: a doctor, not
+        # a physio, and nothing on how to ride it.
+        _Need(r"{hospital_rx}|\b111\b|\btoday\b",
+              "This needs a doctor today, not a physio: get it seen today "
+              "({today_short}), or go to {hospital} if you can't put any weight on it. "
+              "No riding at all until a doctor has checked it.",
+              when=lambda t: _urgent_injury(t)),
         _Need(r"ride through|riding through|push through|don't do (?:the|it|that)|skip",
               "Don't ride through that pain, and skip any hard or climbing sessions "
-              "until it's been looked at."),
+              "until it's been looked at.",
+              when=lambda t: not _urgent_injury(t)),
         _Need(r"physio|sports (?:medicine )?doctor",
-              "Book a physio or sports medicine doctor to look at it soon, and tell them "
-              "about any recent change to your bike, saddle or cleats."),
-        _Need(r"pain[- ]free",
-              "If you ride, keep it completely pain-free, flat, light gear, high cadence, "
-              "and stop at the first twinge. Until a physio has seen it, that's the "
-              "limit.", ride=True),
+              "Book a physio or sports medicine doctor to look at it within the next "
+              "week, and tell them about any recent change to your bike, saddle or "
+              "cleats.",
+              when=lambda t: not _urgent_injury(t)),
+        # The one limit until a physio has seen it (SAFETY LAW 2e), word for
+        # word: no self-management advice on how to ride it.
+        _Need(r"pain[- ]free|brings? (?:the|your|it|that) pain on|rest it from",
+              INJURY_LIMIT, ride=True, when=lambda t: not _urgent_injury(t)),
         _Need(r"can't (?:put|bear) (?:any )?weight|numb|tingl",
               "Get it seen today ({today_short}) if it turns hot, swollen or red with a "
               "fever, you can't put weight on it, or you get numbness or tingling. If it "
-              "locks, gives way or swells, get it seen within a day or two."),
+              "locks, gives way or swells, get it seen within a day or two.",
+              when=lambda t: not _urgent_injury(t)),
     ),
     "pregnancy": (
         _Need(r"talk test|full sentences|hold a conversation",
@@ -5486,17 +7756,46 @@ _REQUIRED: dict[str, tuple[_Need, ...]] = {
               "for the riding you want to do."),
         _Need(r"0808 801 0677", _BEAT_LINE,
               when=lambda t: t.loc["label"] in ("the UK", "unknown")),
+        # A long ride planned without food: the danger on the road, plainly
+        # (round 2, L16).
+        _Need(r"without (?:eating|food|fuel)|on no food|empty stomach|dizzy|faint",
+              "Please don't ride for hours without eating: it can make you dizzy or faint "
+              "on the road. Until you've seen {gp}, keep rides under 90 minutes and easy, "
+              "and eat on every one.",
+              when=lambda t: t.severity.get("restriction") == "urgent"
+              and bool(_UNFUELLED_RX.search(t.text))),
     ),
     "crisis": (
         _Need(r"thoughts of (?:ending|hurting|harming|suicide|killing)|ending your life|"
               r"suicid|kill yourself",
               "Are you having thoughts of ending your life or hurting yourself? If you "
               "are, please don't wait."),
-        _Need("{crisis_rx}", "{crisis} {danger}"),
-        _Need(r"reads chats|as they happen|monitored",
-              "No one at Forma reads chats as they happen, so please use these numbers now."),
-        _Need(r"\bGP\b|\bdoctor\b", "Talk to {gp} too, if your mood stays low."),
-        _Need(r"someone you trust", "Tell someone you trust how you're feeling today."),
+        # The help matches what they said (SAFETY LAW rule 4), and none of it
+        # is ever a GP appointment today. An act or an attempt: the
+        # emergency, first.
+        _Need(_CRISIS_ACTED_CHECK, CRISIS_ACTED_LINE,
+              when=lambda t: crisis_tier(t.text) == "acted"),
+        # A plan, a method, a place or something got ready: crisis care now.
+        _Need(_CRISIS_PLAN_CHECK, CRISIS_PLAN_LINE,
+              when=lambda t: crisis_tier(t.text) == "plan"),
+        _Need("{crisis_rx}", "{crisis}"),
+        # Anyone who has already acted, or may: the emergency number now,
+        # even if they feel fine. The crisis card above the reply says it,
+        # and the tier lines above say it for an act or a plan.
+        _Need(_DANGER_CHECK, "{danger}", card=True,
+              when=lambda t: crisis_tier(t.text) == "thoughts"),
+        _Need(r"out of reach|give them to someone", MEANS_SAFETY),
+        _Need(r"reads chats|as they happen|monitored", NOT_MONITORED),
+        # Thoughts with no plan: their GP within days, whatever happens.
+        _Need(_GP_SOON_CHECK, GP_SOON_LINE,
+              when=lambda t: crisis_tier(t.text) == "thoughts"),
+        # The method involves riding: no riding at all until they've spoken
+        # to a crisis team or a doctor, with someone there (round 3, L9, L13).
+        _Need(RIDING_MEANS_CHECK, RIDING_MEANS_LINE, when=lambda t: crisis_riding_method(t.text)),
+        # Telling a person, not the means-safety line ("give them to someone
+        # you trust"), which names the same words for a different job: a
+        # crisis reply still ends with people.
+        _Need(_TELL_SOMEONE_RX, "Tell someone you trust how you're feeling today."),
     ),
     "minor": (
         _Need(r"for adults|18 and over|over 18|aged 18",
@@ -5505,15 +7804,16 @@ _REQUIRED: dict[str, tuple[_Need, ...]] = {
               "with a parent or guardian involved."),
     ),
     "heat": (
-        _Need(r"\bearly\b|evening|\bbefore \d|\bafter \d|indoors|inside|move it",
-              "Don't ride outdoors between 11am and 3pm in heat like this. Go early in the "
-              "morning or in the evening, keep it shorter and easy, or ride indoors with a "
-              "fan in a cool room, and expect lower power.",
-              when=_hot_enough_for_no_midday, ride=True),
-        _Need(r"\bearly\b|evening|\bbefore \d|\bafter \d|indoors|inside|move it",
-              "No hard efforts outdoors between 11am and 3pm: do it early in the morning "
-              "or in the evening, or indoors with a fan, and expect lower power.",
-              when=lambda t: not _hot_enough_for_no_midday(t), ride=True),
+        _Need("{emergency_rx}", "This sounds like heatstroke: call {emergency} now, get "
+                                "into the shade and cool down with cold water and moving "
+                                "air while you wait.",
+              when=lambda t: t.severity.get("heat") == "emergency"),
+        _Need(r"\bbefore 9|\bafter 7|rest day|properly cooled|air[- ]?con",
+              "No hard session in heat like this, indoors or out, unless the room is "
+              "properly cooled: a fan in a hot room isn't enough. If you ride, keep it easy "
+              "and go before 9am or after 7pm, or make it a rest day, and expect lower "
+              "power.",
+              ride=True),
         _Need(r"heat ?stroke",
               "If you or anyone with you becomes confused or slurred, has hot dry skin, "
               "collapses or has a fit, that's heatstroke: call {emergency} and cool them "
@@ -5521,9 +7821,8 @@ _REQUIRED: dict[str, tuple[_Need, ...]] = {
         _Need(r"tell someone|your route",
               "If you ride alone, tell someone your route and when you'll be back: "
               "heatstroke can stop you calling for help.", ride=True),
-        _Need(r"electrolyte|drink to thirst|\bsalt\b",
-              "Drink to thirst, with electrolytes when you're sweating heavily, wear sun "
-              "cream, and pick a route with shade and places to refill.", ride=True),
+        _Need(r"electrolyte|well hydrated|\bsalt\b",
+              HEAT_FLUIDS + " Wear sun cream, and pick a route with shade.", ride=True),
     ),
     "layoff": (
         _Need(r"warm[- ]?up",
@@ -5535,7 +7834,9 @@ _REQUIRED: dict[str, tuple[_Need, ...]] = {
         _Need(r"why (?:did )?you stop|what kept you|why you stopped|what stopped you|"
               r"stopped because of illness",
               "What kept you off the bike? If it was illness, injury, surgery, a heart "
-              "problem, concussion or pregnancy, see {gp} before you start.", lift=True),
+              "problem, concussion or pregnancy, see {gp} before you train hard, and if "
+              "you've had chest pain or fainting during exercise, see {gp} before you ride "
+              "at all.", lift=True),
         _Need("{emergency_rx}",
               "When you ride, stop and call {emergency} for chest pain, faintness or a "
               "racing heart."),
@@ -5591,7 +7892,7 @@ _REQUIRED: dict[str, tuple[_Need, ...]] = {
 
 # The topics of a general question whose answer must name the emergency number.
 _EMERGENCY_TOPICS = frozenset(
-    {"chest_pain", "palpitations", "fainting", "head_injury", "fever", "heat"}
+    {"chest_pain", "palpitations", "fainting", "head_injury", "gi_bleed", "fever", "heat"}
 )
 
 
@@ -5640,6 +7941,10 @@ def _required_lines(turn: _Turn, said: str, shown: str = "", lift: str = "") -> 
                 continue
             if need.when is not None and not need.when(turn):
                 continue
+            if need.today and re.search(
+                _check_rx(_CALL_NOW, turn.loc), said + "\n" + "\n".join(lines), re.I
+            ):
+                continue
             covered = said
             if need.card:
                 covered += "\n" + shown
@@ -5658,7 +7963,10 @@ def _required_lines(turn: _Turn, said: str, shown: str = "", lift: str = "") -> 
 
 # The kinds whose ban is total: a rider who asks whether to ride or carry on
 # hears "No." first.
-_PLAIN_NO_KINDS = frozenset({"chest_pain", "palpitations", "fainting", "head_injury", "fever"})
+_PLAIN_NO_KINDS = frozenset(
+    {"chest_pain", "palpitations", "fainting", "head_injury", "gi_bleed", "fever",
+     "fracture", "dvt", "cauda_equina", "compartment"}
+)
 
 # The crisis reply opens by showing the words were read, in terms of what
 # the rider said.
@@ -5684,12 +7992,35 @@ def _lead(kind: str, turn: _Turn) -> str | None:
             "Stop riding now. Lie down with your legs raised, don't stay alone, and "
             "don't drive."
         )
-        if turn.severity.get("fainting") == "emergency":
+        if blackout_said(turn.message):
+            # Their own words give the blackout: the conclusion first, once
+            # (the fainting lines carry the same words, round 3, L4).
+            lead = BLACKOUT_LINE.format(**turn.loc) + " " + lead
+        elif turn.severity.get("fainting") == "emergency":
             lead = (
                 f"Losing consciousness during exercise is an emergency: call "
                 f"{turn.loc['emergency']} now, even if you feel fine. " + lead
             )
         return lead
+    if kind == "gi_bleed":
+        if turn.severity.get("gi_bleed") == "emergency":
+            return (
+                "This can mean bleeding in the stomach or gut, and it's an emergency: "
+                f"call {turn.loc['emergency']} now."
+            )
+        return (
+            "This can mean bleeding in the stomach or gut, so you need a doctor today, "
+            "not later."
+        )
+    if kind == "cauda_equina":
+        return "This needs emergency care now, not a physio or a bike fit."
+    if kind == "ectopic":
+        return (
+            "Hard efforts and racing wait until your GP has checked your heart; easy "
+            "riding can carry on."
+        )
+    if kind == "chest_pain" and chest_direct_line(turn.message) is not None:
+        return None  # the direct line says it, as a conclusion
     if kind in ("chest_pain", "palpitations") and _HAPPENING_NOW_RX.search(turn.text):
         return (
             f"If it's there now, call {turn.loc['emergency']} now and don't wait to "
@@ -5698,29 +8029,69 @@ def _lead(kind: str, turn: _Turn) -> str | None:
     return None
 
 
+def hold_until(hold) -> str:
+    """When the hold ends, in words: a date for one that ends by itself,
+    otherwise what lifts it."""
+    red_flag = getattr(hold, "red_flag", None)
+    source = getattr(hold, "source", None)
+    ends = _as_datetime(getattr(hold, "expires_at", None))
+    if ends is not None:
+        if red_flag == "heat":
+            return "the end of today"
+        return f"{ends.day} {ends.strftime('%B')}"
+    if safety_service.doctor_only(hold) and red_flag not in (
+        "chest_pain", "palpitations", "ectopic", "fainting"
+    ):
+        return "a doctor has cleared you"
+    if source == "layoff" or red_flag == "layoff":
+        return "you've eased back in"
+    if red_flag == "fever":
+        return "your fever has gone"
+    if red_flag in ("chest_pain", "palpitations", "ectopic", "fainting"):
+        return "a doctor has checked your heart"
+    if red_flag == safety_service.HEAD_SEIZURE_FLAG:
+        return "a doctor has assessed the seizure and cleared you to ride"
+    if red_flag == "injury" and getattr(hold, "level", None) != "hold_all":
+        return "a physio or doctor has cleared you"
+    if red_flag in ("pregnancy", "postnatal"):
+        return "your midwife or obstetrician says you can ride harder"
+    return "a doctor has cleared you"
+
+
 def hold_statement(hold, since: datetime | None = None) -> str | None:
-    """What the hold means, said as a fact from the record: "I've put" only
-    for a hold opened in this turn, and nothing at all without a hold."""
+    """The one sentence a reply says about the training hold, written from
+    the hold on record, never by the model: what it covers, by its level,
+    and until when. "I've" only for a hold opened in this turn, and nothing
+    at all without a hold. The chat (coach_service.hold_sentence), the fixed
+    reply and the reply check all say it in these words."""
     if hold is None:
         return None
     opened = getattr(hold, "opened_at", None)
     new = since is not None and opened is not None and opened >= since
-    level = getattr(hold, "level", None)
     if getattr(hold, "red_flag", None) == "minor":
         return "I've put this account on hold." if new else "This account is on hold."
+    until = hold_until(hold)
+    level = getattr(hold, "level", None)
     if level == "hold_all":
-        return "I've put all your training on hold." if new else "All your training is on hold."
-    if level == "easy_only":
-        if getattr(hold, "source", None) == "layoff" or getattr(hold, "red_flag", None) == "layoff":
-            return (
-                "I've set your plan to easy riding while you ease back in." if new
-                else "Your plan is on easy riding while you ease back in."
-            )
         return (
-            "I've set your plan to easy riding only." if new
-            else "Your plan is on easy riding only."
+            f"I've paused all your training, easy rides included, until {until}." if new
+            else f"All your training is paused, easy rides included, until {until}."
+        )
+    if level == "easy_only":
+        return (
+            f"I've kept your plan to easy riding until {until}." if new
+            else f"Your plan is kept to easy riding until {until}."
         )
     return None
+
+
+# A reply that already says what the hold covers, in any words: the reply
+# check then adds only how it lifts.
+_HOLD_STATED_RX = re.compile(
+    r"\bhold\b|\bpaused all your training\b|\ball your training is paused\b|"
+    r"\bkept your plan to easy riding\b|\byour plan is kept to easy riding\b",
+    re.I,
+)
 
 
 def _plain_no(kind: str, turn: _Turn) -> bool:
@@ -5729,6 +8100,10 @@ def _plain_no(kind: str, turn: _Turn) -> bool:
         return False
     if kind in _PLAIN_NO_KINDS:
         return True
+    if kind == "ectopic":
+        # Racing or hard efforts: no. Easy riding: yes.
+        return turn.says(r"\brac(?:e|ing)\b|\bhard\b|\bintervals?\b|\btest\b|\bsprints?\b|"
+                         r"\bvo2|\bthreshold\b|\bfull gas\b")
     # Chasing heart rate on a beta blocker: no. Riding easy on one: yes.
     return kind == "medication" and turn.says(_BETA_BLOCKER_RX) and turn.says(
         r"\bpush|\bharder\b|\bzones?\b|\bhit\b"
@@ -5779,14 +8154,15 @@ def fallback_reply(
     crisis_at = None
     for kind in order:
         own = []
+        lead = _lead(kind, turn)
         for need in _REQUIRED.get(kind, ()):
             if need.ride and turn.no_riding_advice:
                 continue
             filled = _need_text(need, turn)
             if filled in remaining:
-                own.append(filled)
                 remaining.remove(filled)
-        lead = _lead(kind, turn)
+                if filled not in (lead or ""):
+                    own.append(filled)
         parts = ([lead] if lead else []) + own
         if not parts:
             continue
@@ -5813,7 +8189,9 @@ def _crisis_paragraphs(parts: list[str], has_lead: bool, *, offer_pause: bool) -
     lead = parts[:1] if has_lead else []
     rest = parts[1:] if has_lead else list(parts)
     question = [p for p in rest if p.startswith("Are you having thoughts")]
-    people = [p for p in rest if p.startswith(("Talk to ", "Tell someone you trust"))]
+    people = [
+        p for p in rest if p.startswith(("Talk to ", "Please see ", "Tell someone you trust"))
+    ]
     numbers = [p for p in rest if p not in question and p not in people]
     if offer_pause:
         trust = [p for p in people if p.startswith("Tell someone you trust")]
@@ -5825,6 +8203,97 @@ def _crisis_paragraphs(parts: list[str], has_lead: bool, *, offer_pause: bool) -
 # What the rider sees when a reply fails in an ordinary turn: honest about
 # what happened, and nothing about it not arriving (it did).
 REPLY_FAILED_MESSAGE = "I couldn't finish a reply just now. Try sending that again in a moment."
+
+
+# The emergency number is never narrowed in the coach's own words: "999 is
+# only for chest pain, collapse or confusion", "only call 999 if" (round 3,
+# R12). The sentence becomes the whole list, from the terms.
+EMERGENCY_ANY_LINE = (
+    "Call {emergency} for any emergency, including chest pain, collapse, confusion, a "
+    "bad crash or a head injury."
+)
+_NARROWED_EMERGENCY = (
+    r"(?:{emergency_rx})[^.!?\n]{0,60}?(?<!not )(?<!n't )\b(?:only|just) (?:for|if|when)\b|"
+    r"(?<!not )(?<!n't )\b(?:only|just) (?:call|ring|dial|use)\b[^.!?\n]{0,40}"
+    r"(?:{emergency_rx})|(?<!not )\bonly (?:if|when)\b[^.!?\n]{0,80}\b(?:call|ring|dial)\b"
+    r"[^.!?\n]{0,30}(?:{emergency_rx})"
+)
+# A condition on the emergency number: what an acted crisis or a blackout
+# never gets, because the rider's own words already decided it.
+_CONDITION_RX = re.compile(
+    r"\b(?<!even )if\b|\bshort of\b|\bshould you\b|\bin case\b|\bwhenever\b|"
+    r"\bat any point\b|\bunless\b",
+    re.I,
+)
+# A softer route offered instead of the emergency: "Short of that, call NHS
+# 111" after an act reads as optional (round 3, L13). The lead-in goes, so
+# the route reads as more help, never the alternative.
+_SOFTER_LEAD_RX = re.compile(
+    r"^(?P<lead>\s*)(?:short of that|otherwise|if not|failing that|if that's too much|"
+    r"if you can't do that)\s*[,:;]?\s*",
+    re.I,
+)
+# An offer to keep riding in a crisis whose method involves riding: easy
+# spins, the trainer, rides moved indoors (round 3, L9 and L13). Means
+# safety there is no riding at all (RIDING_MEANS_LINE).
+_RIDING_WORDS_RX = re.compile(
+    r"\b(?:rides? indoors|indoors|easy spins?|easy rides?|trainer|turbo|rollers|"
+    r"indoor (?:riding|rides?|sessions?))\b",
+    re.I,
+)
+_OFFER_CUE_RX = re.compile(
+    r"\b(?:i'd like to|i would like to|i can|i could|i'll|we can|we could|we keep|we'll keep|"
+    r"keep it to|keep (?:riding|the easy)|if riding|if the bike|happy to|let's)\b",
+    re.I,
+)
+_CLAUSE_BREAK_RX = re.compile(r"(?:,\s*(?:or|and|but)\s+|;\s*)", re.I)
+# Another route, told or offered, is still riding when riding is the method
+# (round 3, L9 "Take a different route entirely", L13 "Choose a different
+# route for any ride"): the sentence becomes RIDING_MEANS_LINE, once.
+_OTHER_ROUTE_RX = re.compile(
+    r"\b(?:take|choose|pick|use|ride|find|plan|stick to)\b[^.!?\n]{0,20}\b(?:a |an )?"
+    r"(?:different|another|other|new|safer|flat|flatter)\s+(?:route|routes|road|roads|loop|"
+    r"loops)\b",
+    re.I,
+)
+# After a fit, the usual steps after a head injury are never the way back
+# (round 3, L7): 24 hours free of symptoms, two easy weeks, day 21.
+_CONCUSSION_STEPS_RX = re.compile(
+    r"\bday 21\b|\btwo weeks after the injury\b|\b(?:no|free of|clear of) symptoms for "
+    r"(?:at least |a full )?(?:24 hours|a (?:full )?day)\b|\bgraded return\b",
+    re.I,
+)
+SEIZURE_NO_RIDE_LINE = (
+    "No riding of any kind, the trainer included, until a doctor has assessed the "
+    "seizure and cleared you to ride. How and when you build back up follows their "
+    "advice."
+)
+_TODAY_ROUTE_RX = re.compile(
+    r"\b(?:a&e|emergency department|111|urgent treatment)\b[^.!?\n]{0,30}\btoday\b|"
+    r"\btoday\b[^.!?\n]{0,30}\b(?:a&e|111)\b",
+    re.I,
+)
+# Care the rider never mentioned, assumed in a crisis reply.
+_ASSUMED_CARE_RX = re.compile(
+    r",? (?:until|before|at) your next (?:appointment|session with \w+|therapy session|"
+    r"check-?up|check-?in|review)\b",
+    re.I,
+)
+# A blackout sent somewhere slower than the emergency number: NHS 111, "today",
+# or 999 only "if it's not settled" (round 3, L4).
+_FAINT_SLOWER_RX = re.compile(
+    r"\b111\b|\btoday\b|\bsame[- ]day\b|\bif (?:it(?:'s| is| has)? )?(?:not |hasn't |"
+    r"isn't |hasn't fully )?settled\b|\bif anything (?:about it )?changes\b",
+    re.I,
+)
+_ROUTE_WORDS_RX = re.compile(
+    r"\b(?:seen|see|check\w*|go|get|call|ring|a&e|emergency department|doctor)\b", re.I
+)
+_FAINT_ROUTE_ONLY_RX = re.compile(
+    r"\b(?:get|be) (?:seen|checked)\b|\bgo (?:to|straight)\b|\b(?:call|ring|phone) "
+    r"(?:nhs )?111\b|\bnhs 111\b",
+    re.I,
+)
 
 
 class ReplyGuard:
@@ -5843,11 +8312,21 @@ class ReplyGuard:
       - in a restriction turn, no weights, W/kg or calorie figures;
       - after a question about who is responsible, no sentence of the
         model's own about liability, either way (the fixed answer covers it);
-      - in any safety turn, no playing it down, chest pain or fainting goes to
-        the emergency number rather than "speak to your doctor", and no other
-        country's numbers or services (999 becomes 911 for a US rider);
+      - in any safety turn, no playing it down, chest pain or fainting in a
+        safety net goes to the emergency number rather than "speak to your
+        doctor" (never a screening sentence: age, history or a condition go
+        to a GP), and no other country's numbers or services (999 becomes
+        911 for a US rider);
+      - in a crisis turn, no GP "today" or GP only "if your mood stays low",
+        and no sentence said twice; beside the red flags of eating too
+        little, never "the plan stays as it is";
       - a lead-in ending in a colon that nothing followed ("Here's what I
-        changed:" before a tool that failed) is dropped.
+        changed:" before a tool that failed) is dropped;
+      - the tier the rider's words set is the floor (_tier_floor): the
+        emergency number is never narrowed ("only for"), a crisis at the
+        acted tier gets the emergency as a conclusion where the reply made it
+        a condition, and a blackout gets "call 999 now" where the reply sent
+        it to NHS 111, "today" or "if it's not settled".
     At the end, any line the law requires that the reply left out is added,
     and a hold opened this turn always ends with how it lifts. If nothing at
     all reached the rider in a safety turn, the whole fixed reply goes out
@@ -5871,8 +8350,13 @@ class ReplyGuard:
         self.message = getattr(screen, "message", "") if screen is not None else ""
         # The cards already above the reply: what they say counts as said for
         # the lines a card carries, so the reply doesn't repeat them.
+        # The acted crisis line counts only in the reply's own words, like a
+        # helpline: after an act or preparing for one the reply says it too,
+        # first (round 3, L13), whatever the card above already says.
+        acted = CRISIS_ACTED_LINE.format(**_local(country))
         self._shown = " ".join(
-            text for style, text in (screen.cards if screen is not None else [])
+            text.replace(acted, "")
+            for style, text in (screen.cards if screen is not None else [])
             if style in RENDERED_CARD_STYLES
         )
         self._turn = _turn(self.kinds, self.matched, country, self.message, self.severity)
@@ -5893,6 +8377,7 @@ class ReplyGuard:
         self._plan_tried = False
         self._capitalise = False
         self._break = ""
+        self._seizure_line_said = False
         self.safety_turn = bool(self.kinds) or self._hold() is not None
 
     # ── Feeding text in ──
@@ -6115,9 +8600,48 @@ class ReplyGuard:
 
         if self.kinds & {"crisis", "minor"} and (
             (_REVIEW_RX.search(low) and not _NOT_MONITORED_RX.search(low))
-            or _ALWAYS_HERE_RX.search(low)
+            or (_ALWAYS_HERE_RX.search(low) and low.strip() != _STILL_HERE_SENTENCE)
         ):
             self._drop(segment, "a review or always-here line in a crisis or minor turn")
+            return None
+        if "crisis" in self.kinds and _crisis_gp_misrouted(low):
+            # A GP today, or only "if your mood stays low", is the wrong
+            # rung for any crisis (round 2, R14, L10, L11, L13): the tier's
+            # own line and, for thoughts with no plan, the GP within days
+            # are added at the end instead.
+            self._drop(segment, "a GP today, or a GP only if the mood stays low, in a crisis")
+            return None
+        if "crisis" in self.kinds and _ASSUMED_CARE_RX.search(segment):
+            # Care the rider never mentioned reads as someone already
+            # managing it (round 3, L13: "until your next appointment").
+            segment = _ASSUMED_CARE_RX.sub("", segment)
+            low = segment.lower().replace("\u2019", "'")
+        if "crisis" in self.kinds:
+            fixed = _unconditional_means(segment)
+            if fixed != segment:
+                logger.info("Reply check took conditional permission out of means safety: %r",
+                            segment.strip()[:160])
+                segment = fixed
+                low = segment.lower().replace("’", "'")
+        if "crisis" in self.kinds and self._said_before(low):
+            # "Are you safe right now?" twice looks broken at the worst
+            # moment (round 2, R16 and L11).
+            self._drop(segment, "a sentence already said in a crisis reply")
+            return None
+        floored = self._tier_floor(segment)
+        if floored is None:
+            return None
+        if floored != segment:
+            segment = floored
+            low = segment.lower().replace("\u2019", "'")
+        if (
+            "restriction" in self.kinds
+            and self.severity.get("restriction") == "urgent"
+            and _PLAN_UNCHANGED_RX.search(low)
+        ):
+            # The red flags of eating too little hold the plan to easy
+            # riding: it never "stays as it is" (round 2, L15 and L16).
+            self._drop(segment, "the plan said to stay as it is beside RED-S red flags")
             return None
         if "responsibility" in self.kinds and _RIDE_THE_PLAN_RX.search(low):
             self._drop(segment, "a nudge to ride the plan after a liability question")
@@ -6159,18 +8683,150 @@ class ReplyGuard:
             return "plan", segment
         return None, segment
 
+    def _tier_floor(self, segment: str) -> str | None:
+        """The sentence at the tier the rider's own words set, never below
+        it (SAFETY LAW rule 3), or None to drop it:
+          - a sentence that narrows the emergency number ("999 is only for
+            chest pain, collapse or confusion") says what it is for in full
+            (EMERGENCY_ANY_LINE), after any lead-in ending in a colon;
+          - in a crisis at the acted tier (an act, an interrupted attempt or
+            preparing for one), the first sentence that makes the emergency
+            number or A&E a condition becomes CRISIS_ACTED_LINE, and "short
+            of that" or "otherwise" in front of a softer route goes;
+          - in a crisis whose method involves riding, an offer to keep
+            riding is cut or goes, and a sentence sending them on another
+            route becomes RIDING_MEANS_LINE, once;
+          - after a blackout in the rider's words, the first sentence that
+            sends it to NHS 111, "today" or 999 "if it's not settled" becomes
+            the blackout line (faint_direct_line), and once the reply has said
+            to call now, a sentence sending them to NHS 111 or to be seen
+            today goes.
+        Each fires only until the reply says the line itself."""
+        body = segment.strip()
+        if not body:
+            return segment
+        loc = self._loc
+        lead = segment[: len(segment) - len(segment.lstrip())]
+        tail = segment[len(segment.rstrip()):] or " "
+        low = body.lower().replace("\u2019", "'")
+        emergency = re.search(loc["emergency_rx"], body)
+
+        narrowed = re.search(_check_rx(_NARROWED_EMERGENCY, loc), low, re.I)
+        if narrowed and re.search(r"\beven (?:if|though|when)\b", narrowed.group(0)):
+            narrowed = None
+        if narrowed:
+            line = EMERGENCY_ANY_LINE.format(**loc)
+            colon = body.rfind(":", 0, narrowed.start())
+            logger.info("Reply check widened a narrowed emergency line: %r", body[:160])
+            if colon != -1:
+                return lead + body[:colon + 1] + " " + line[:1].lower() + line[1:] + tail
+            if self._colon.rstrip().endswith(":"):
+                # Straight after a lead-in such as "not an emergency:".
+                line = line[:1].lower() + line[1:]
+            return lead + line + tail
+
+        if "crisis" in self.kinds and crisis_tier(self._turn.text) == "acted":
+            acted = CRISIS_ACTED_LINE.format(**loc)
+            said = re.search(_check_rx(_CRISIS_CALL_NOW_CHECK, loc), self.said, re.I)
+            if (
+                not said
+                and (emergency or re.search(loc["hospital_rx"], body))
+                and _CONDITION_RX.search(low)
+            ):
+                logger.info("Reply check put the acted crisis line in place of: %r", body[:160])
+                return lead + acted + tail
+            softer = _SOFTER_LEAD_RX.match(segment)
+            if softer:
+                rest = segment[softer.end():]
+                return softer.group("lead") + rest[:1].upper() + rest[1:]
+
+        if "crisis" in self.kinds and crisis_riding_method(self._turn.text):
+            if _OTHER_ROUTE_RX.search(segment):
+                if RIDING_MEANS_LINE.lower() in self.said.lower():
+                    return self._drop_whole(segment, "another route when riding is the method")
+                logger.info("Reply check put the no-riding line in place of: %r", body[:160])
+                return lead + RIDING_MEANS_LINE + tail
+            riding = _RIDING_WORDS_RX.search(segment)
+            cues = list(_OFFER_CUE_RX.finditer(
+                segment, max(0, riding.start() - 80), riding.start()
+            )) if riding else []
+            if cues:
+                # The offer from its clause on: "I'll pause the whole thing, or
+                # we keep it to easy spins" keeps the pause.
+                cut = None
+                for m in _CLAUSE_BREAK_RX.finditer(segment, 0, cues[-1].start()):
+                    cut = m
+                kept = segment[:cut.start()].rstrip(" ,;") if cut else ""
+                if len(kept.split()) >= 4:
+                    logger.info("Reply check cut a riding offer after a riding method: %r",
+                                body[:160])
+                    return lead + kept.strip() + "." + tail
+                return self._drop_whole(segment, "an offer to keep riding when riding is the method")
+
+        if "head_injury" in self.kinds and head_fit_said(self.message):
+            if _CONCUSSION_STEPS_RX.search(low):
+                if self._seizure_line_said or SEIZURE_NO_RIDE_LINE.lower() in self.said.lower():
+                    return self._drop_whole(segment, "the usual head-injury steps after a fit")
+                self._seizure_line_said = True
+                logger.info("Reply check put the seizure line in place of: %r", body[:160])
+                return lead + SEIZURE_NO_RIDE_LINE + tail
+            said = re.search(_check_rx(_CALL_NOW, loc), self.said, re.I)
+            if said and not emergency and _TODAY_ROUTE_RX.search(low):
+                return self._drop_whole(segment, "a route for today after a fit was sent to 999 now")
+
+        if "fainting" in self.kinds and blackout_said(self.message):
+            said = re.search(_check_rx(_CALL_NOW, loc), self.said, re.I)
+            slower = _FAINT_SLOWER_RX.search(low) and _ROUTE_WORDS_RX.search(low)
+            conditional = emergency and _CONDITION_RX.search(low)
+            if not said and (slower or conditional):
+                logger.info("Reply check put the blackout line in place of: %r", body[:160])
+                return lead + BLACKOUT_LINE.format(**loc) + tail
+            if (
+                said
+                and _FAINT_ROUTE_ONLY_RX.search(low)
+                and re.search(r"\b111\b|\btoday\b", low)
+                and not re.search(_check_rx(_CALL_NOW, loc), body, re.I)
+            ):
+                return self._drop_whole(segment, "a slower route after a blackout was sent to 999 now")
+        return segment
+
+    def _drop_whole(self, segment: str, why: str) -> None:
+        """Drop a sentence, and the lead-in ending in a colon that was
+        waiting for it ("That doesn't end the hold:"), which would otherwise
+        run on into whatever comes next."""
+        if self._colon.strip():
+            self._drop(self._colon, f"the lead-in to {why}")
+            self._colon = ""
+        self._drop(segment, why)
+        return None
+
+    def _said_before(self, low: str) -> bool:
+        """Whether this sentence (five words or more) is already in the
+        reply, word for word."""
+        body = re.sub(r"\s+", " ", low).strip()
+        if len(body.split()) < 5:
+            return False
+        said = re.sub(r"\s+", " ", self.said.lower().replace("’", "'"))
+        return body in said
+
     def _is_lift_sentence(self, segment: str) -> bool:
         hold = self._hold()
         lift = lift_sentence(hold) if hold is not None else None
         return bool(lift) and segment.strip() == lift.strip()
 
     def _escalate(self, segment: str) -> str:
-        """Chest pain, fainting or a racing heart in a safety net goes to the
-        emergency number, never to "speak to your doctor"."""
+        """Chest pain, fainting or a racing heart in a safety net ("if you
+        get chest pain while riding, see your doctor") goes to the emergency
+        number. Never a screening sentence: history, age, a condition, why
+        they stopped or anything "before you ride" is a reason to see a GP,
+        and turning it into 999 sent riders to the emergency number for
+        being over 35 (round 2, R11 and R12)."""
         probe = _DEVICE_PHRASE_RX.sub(" ", segment)
         if not _HEART_WORDS_RX.search(probe) or re.search(
             self._loc["emergency_rx"], segment
         ):
+            return segment
+        if _SCREENING_RX.search(probe) or not _SAFETY_NET_RX.search(probe):
             return segment
         return _SEE_DOCTOR_RX.sub(f"call {self._loc['emergency']} now", segment)
 
@@ -6206,7 +8862,7 @@ class ReplyGuard:
             # A hold the reply never mentioned is stated plainly, from the
             # record, in front of how it lifts.
             statement = (
-                None if re.search(r"\bhold\b", self.said, re.I)
+                None if _HOLD_STATED_RX.search(self.said)
                 else hold_statement(hold, self.since)
             )
             lines.append(f"{statement} {lift}" if statement else lift)

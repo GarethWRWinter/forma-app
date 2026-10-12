@@ -19,6 +19,15 @@ class TTSRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=5000)
 
 
+class ChatSafetyCard(BaseModel):
+    """A fixed red-flag card shown at the top of a reply, as the stream sent
+    it: its style ("emergency", "crisis" or "warning"), its words, and which
+    card it is (chest, crisis, fever...)."""
+    kind: str
+    text: str
+    card: str | None = None
+
+
 class ChatMessageResponse(BaseModel):
     """A single chat message."""
     id: str
@@ -26,6 +35,9 @@ class ChatMessageResponse(BaseModel):
     content: str
     tokens_used: int | None = None
     created_at: datetime | None = None
+    # The cards shown above this reply when it was sent, so a reload shows
+    # them again (coach_service._cards_snapshot). None on replies without one.
+    safety_card: list[ChatSafetyCard] | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -11,6 +11,7 @@ import concurrent.futures
 import inspect
 import json
 import logging
+import queue
 import re
 import threading
 import time
@@ -29,7 +30,7 @@ from app.core import forma_core
 from app.core.constants import RAMP_RATE_WARNING_THRESHOLD, TSB_OVERTRAINING_THRESHOLD
 from app.core.formulas import rider_profile_scores, rider_type_profile, w_per_kg as calc_w_per_kg
 from app.models.chat import ChatMessage, ChatRole, ChatSession
-from app.models.safety import SafetyEvent
+from app.models.safety import SafetyEvent, SafetyHold
 from app.models.training import Workout, WorkoutStatus, WorkoutType
 from app.models.user import User
 from app.services import safety_screen, safety_service
@@ -709,6 +710,25 @@ def _build_rider_context(
                             goal_info["went_well"] = ad["went_well"]
                         if ad.get("to_improve"):
                             goal_info["to_improve"] = ad["to_improve"]
+                        # A DNF or DNS is a different conversation from a
+                        # finished race. The coach needs the reason, how the
+                        # rider feels about it, and whether the goal still
+                        # stands, so it can respond to that rather than to a
+                        # result that never happened.
+                        if g.status == "dnf":
+                            for k in ("dnf_reason", "dnf_where", "dnf_right_call"):
+                                if ad.get(k):
+                                    goal_info[k] = ad[k]
+                            if g.overall_satisfaction:
+                                goal_info["feeling_about_stopping_1_to_10"] = g.overall_satisfaction
+                                goal_info.pop("overall_satisfaction", None)
+                        if g.status == "dns":
+                            for k in ("dns_reason", "dns_story", "dns_next"):
+                                if ad.get(k):
+                                    goal_info[k] = ad[k]
+                            if g.overall_satisfaction:
+                                goal_info["feeling_about_missing_it_1_to_10_gutted_to_relieved"] = g.overall_satisfaction
+                                goal_info.pop("overall_satisfaction", None)
                     # Include actual ride metrics if linked
                     if g.actual_ride_id and hasattr(g, "actual_ride") and g.actual_ride:
                         ride = g.actual_ride
@@ -1016,13 +1036,16 @@ COACH_TOOLS = [
             "Put a safety hold on the rider's training. It applies AT ONCE, with no card for "
             "the rider to approve. Call it the moment a SAFETY LAW red flag rules riding out "
             "(hold_all: chest symptoms, fainting or near-fainting, a head injury, fever or "
-            "illness below the neck, a rider under 18) or rules hard work out (easy_only: an "
-            "injury or worrying pain, pregnancy or a baby in the past year, a medicine or "
-            "condition without a doctor's clearance, a return after four weeks or more off). "
-            "Never ask first and never offer it as a proposal: call it, then tell the rider "
-            "what you have done and how it lifts, in the words the result gives you. A hold "
-            "covers the whole plan, ride mode and briefings. Telling you in chat never lifts "
-            "it, you can never lift it yourself, and a lower level never replaces a higher one."
+            "illness below the neck, a possible stomach bleed (black or tarry poo, or "
+            "vomiting blood or coffee grounds), heatstroke or heat illness that needed the "
+            "emergency number or NHS 111, a rider under 18) or rules hard work out "
+            "(easy_only: an injury or worrying pain, pregnancy or a baby in the past year, a "
+            "medicine or condition without a doctor's clearance, a return after four weeks "
+            "or more off). Never ask first and never offer it as a proposal: call it, then "
+            "say it once in the reply, with how it lifts, in the words the result gives you. "
+            "Never narrate the call itself. A hold covers the whole plan, ride mode and "
+            "briefings. Telling you in chat never lifts it, you can never lift it yourself, "
+            "and a lower level never replaces a higher one."
         ),
         "input_schema": {
             "type": "object",
@@ -1039,7 +1062,8 @@ COACH_TOOLS = [
                 "red_flag": {
                     "type": "string",
                     "enum": [
-                        "chest_pain", "palpitations", "fainting", "head_injury", "fever",
+                        "chest_pain", "palpitations", "ectopic", "fainting", "head_injury",
+                        "gi_bleed", "fever", "fracture", "dvt", "cauda_equina", "compartment",
                         "injury", "pregnancy", "medication", "condition", "restriction",
                         "layoff", "heat", "minor", "crisis", "other",
                     ],
@@ -1158,14 +1182,13 @@ def _intensity_refusal(db: Session, user: User, candidate: dict, on_date: date) 
 
 
 # The words the coach passes on when a plan tool would prescribe a ride on
-# an injury (SAFETY LAW 2e): the session goes, and the pain-free rule is the
-# limit until a physio has seen it.
+# an injury (SAFETY LAW 2e): the session goes, and the law's one limit
+# (safety_screen.INJURY_LIMIT) holds until a physio has seen it.
 _INJURY_REFUSAL = (
     "Not changed: an injury hold is open. Under SAFETY LAW 2e you never put a ride you "
     "prescribe in place of a session on an injury, and you don't add one. Skip the "
-    "session instead (skip_workout), or make it a rest day, and tell the rider: \"If you "
-    "ride, keep it completely pain-free, flat, light gear, high cadence, and stop at the "
-    "first twinge. Until a physio has seen it, that's the limit.\""
+    "session instead (skip_workout), or make it a rest day, and tell the rider, word for "
+    f"word: \"{safety_screen.INJURY_LIMIT}\" Give no other advice on how to ride it."
 )
 
 _RESTRICTION_REFUSAL = (
@@ -1859,6 +1882,10 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
             return "Error: give a one-line reason the rider will see. Call it again."
         if red_flag == "minor":
             level = "hold_all"  # an under-18 account gets nothing, whatever was asked
+        if red_flag in safety_screen.INJURY_RED_FLAGS:
+            # A suspected break, clot, cauda equina or compartment syndrome
+            # holds all riding, whatever level was asked (round 2, L19 to L21).
+            level = "hold_all"
         # A break the rider tells you about isn't a symptom: the app shows it as
         # easing back in, not as a medical hold.
         source = "layoff" if red_flag == "layoff" else "coach_tool"
@@ -2126,6 +2153,7 @@ def _turn_notes(
     parts = []
     if screen.context_line:
         parts.append(screen.context_line)
+        parts.append(HOLD_SENTENCE_NOTE)
     if intro:
         if known:
             parts.append(
@@ -2148,9 +2176,26 @@ def _turn_notes(
 def _snapshot(rider_context: str, screen: "safety_screen.ScreenResult") -> dict | None:
     snapshot = json.loads(rider_context) if rider_context else None
     if snapshot is not None and screen.cards:
-        # What the rider was shown above this reply, for the record.
-        snapshot["safety_cards"] = [kind for kind, _ in screen.cards]
+        snapshot.update(_cards_snapshot(screen) or {})
     return snapshot
+
+
+def _cards_snapshot(screen: "safety_screen.ScreenResult") -> dict | None:
+    """The cards shown above this reply, for the record and for a reload:
+    their styles ("safety_cards"), and each card as the stream sent it, a
+    late one included ("safety_card": [{kind, text, card}], in the order
+    shown), so the chat page can show them above the reply again. None
+    without a card. Nothing else about the rider, so it can go on a reply to
+    an account that may be a child's too."""
+    if not screen.cards:
+        return None
+    cards = []
+    for chunk in screen.card_chunks():
+        card = {"kind": chunk.get("kind"), "text": chunk.get("text", "")}
+        if chunk.get("card"):
+            card["card"] = chunk["card"]
+        cards.append(card)
+    return {"safety_cards": [kind for kind, _ in screen.cards], "safety_card": cards}
 
 
 def _sse_text(content: str) -> str:
@@ -2159,15 +2204,1721 @@ def _sse_text(content: str) -> str:
 
 def _reply_guard(
     db: Session, user: User, screen: "safety_screen.ScreenResult", since: datetime
-) -> "safety_screen.ReplyGuard":
-    """The sentence-by-sentence check on this reply (safety_screen.ReplyGuard),
-    reading the rider's hold live so a claim is checked against the truth."""
-    return safety_screen.ReplyGuard(
+) -> "_CheckedReply":
+    """The sentence-by-sentence check on this reply (safety_screen.ReplyGuard,
+    with the chat's own assembly on top: _CheckedReply), reading the rider's
+    hold live so a claim is checked against the truth."""
+    guard = _CheckedReply(
         screen,
         getattr(user, "country", None),
         lambda: safety_service.current_hold(db, user.id),
         since=since,
     )
+    # The hold follows the reply's own highest instruction, sentence by
+    # sentence, so a hold sentence after "go to A&E" says the full hold.
+    if screen is not None:
+        guard.on_said = _HoldFollowsReply(db, user, screen, since)
+    return guard
+
+
+# ── The reply on its way out: one coherent reply ───────────────────────────
+#
+# Round 1 judged the replies' substance mostly right and their assembly
+# poor: the 999 safety net three times over (the card, the coach's own,
+# then a required line restating it), tool narration and a second message
+# glued on ("Let me pull the actual file", "Done, that session's skipped",
+# "Confirmed: your account's on a full hold"), the hold described in the
+# model's own words ("nothing hard or easy-turned-hard shows up", on a full
+# hold), and in scenario 6 a fragment that read as an unfilled template slot,
+# "Here's why: eating too little for the training load you're carrying.".
+# That last one was the reply check cutting at colons: the model wrote
+# "Here's why: <a sentence with the rider's calorie figure>: eating too
+# little...", the middle went (no calorie figures in a restriction turn) and
+# the two ends met. _CheckedReply checks whole sentences, so a sentence that
+# goes, goes whole.
+
+# The coach is told the hold sentence is the app's. Said in the turn notes
+# of any turn with a red flag.
+HOLD_SENTENCE_NOTE = (
+    "The app writes the one sentence that says what the training hold is (for "
+    "example \"I've paused all your training, easy rides included, until a doctor "
+    "has cleared you.\"). Don't describe the hold, what it covers or what it lets "
+    "them ride in your own words, and don't confirm it again after a tool call. "
+    "Never narrate your tools (\"Let me pull the file\", \"Done\", \"Confirmed\"): "
+    "write one reply."
+)
+
+# A sentence ends at . ! ? (with any closing quote, bracket or markdown)
+# followed by whitespace, or at a line break. Never at a colon: see above.
+_WHOLE_SENTENCE_END = re.compile(r"[.!?][\"'”’)\]*_]*\s+|\n+")
+# The same, for cutting text already checked into its sentences.
+_PIECE_RX = re.compile(r".*?(?:[.!?][\"'”’)\]*_]*(?:\s+|$)|\n+|$)", re.S)
+
+
+def _pieces(text: str) -> list[str]:
+    """Text cut into sentences, each with the whitespace after it, so
+    "".join(_pieces(t)) == t."""
+    out = [m.group(0) for m in _PIECE_RX.finditer(text) if m.group(0)]
+    return out if "".join(out) == text else [text]
+
+
+def _norm(text: str) -> str:
+    return (text or "").lower().replace("’", "'").replace("‘", "'")
+
+
+def _capitalise(text: str) -> str:
+    lead = len(text) - len(text.lstrip())
+    return text[:lead] + text[lead:lead + 1].upper() + text[lead + 1:]
+
+
+# Narrating a tool rather than answering: "Let me pull the actual file",
+# "I'm just going to check your plan", "One moment".
+_NARRATION_RX = re.compile(
+    r"^\W*(?:(?:ok(?:ay)?|right|so|now|first|actually|hang on|one (?:sec|second|moment))"
+    r"[,.]?\s+){0,2}"
+    r"(?:let me|lemme|i'll just|i'll quickly|i'll first|i'm just going to|i'm going to "
+    r"(?:quickly |just |first )?)\s*(?:just\s+|quickly\s+|now\s+|first\s+)?"
+    r"(?:pull|check|grab|fetch|load|dig|bring up|look up|look (?:at|into|through|over)|"
+    r"find|open|search|see|have a (?:quick )?look|take a (?:quick )?look|read|scan|"
+    r"double[- ]check)\b"
+    r"(?![^.!?\n]*\b(?:with you|together)\b)"
+)
+# A sentence that is nothing but a holding line.
+_FILLER_RX = re.compile(
+    r"\W*(?:one (?:sec|second|moment)|bear with me|give me a (?:sec|second|moment)|"
+    r"hang on(?: a (?:sec|second|moment))?|checking(?: (?:that|now|your plan))?(?: now)?|"
+    r"pulling (?:that|it|them) up(?: now)?|on it|let me see|let me check|looking now|"
+    r"just a (?:sec|second|moment))\W*"
+)
+# A confirmation that opens a sentence after a tool call: "Done, that
+# session's skipped", "Confirmed: your account's on a full hold".
+_CONFIRM_LEAD_RX = re.compile(
+    r"^\W*(?:all done|done and dusted|done|sorted|that's done|that's sorted|that's "
+    r"in|confirmed|ok(?:ay)?,? done|right,? done|all set|there we go|there you go|"
+    r"hold applied|applied|that's applied|great,? done|perfect,? done)\b[,.:;!]*\s*",
+    re.I,
+)
+# A word the model opens a fresh message with after a tool call.
+_INTERJECTION_RX = re.compile(
+    r"^\W*(?:(?:ah+|oh|hmm+)\b[,.!:;]*|(?:ok(?:ay)?|right|alright|so|got it|perfect|"
+    r"great|nice|good|well)[,.!:;]+)\s+",
+    re.I,
+)
+# A change the coach says it is making, before the tool has made it: held,
+# like "I've skipped", until a tool confirms it.
+_PLAN_NOW_RX = re.compile(
+    r"\bi'm\s+(?:now\s+|also\s+|just\s+|going to\s+)?(?:skipping|skip|moving(?! on\b)|"
+    r"move(?! on\b)|"
+    r"swapping|swap|pulling|pull|cancelling|canceling|cancel|dropping|drop|removing|"
+    r"remove|replacing|replace|changing|change|updating|update|shortening|shorten|"
+    r"rescheduling|reschedule|taking out|take out)\b[^.!?\n]{0,60}\b(?:session|ride|"
+    r"workout|intervals?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"today|tomorrow|week|vo2|sweet spot|threshold|tempo)"
+)
+
+# Talk about the training hold itself, which the app says in its own words.
+_HOLD_NOUN_RX = re.compile(
+    r"\b(?:a|an|the|your|this|full|easy[- ]only|safety|training|whole[- ]plan)\s+hold\b"
+    r"|\bon hold\b"
+)
+_HOLD_WHO_RX = re.compile(
+    r"\b(?:i've|i have|i'm|i am|i've now|your (?:account|plan|training|riding)|"
+    r"account's|plan's|training's|it's|that's|sessions?|everything)\b"
+)
+_HOLD_STATE_RX = re.compile(
+    r"\b(?:i've|i have)\s+(?:now\s+|already\s+|just\s+)?(?:paused|frozen|suspended|"
+    r"locked)\b[^.!?\n]{0,40}\b(?:plan|training|account|riding|sessions?)\b"
+    r"|\b(?:i've|i have)\s+(?:now\s+|already\s+|just\s+)?(?:kept|set|limited|capped|"
+    r"restricted)\s+(?:your|the)\s+(?:plan|training|riding)\s+(?:to|at)\s+easy\b"
+    r"|\b(?:sessions|training|plan|riding|everything|intervals|workouts)\b[^.!?\n]{0,30}"
+    r"\b(?:are|is)\s+(?:now\s+|all\s+|also\s+)?(?:paused|frozen|on hold)\b"
+)
+_NOT_HOLD_TALK_RX = re.compile(
+    r"hold notice|i've been cleared|my fever has gone|this was a mistake|\blifts?\b|"
+    r"\blifted\b|\blifting\b|ends by itself|this hold keeps|doesn't end the hold|"
+    r"\bif\b[^.!?\n]{0,30}\bhold\b"
+)
+
+
+def _hold_talk(sentence: str) -> bool:
+    low = _norm(sentence)
+    if _NOT_HOLD_TALK_RX.search(low):
+        return False
+    if _HOLD_STATE_RX.search(low):
+        return True
+    return bool(_HOLD_NOUN_RX.search(low) and _HOLD_WHO_RX.search(low))
+
+
+def _hold_until(hold) -> str:
+    """When the hold ends, in words (safety_screen.hold_until)."""
+    return safety_screen.hold_until(hold)
+
+
+def hold_sentence(hold, since: datetime | None = None) -> str | None:
+    """The one sentence a reply says about the training hold, written from
+    the hold on record, never by the model: what it covers, by its level,
+    and until when. "I've" only for a hold opened in this turn. The same
+    words as the fixed reply's (safety_screen.hold_statement)."""
+    return safety_screen.hold_statement(hold, since)
+
+
+# ── Whether a line's substance is already in the reply or on the card ──────
+
+_STOPWORDS = frozenset("""
+a about above after again against all already also am an and any are aren't as at be
+because been before being below between both but by can can't could did didn't do does
+doesn't doing don't down during each even ever every few for from further get gets
+getting got had has hasn't have haven't having he her here hers him his how i i'd i'll
+i'm i've if in into is isn't it it's its itself just keep let's like may me might more
+most much must my myself no nor not now of off on once one only or other our out over
+own please point quite rather really right same see she should so some still such than
+that that's the their them then there these they this those through to too under until
+up us very was way we well were what when where which while who whom why will with
+won't would you you'd you'll you're you've your yours yourself whether want wants
+""".split())
+# Words a repeat has to carry too: when, where, who, and what never to do.
+_PROTECTED = frozenset("""
+today tonight 24 48 a&e gp nhs ecg physio physiotherapist midwife obstetrician
+dietitian samaritans shout beat ambulance alone alcohol helmet drive driving er
+emergency urgences
+""".split())
+_WORD_RX = re.compile(r"[a-z0-9&']+")
+_NUMBER_RX = re.compile(
+    r"\b(?:999|112|911|111|116 ?123|85258|988|741741|3114|50808|0808 801 0677)\b"
+    r"|\b15(?= \(samu\)| or 112)"
+)
+_TEXT_VERB_RX = re.compile(r"\btext(?:ing)?\b[^.!?\n]{0,25}$")
+_NEGATED_RX = re.compile(r"\b(?:don't|do not|never|no)\s+((?:[a-z']+\s+){0,1}[a-z']+)")
+# "don't be alone": the word after these is the one that matters.
+_LIGHT_VERBS = frozenset({"be", "get", "go", "have", "let", "do", "stay", "keep"})
+
+
+def _stem(word: str) -> str:
+    word = word.strip("'")
+    if word.endswith("'s"):
+        word = word[:-2]
+    for suffix in ("ing", "ed", "es", "s"):
+        if len(word) > len(suffix) + 3 and word.endswith(suffix):
+            word = word[: -len(suffix)]
+            break
+    if len(word) > 3 and word.endswith("e"):
+        word = word[:-1]
+    return word
+
+
+def _content(text: str) -> list[str]:
+    return [
+        _stem(w) for w in _WORD_RX.findall(_norm(text))
+        if w not in _STOPWORDS and not _NUMBER_RX.fullmatch(w) and len(w) > 1
+    ]
+
+
+def _numbers(text: str) -> set[tuple[str, str]]:
+    """(number, how) for every helpline or emergency number in the text:
+    "text" when it is one to text, "call" otherwise."""
+    low = _norm(text)
+    found = set()
+    for m in _NUMBER_RX.finditer(low):
+        how = "text" if _TEXT_VERB_RX.search(low[max(0, m.start() - 30): m.start()]) else "call"
+        found.add((re.sub(r"\s+", "", m.group(0)), how))
+    return found
+
+
+def _coverage(line: str, seen: str) -> float:
+    words = _content(line)
+    if not words:
+        return 1.0
+    have = set(_content(seen))
+    return sum(w in have for w in words) / len(words)
+
+
+def _protected_present(line: str, seen: str) -> bool:
+    """Every when, where and who of the line is in `seen`, and every "don't"
+    in it is a "don't" there too."""
+    low_seen = _norm(seen)
+    seen_words = set(_WORD_RX.findall(low_seen))
+    for word in _WORD_RX.findall(_norm(line)):
+        if word in _PROTECTED and word not in seen_words:
+            return False
+    for m in _NEGATED_RX.finditer(_norm(line)):
+        words = m.group(1).split()
+        verb = _stem(words[1] if words[0] in _LIGHT_VERBS and len(words) > 1 else words[0])
+        if not re.search(
+            rf"\b(?:don't|do not|never|no|not|n't|without)\b\W+(?:[a-z']+\W+){{0,3}}?{re.escape(verb)}",
+            low_seen,
+        ):
+            return False
+    return True
+
+
+# Helplines a crisis reply gives in its own words at least once: the card
+# above it never stands in for them (SAFETY LAW rule 4).
+_HELPLINES = frozenset({"116123", "85258", "988", "741741", "3114", "50808"})
+# The same instruction in other words.
+_SAME_WORDS = (
+    (re.compile(r"\b(?:straight away|right away|immediately|at once|right now|without delay)\b"),
+     "now"),
+    (re.compile(r"\b(?:returns?|recurs?|happens again|starts again)\b"), "comes back"),
+)
+_RECURS_RX = re.compile(r"\bcomes? back\b")
+_UNIT_SPLIT_RX = re.compile(r"(?<=[.!?])[\"'\u201d\u2019)\]*_]*\s+|\n+")
+
+
+def _canon(text: str) -> str:
+    low = _norm(text)
+    for rx, same in _SAME_WORDS:
+        low = rx.sub(same, low)
+    return low
+
+
+def _same_substance(line: str, said: str, shown: str = "") -> bool:
+    """Whether a line the reply check would add says nothing the rider
+    can't already read: in the reply, or on the card above it.
+
+    A line with an emergency number is already said when one sentence there
+    gives the same number the same way (call or text) for the same thing:
+    most of the line's words, its when ("now", "today") and, for a safety
+    net, the same trigger ("if it comes back"). A helpline (Samaritans,
+    988) counts only in the reply's own words. A line with no number has to
+    be nearly all there, its when, where and don'ts included."""
+    if not line.strip():
+        return False
+    numbers = _numbers(line)
+    if not numbers:
+        seen = f"{said}\n{shown}"
+        return bool(seen.strip()) and (
+            _coverage(line, seen) >= 0.8 and _protected_present(line, seen)
+        )
+    if {n for n, _ in numbers} & _HELPLINES:
+        return numbers <= _numbers(said)
+    canon = _canon(line)
+    recurs = bool(_RECURS_RX.search(canon))
+    for unit in _UNIT_SPLIT_RX.split(f"{said}\n{shown}"):
+        if not unit or not numbers <= _numbers(unit):
+            continue
+        unit = _canon(unit)
+        if recurs and not _RECURS_RX.search(unit):
+            continue
+        if _coverage(canon, unit) >= 0.6 and _protected_present(canon, unit):
+            return True
+    return False
+
+
+# ── What the code guarantees in a reply, and nothing more ─────────────────
+#
+# Live round 2: the coach's own text was usually clinically sound, and most
+# unsafe ratings came from lines the reply check appended after it: "go to
+# A&E today" after "call 999 now" (L7), physio and climbing lines after an
+# emergency (L19 to L21), medicine-timing lines about a friend's stimulant
+# (L22), "talk to your GP if your mood stays low" after an aborted attempt
+# (L13). So the check now guarantees only what must be guaranteed:
+#   - a red flag at emergency or urgent severity, and a reply with no
+#     emergency or same-day instruction at that tier or higher: ONE line at
+#     that tier, after the coach's text;
+#   - a reply with no instruction at the floor the facts set (live round 3,
+#     see "The tier the facts set"): the floor's one line;
+#   - a crisis, and a reply without the crisis lines: the lines, once;
+#   - the hold sentence and how it lifts, for a hold opened this turn.
+# Every other line the SAFETY LAW lists is the coach's to write. A kind's
+# lines still go in only when they would be the reply's only safety content
+# for it (the coach said nothing about it at all, and sent the rider nowhere),
+# and the fixed answers that stand in for sentences the check drops (who is
+# responsible, under 18, a general safety question) always do.
+
+# How urgent an instruction is: 0, now (the emergency number); 1, today (A&E,
+# NHS 111, a same-day GP); 2, routine.
+_TIER_FOR_SEVERITY = {"emergency": 0, "urgent": 1}
+_ROUTINE_TIER = 2
+
+
+def _severity_tier(severity: str | None) -> int:
+    return _TIER_FOR_SEVERITY.get(severity or "", _ROUTINE_TIER)
+
+
+def _care_tier(text: str, loc: dict) -> int | None:
+    """The most urgent care the text sends the rider to, in any form (a
+    safety net counts: "if it comes back, call 999 now"): 0 for the emergency
+    number or the emergency department now, 1 for anywhere that sees them
+    today, None for neither."""
+    if not (text or "").strip():
+        return None
+    low = _norm(text)
+    emergency = loc["emergency_rx"]
+    hospital = loc["hospital_rx"]
+    if re.search(
+        rf"\b(?:call|ring|phone|dial|calling|ringing|dialling)\b[^.!?\n]{{0,60}}(?:{emergency})"
+        rf"|(?:{emergency})[^.!?\n]{{0,15}}\b(?:now|straight away|right away|immediately)\b"
+        r"|\bambulance\b|\b(?:call|ring|phone|dial)\s+(?:the|your local|your)\s+emergency number\b"
+        rf"|(?:{hospital})[^.!?\n]{{0,25}}\b(?:now|straight away|right away|immediately)\b"
+        rf"|\b(?:now|straight away|right away|immediately)\b[^.!?\n]{{0,20}}\bto\s+(?:{hospital})",
+        low, re.I,
+    ):
+        return 0
+    if re.search(
+        rf"(?:{hospital})|(?:{loc['heart_rx']})|\b111\b|out-of-hours|urgent care|"
+        r"urgent treatment|minor injur|walk-in|same[- ]day|early pregnancy unit|"
+        r"\b(?:seen|seeing|checked|checking|assessed|assessing|looked at|x-?ray\w*)\b"
+        r"[^.!?\n]{0,30}\btoday\b|"
+        r"\b(?:gp|doctor|médecin traitant)\b[^.!?\n]{0,30}\b(?:today|urgently|straight away|"
+        r"right away)\b|\btoday\b[^.!?\n]{0,20}\b(?:gp|doctor)\b",
+        low, re.I,
+    ):
+        return 1
+    return None
+
+
+# The one line a reply gets when it sends the rider nowhere at the tier its
+# red flag needs: a safety net with the emergency number (tier 0), or where
+# to be seen today (tier 1). In the rider's own numbers.
+_EMERGENCY_LINE = {
+    "chest_pain": "If it's happening now or comes back at any point, call {emergency} now.",
+    "palpitations": (
+        "If your heart is racing or irregular right now, or it comes with chest pain, "
+        "faintness or breathlessness, call {emergency} now."
+    ),
+    "fainting": (
+        "Call {emergency} now if you black out, or get chest pain, a racing or irregular "
+        "heartbeat or breathlessness."
+    ),
+    "head_injury": (
+        "Call {emergency} now for a fit, drowsiness or being hard to wake, confusion, "
+        "weakness, slurred speech, trouble with vision or balance, or a headache that "
+        "gets worse."
+    ),
+    "gi_bleed": (
+        "Call {emergency} now if you vomit blood or anything like coffee grounds, or you "
+        "feel faint or dizzy."
+    ),
+    "fever": (
+        "Call {emergency} now if you're struggling to breathe at rest, your lips turn "
+        "blue, you're confused or you have chest pain."
+    ),
+    "heat": (
+        "If you or anyone with you is confused, has hot dry skin, collapses or has a fit, "
+        "that's heatstroke: call {emergency} now and cool down while you wait."
+    ),
+    "dvt": "Call {emergency} now if you get chest pain, sudden breathlessness or cough up blood.",
+    "cauda_equina": (
+        "Leg numbness or weakness with bladder or bowel changes needs emergency care: go to "
+        "{hospital} now or call {emergency}."
+    ),
+    "compartment": (
+        "A tight, swollen limb in severe pain needs emergency care: go to {hospital} now or "
+        "call {emergency}."
+    ),
+    "crisis": safety_screen.CRISIS_ACTED_LINE,
+}
+_EMERGENCY_LINE_DEFAULT = "If this is happening now or getting worse, call {emergency} now."
+_URGENT_LINE = {
+    "chest_pain": "Please get seen today so a doctor can check your heart: {heart_today}.",
+    "palpitations": "Please get seen today so a doctor can check your heart: {heart_today}.",
+    "fainting": "Please get seen today so a doctor can check your heart: {heart_today}.",
+    "gi_bleed": "Please go to {hospital} today, with someone else driving.",
+    "head_injury": "Please get advice today from {today_short}.",
+    "fracture": "Please get it checked and X-rayed today at {hospital}, and don't ride until then.",
+    # Always an emergency, whatever severity it was read at.
+    "cauda_equina": _EMERGENCY_LINE["cauda_equina"],
+    "compartment": _EMERGENCY_LINE["compartment"],
+    # A fever's own rung is the safety net, not a same-day visit.
+    "fever": _EMERGENCY_LINE["fever"],
+    "heat": _EMERGENCY_LINE["heat"],
+}
+_URGENT_LINE_DEFAULT = "Please get this seen today: {today}."
+
+# Kinds whose fixed lines always go in when the reply leaves them out: they
+# stand in for sentences the check itself drops (a statement about liability,
+# coaching for a child) or carry the emergency facts for a general question.
+_FIXED_ANSWER_KINDS = frozenset({"responsibility", "minor", "safety_question", "distress_check"})
+# Kinds that are never a body red flag for the tier a reply needs.
+_NOT_A_TIER_KIND = frozenset({"crisis", "minor", "distress_check", "safety_question"})
+# Red flags whose severity sets the training limit, not a same-day visit:
+# RED-S signs read as urgent hold riding to easy and want the GP soon, not
+# NHS 111 today. Their card signposts help (Beat, a dietitian) rather than
+# naming a rung of care, so it is never too mild for the case.
+_SIGNPOST_KINDS = frozenset({"restriction"})
+_SIGNPOST_CARDS = frozenset({"restriction"})
+
+
+# The law's crisis ending, one sentence at a time (safety_screen.STILL_HERE).
+_CRISIS_ENDING = frozenset(
+    _norm(part).strip() for part in re.findall(r"[^.?!]+[.?!]", safety_screen.STILL_HERE)
+)
+
+# "If it has settled": the branch of a chest pain reply that offers a slower
+# route than the emergency number.
+_IF_SETTLED_RX = re.compile(
+    r"\bif\b[^.!?\n]{0,40}\b(?:settled|gone|passed|eased|cleared|stopped|hasn't come back|"
+    r"not come back|went away)\b"
+)
+
+
+def _guarantee_tier(kind: str, severity: str | None) -> int | None:
+    """The tier of care a reply must name for this red flag (0 or 1), or
+    None when the coach's own words are enough."""
+    if kind in _NOT_A_TIER_KIND or kind in _SIGNPOST_KINDS:
+        return None
+    tier = _severity_tier(severity)
+    return tier if tier < _ROUTINE_TIER else None
+
+
+def _sentence_key(text: str) -> str:
+    """A sentence as words only, for spotting one said twice. Empty for a
+    sentence too short to judge ("No.")."""
+    words = _WORD_RX.findall(_norm(text))
+    return " ".join(words) if len(words) >= 3 else ""
+
+
+class _CheckedReply(safety_screen.ReplyGuard):
+    """ReplyGuard, with the chat's assembly on top, so the rider gets one
+    coherent reply:
+      - whole sentences go through the check, colons and all, so a sentence
+        it drops goes whole and no lead-in is ever left hanging (round 1,
+        scenario 6);
+      - tool narration ("Let me pull the actual file"), holding lines and
+        confirmations after a tool ("Done, that session's skipped",
+        "Confirmed: ...") are taken out, a fresh message's "Ah," goes, and a
+        sentence after a tool call that only repeats one already sent is
+        dropped;
+      - a sentence said word for word a second time goes (live round 2: "Are
+        you safe right now?" twice, R16 and L11);
+      - "I'm skipping Tuesday's session" waits for the tool, like "I've
+        skipped";
+      - every sentence about the training hold becomes the one written from
+        the hold on record (hold_sentence), said once, and said again at the
+        end only if the reply's own words then raised the hold;
+      - nothing below the floor the turn's facts set: a sentence that routes
+        below it, or gives the emergency number only on a condition before
+        the reply has said it plainly, goes, and the floor's one line takes
+        the place of the first; in any safety turn, a sentence that narrows
+        when to call the emergency number goes (see "The tier the facts
+        set", live round 3);
+      - at the end, only what the code guarantees is added (see the comment
+        above): never a line of lower urgency than the reply's own;
+      - the reply so far is handed to `on_said` before each sentence goes
+        out, so the hold the reply's own words call for opens at once, and a
+        hold sentence after it says the right level;
+      - a red flag the classifier finds part way through is taken in
+        (absorb), so the lines it needs still go at the end."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._round = 0
+        self._round_start = False
+        self._hold_said = False
+        # The level of the hold the reply stated, so a hold the reply's own
+        # words then raised is stated again, once, at the end.
+        self._hold_said_level: str | None = None
+        # Every sentence already sent, as words, so one said twice goes.
+        self._sentences: set[str] = set()
+        # Called with the reply as it will read once the next sentence is
+        # out (coach_service wires it to _HoldFollowsReply). Never raises
+        # into the reply. Only the coach's own words are handed over: what
+        # the code adds at the end never opens a hold.
+        self.on_said = None
+        self._own_words = True
+        # The model call failed part way: the coach never finished, so the
+        # end gets every line the law lists, not only the guarantees.
+        self.cut_off = False
+        # The law's crisis ending (STILL_HERE), held back while nothing comes
+        # after it, so a line the code adds at the end goes before it and
+        # "Are you safe right now?" stays the last words.
+        self._held_ending: list[str] = []
+        # The coach said, as a fact, that the rider lost consciousness: the
+        # emergency floor for fainting from then on (live round 3, L4).
+        self._blackout_said = False
+        # The floor's line goes in place of a dropped sentence once per tier
+        # (a verdict that lands later can raise the floor), the line on when
+        # to call the emergency number once.
+        self._floor_line_tier: int | None = None
+        self._when_line_used = False
+
+    def absorb(self, screen) -> None:
+        """Take in the turn's red flags again after a late verdict added to
+        them, exactly as a new check built on this screen would read them."""
+        fresh = safety_screen.ReplyGuard(screen, self.country, self._hold_now, since=self.since)
+        for name in ("kinds", "matched", "severity", "message", "_shown", "_turn"):
+            if hasattr(fresh, name):
+                setattr(self, name, getattr(fresh, name))
+        self.safety_turn = self.safety_turn or getattr(fresh, "safety_turn", False)
+
+    # ── Feeding text in ──
+
+    def _is_ending(self, segment: str) -> bool:
+        return "crisis" in self.kinds and _norm(segment).strip() in _CRISIS_ENDING
+
+    def _take(self, segment: str) -> str:
+        if self._held_ending:
+            if not segment.strip() or self._is_ending(segment):
+                self._held_ending.append(segment)
+                return ""
+            # More words after it: it wasn't the end after all.
+            return self._release_ending() + super()._take(segment)
+        if (
+            segment.strip() and not self._pending and not self._colon
+            and self._is_ending(segment)
+        ):
+            self._held_ending.append(segment)
+            return ""
+        return super()._take(segment)
+
+    def _release_ending(self) -> str:
+        held, self._held_ending = self._held_ending, []
+        return "".join(super(_CheckedReply, self)._take(piece) for piece in held)
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+        self._buf += text
+        out = []
+        while True:
+            m = _WHOLE_SENTENCE_END.search(self._buf)
+            if not m:
+                break
+            segment, self._buf = self._buf[: m.end()], self._buf[m.end():]
+            out.append(self._take(segment))
+        return "".join(out)
+
+    def round_break(self) -> str:
+        """The paragraph break before the next round's words, held until
+        there are words to put after it: a round that turns out to be all
+        narration leaves nothing behind."""
+        if self._pending:
+            return super().round_break()
+        if self.said and not self.said[-1].isspace():
+            self._break = "\n\n"
+        return ""
+
+    def after_tools(self, results) -> str:
+        out = super().after_tools(results)
+        self._round += 1
+        self._round_start = True
+        return out
+
+    def finish_body(self) -> str:
+        """The model has finished: its last sentence and anything still
+        waiting on a tool. What the code adds comes after (finish_tail)."""
+        out = self._take(self._buf) if self._buf.strip() else ""
+        self._buf = ""
+        self._drop_dangling_colon()
+        return out + self._resolve(final=True)
+
+    def finish_tail(self) -> str:
+        """The whole fixed reply if nothing reached the rider in a safety
+        turn; otherwise only what the code guarantees and the reply lacks."""
+        self._own_words = False
+        try:
+            return self._finish_tail()
+        finally:
+            self._own_words = True
+
+    def _finish_tail(self) -> str:
+        if not self.said.strip():
+            # Nothing but the ending reached here: it was the whole reply.
+            released = self._release_ending()
+            if released:
+                return released + self._finish_tail()
+            fallback = self.fallback()
+            if fallback:
+                return self._emit(fallback)
+        try:
+            extra = self._missing_lines()
+        except Exception:
+            logger.exception("Working out the required safety lines failed")
+            extra = []
+        out = ""
+        if extra:
+            if not self.said.strip() or self.said.endswith("\n\n"):
+                sep = ""
+            elif self.said.endswith("\n"):
+                sep = "\n"
+            else:
+                sep = "\n\n"
+            self._break = ""
+            out = self._emit(sep + "\n\n".join(extra))
+        if self._held_ending:
+            # The law's ending, last, after whatever the code added.
+            if extra:
+                self._held_ending[0] = self._held_ending[0].lstrip()
+                self._break = "\n\n"
+            out += self._release_ending()
+        return out
+
+    def flush(self) -> str:
+        return self.finish_body() + self.finish_tail()
+
+    # ── Inside ──
+
+    def _check(self, segment: str):
+        first, self._round_start = self._round_start, False
+        cleaned = self._without_artefacts(segment, first)
+        if cleaned is None:
+            return None
+        key = _sentence_key(cleaned)
+        if key and key in self._sentences:
+            self._drop(cleaned, "a sentence said twice")
+            return None
+        if self._round > 0 and self._repeats(cleaned):
+            self._drop(cleaned, "a repeat after a tool call")
+            return None
+        cleaned = self._at_floor(cleaned)
+        if cleaned is None:
+            return None
+        direct = self._slower_route(cleaned)
+        if direct:
+            # The direct line in its place, so the reply never offers a
+            # slower route beside the emergency (round 2, L1).
+            logger.info("Reply check put the direct line in place of: %r", cleaned.strip()[:160])
+            self.dropped.append(cleaned.strip())
+            lead = cleaned[: len(cleaned) - len(cleaned.lstrip())]
+            tail = cleaned[len(cleaned.rstrip()):]
+            cleaned = lead + direct + (tail or " ")
+        checked = super()._check(cleaned)
+        if checked is None:
+            return None
+        claim, text = checked
+        if claim is None and not self._plan_done and _PLAN_NOW_RX.search(_norm(text)):
+            return "plan", text
+        return claim, text
+
+    def _without_artefacts(self, segment: str, first: bool) -> str | None:
+        low = _norm(segment).strip()
+        if _NARRATION_RX.search(low) or _FILLER_RX.fullmatch(low):
+            self._drop(segment, "tool narration")
+            return None
+        if self._round == 0:
+            return segment
+        m = _CONFIRM_LEAD_RX.match(segment)
+        if m:
+            rest = segment[m.end():]
+            if not rest.strip() or (not rest.rstrip().endswith(":") and (
+                len(_WORD_RX.findall(_norm(rest))) <= 12
+                or _hold_talk(rest)
+                or safety_screen._PLAN_CLAIM_RX.search(_norm(rest))
+            )):
+                self._drop(segment, "a confirmation after a tool call")
+                return None
+            return _capitalise(rest)
+        if first:
+            m = _INTERJECTION_RX.match(segment)
+            if m and segment[m.end():].strip():
+                return _capitalise(segment[m.end():])
+        return segment
+
+    def _repeats(self, sentence: str) -> bool:
+        """A sentence after a tool call that says again what the reply has
+        already said: the second message glued onto the first."""
+        if len(_content(sentence)) < 4 or not self.said.strip():
+            return False
+        if _numbers(sentence) and not _numbers(sentence) <= _numbers(self.said):
+            return False
+        return _coverage(sentence, self.said) >= 0.85 and _protected_present(
+            sentence, self.said
+        )
+
+    def _emit(self, text: str) -> str:
+        if not text:
+            return ""
+        if self._break and text[:1] in (" ", "\t"):
+            text = text.lstrip(" \t")
+            if not text:
+                return ""
+        out = []
+        for piece in _pieces(text):
+            self._notice(piece)
+            piece = self._lift_rewrite(self._hold_rewrite(piece))
+            if piece:
+                for sentence in _UNIT_SPLIT_RX.split(piece):
+                    key = _sentence_key(sentence)
+                    if key:
+                        self._sentences.add(key)
+                out.append(super()._emit(piece))
+        return "".join(out)
+
+    def _lift_rewrite(self, piece: str) -> str:
+        """A sentence telling the rider to tap I've been cleared says how the
+        hold on record lifts, in its own words: after the reply's own words
+        raised an injury's easy hold to a full one, never "once a physio or
+        doctor has looked at it" (L21)."""
+        body = piece.strip()
+        if not body or "i've been cleared" not in _norm(body):
+            return piece
+        hold = self._hold()
+        lift = safety_screen.lift_sentence(hold) if hold is not None else None
+        if not lift or _norm(body) in _norm(lift):
+            return piece
+        lead = piece[: len(piece) - len(piece.lstrip())]
+        tail = piece[len(piece.rstrip()):]
+        return lead + lift + (tail or " ")
+
+    def _notice(self, piece: str) -> None:
+        """Hand the reply as it will read with this sentence to on_said."""
+        if self.on_said is None or not self._own_words or not piece.strip():
+            return
+        try:
+            self.on_said(self.said + piece)
+        except Exception:
+            logger.exception("Acting on the reply so far failed; the reply goes on")
+
+    def _hold_rewrite(self, piece: str) -> str:
+        """A sentence about the hold becomes the one from the record, once."""
+        body = piece.strip()
+        if not body or not _hold_talk(body):
+            return piece
+        hold = self._hold()
+        if hold is None:
+            return piece
+        lift = safety_screen.lift_sentence(hold)
+        if lift and _norm(body) in _norm(lift):
+            return piece
+        if self._hold_said:
+            self._drop(piece, "the hold said a second time")
+            return ""
+        sentence = hold_sentence(hold, self.since)
+        if not sentence:
+            return piece
+        self._hold_said = True
+        self._hold_said_level = getattr(hold, "level", None)
+        lead = piece[: len(piece) - len(piece.lstrip())]
+        tail = piece[len(piece.rstrip()):]
+        return lead + sentence + (tail or " ")
+
+    # ── What the code adds at the end ──
+
+    def _guaranteed(self) -> list[str]:
+        """The one line for the most urgent red flag the reply sends nowhere
+        near, then the crisis lines if the reply left them out."""
+        loc = self._loc
+        crisis = safety_screen.crisis_tier(self._turn.text) if "crisis" in self.kinds else None
+        need, kind = None, None
+        if crisis == "acted":
+            need, kind = 0, "crisis"
+        order = safety_screen._KIND_ORDER
+        for k in (*order, *sorted(self.kinds - set(order))):
+            if k not in self.kinds:
+                continue
+            tier = _guarantee_tier(k, self.severity.get(k))
+            if tier is not None and (need is None or tier < need):
+                need, kind = tier, k
+        lines = []
+        have = _care_tier(self.said, loc)
+        direct = self._direct_line()
+        if direct:
+            # The rider's own words already give the emergency sign: the
+            # emergency number now, as a conclusion, never only "if it's
+            # still there" (round 2, L1 and L7).
+            lines.append(direct)
+            have = 0
+        floor = self._floor()
+        if floor is not None and not instructs_at(floor[0], "\n".join([self.said, *lines])):
+            # No instruction at the floor the facts set, as an instruction
+            # rather than a hypothetical: its one line (live round 3, L4).
+            line = self._floor_line(*floor)
+            if line not in lines:
+                lines.append(line)
+                have = floor[0] if have is None else min(have, floor[0])
+        if need is not None and (have is None or have > need):
+            if need == 0:
+                template = _EMERGENCY_LINE.get(kind, _EMERGENCY_LINE_DEFAULT)
+            elif kind == "head_injury" and safety_screen.head_direct_line(self.message):
+                template = safety_screen.head_direct_line(self.message)
+            else:
+                template = _URGENT_LINE.get(kind, _URGENT_LINE_DEFAULT)
+            line = template.format(**loc)
+            lines.append(line)
+            have = min(have if have is not None else _ROUTINE_TIER, need)
+        if "crisis" in self.kinds and not re.search(loc["crisis_rx"], self.said, re.I):
+            # The numbers in the reply's own words (the card never stands in
+            # for them), and "if you're in immediate danger" only when nothing
+            # in the reply already sends them to the emergency number.
+            line = loc["crisis"]
+            if have != 0:
+                line = f"{line} {loc['danger']}"
+            lines.append(line)
+        if crisis == "plan" and not re.search(
+            safety_screen._check_rx(safety_screen._CRISIS_PLAN_CHECK, loc),
+            "\n".join([self.said, *lines]), re.I,
+        ):
+            # A plan, a method or a place: crisis care today, not only the
+            # helplines (round 2, L9 and L12).
+            lines.append(safety_screen.CRISIS_PLAN_LINE.format(**loc))
+        acted = safety_screen.CRISIS_ACTED_LINE.format(**loc)
+        if crisis == "acted" and acted not in lines and not re.search(
+            safety_screen._check_rx(safety_screen._CRISIS_CALL_NOW_CHECK, loc),
+            "\n".join([self.said, *lines]), re.I,
+        ):
+            # An act, or preparing for one: the emergency number now, said as
+            # a conclusion. "If you might act, call 999" is a condition, and
+            # never stands in for it (live round 3, L13).
+            lines.append(acted)
+        if crisis is not None and safety_screen.crisis_riding_method(self._turn.text) and not (
+            re.search(safety_screen.RIDING_MEANS_CHECK, "\n".join([self.said, *lines]), re.I)
+        ):
+            # Riding is the method: no riding at all until a crisis team or
+            # a doctor, with someone there (SAFETY LAW rule 4; live round 3,
+            # L9 and L13). The chat never adds the law's other crisis lines,
+            # so this one is guaranteed here, before the held ending.
+            lines.append(safety_screen.RIDING_MEANS_LINE)
+        return lines
+
+    # ── The floor the facts set (see "The tier the facts set") ──
+
+    def _floor(self) -> tuple[int, str] | None:
+        """(tier, red flag) for the most urgent floor in the turn, or None."""
+        best = None
+        order = safety_screen._KIND_ORDER
+        for kind in (*order, *sorted(self.kinds - set(order))):
+            if kind not in self.kinds:
+                continue
+            tier = floor_tier(kind, self.severity.get(kind), self.message)
+            if kind == "fainting" and self._blackout_said:
+                tier = 0
+            if tier is not None and (best is None or tier < best[0]):
+                best = (tier, kind)
+        return best
+
+    def _floor_line(self, tier: int, kind: str) -> str:
+        """The floor's one line, in the rider's numbers: the card's own
+        instruction for the facts the rider gave."""
+        message = self.message
+        template = None
+        if tier == 0:
+            if kind == "chest_pain":
+                template = safety_screen.chest_direct_line(message)
+            elif kind == "head_injury" and safety_screen.head_fit_said(message):
+                template = safety_screen.head_direct_line(message)
+            elif kind == "fainting":
+                # The blackout line the coach is told to say, when the
+                # rider's own words give the blackout.
+                direct = getattr(safety_screen, "faint_direct_line", None)
+                template = direct(message) if direct is not None else None
+            template = template or _FLOOR_LINE.get(kind, _FLOOR_LINE_DEFAULT)
+        else:
+            if kind == "head_injury":
+                template = safety_screen.head_direct_line(message)
+            template = template or _URGENT_LINE.get(kind, _URGENT_LINE_DEFAULT)
+        return template.format(**self._loc)
+
+    def _note_blackout(self, sentence: str) -> None:
+        """Whether the coach has just said, as a fact, that the rider lost
+        consciousness (never a question or an "if"). It sets the floor only
+        beside a fainting red flag (_floor)."""
+        if self._blackout_said or sentence.rstrip().endswith("?"):
+            return
+        for clause in _clauses(sentence):
+            m = _BLACKOUT_SAID_RX.search(clause)
+            if m and not _NOT_A_STATEMENT_RX.search(clause[: m.start()]):
+                self._blackout_said = True
+                return
+
+    def _below_floor(self, sentence: str, tier: int) -> str | None:
+        """Why the sentence routes below the floor, or None when it doesn't."""
+        clauses = _clauses(sentence)
+        if tier == 0:
+            if any(_routes(c, _RUNG_1_RX) for c in clauses):
+                return "a same-day route below the emergency the facts call for"
+            conditional = any(_RUNG_0_RX.search(c) for c in clauses) and not any(
+                _directive(c, m) for c in clauses for m in _RUNG_0_RX.finditer(c)
+            )
+            if conditional and not instructs_at(0, self.said):
+                return "the emergency number on a condition, before the reply said it plainly"
+            return None
+        if instructs_at(1, self.said) or instructs_at(1, sentence):
+            return None
+        if any(_RUNG_0_RX.search(c) or _routes(c, _RUNG_1_RX) for c in clauses):
+            return None
+        if any(_routes(c, _LATER_ROUTE_RX) for c in clauses):
+            return "a later route below the same-day visit the facts call for"
+        return None
+
+    def _in_place_line(self, floor: tuple[int, str] | None, narrows: bool) -> str | None:
+        """The line that goes where a dropped sentence was: the floor's line
+        while the reply has yet to say it, or, for a sentence that narrowed
+        the emergency number, the terms' line once. None: the sentence just
+        goes."""
+        if (
+            floor is not None
+            and (self._floor_line_tier is None or floor[0] < self._floor_line_tier)
+            and not instructs_at(floor[0], self.said)
+        ):
+            self._floor_line_tier = floor[0]
+            return self._floor_line(*floor)
+        if not narrows or self._when_line_used:
+            return None
+        self._when_line_used = True
+        if "crisis" in self.kinds and not (self.kinds - _NOT_A_BODY_FLAG):
+            danger = self._loc["danger"]
+            return None if _norm(danger) in _norm(self.said) else danger
+        return getattr(safety_screen, "EMERGENCY_ANY_LINE", EMERGENCY_WHEN_LINE).format(
+            **self._loc
+        )
+
+    def _at_floor(self, sentence: str) -> str | None:
+        """The sentence as it may reach the rider: unchanged, the floor's line
+        in its place, or None when it goes. In any safety turn, a sentence
+        that narrows when to call the emergency number goes; with a body red
+        flag, so does one that routes below the floor (see "The tier the
+        facts set"). Never raises: a failed check lets the sentence through."""
+        if not sentence.strip():
+            return sentence
+        try:
+            # Noted before any red flag is in: a verdict that lands later
+            # still finds what the coach already said.
+            self._note_blackout(sentence)
+            if not self.safety_turn:
+                return sentence
+            floor = self._floor()
+            narrows = narrows_emergency(sentence)
+            why = "a sentence that narrows when to call the emergency number" if narrows else None
+            crisis_words = "crisis" in self.kinds and _CRISIS_TALK_RX.search(_norm(sentence))
+            # A question routes nowhere ("Have you been checked today?").
+            question = sentence.rstrip().endswith("?")
+            if why is None and floor is not None and not crisis_words and not question:
+                why = self._below_floor(sentence, floor[0])
+            if why is None:
+                return sentence
+            line = self._in_place_line(floor, narrows)
+        except Exception:
+            logger.exception("Checking a sentence against the turn's floor failed")
+            return sentence
+        if not line:
+            self._drop(sentence, why)
+            return None
+        logger.info(
+            "Reply check put the floor's line in place of (%s): %r", why, sentence.strip()[:160]
+        )
+        self.dropped.append(sentence.strip())
+        lead = sentence[: len(sentence) - len(sentence.lstrip())]
+        tail = sentence[len(sentence.rstrip()):]
+        return lead + line + (tail or " ")
+
+    def _slower_route(self, sentence: str) -> str | None:
+        """The direct line, when this sentence offers chest pain whose own
+        words already give an emergency sign a slower route "if it has
+        settled" (seen today, NHS 111, a GP). None otherwise."""
+        if "chest_pain" not in self.kinds or re.search(
+            self._loc["emergency_rx"], sentence
+        ):
+            return None
+        low = _norm(sentence)
+        if not (_IF_SETTLED_RX.search(low) and re.search(r"\btoday\b", low)):
+            return None
+        return self._direct_line()
+
+    def _direct_line(self) -> str | None:
+        """The direct line for chest pain, or a fit after a head injury, whose
+        own words already give an emergency sign, when the reply never says
+        to call the emergency number now as a conclusion. None otherwise."""
+        direct = None
+        if "chest_pain" in self.kinds:
+            direct = safety_screen.chest_direct_line(self.message)
+        if direct is None and "head_injury" in self.kinds and safety_screen.head_fit_said(
+            self.message
+        ):
+            direct = safety_screen.head_direct_line(self.message)
+        if not direct:
+            return None
+        call_now = safety_screen._check_rx(safety_screen._CALL_NOW, self._loc)
+        if re.search(call_now, self.said, re.I):
+            return None
+        return direct.format(**self._loc)
+
+    def _law_lines(self, kind: str, covered: str, lift: str) -> tuple[list[str], int]:
+        """The SAFETY LAW's lines for one red flag that `covered` doesn't
+        already carry, and how many of its lines apply to this turn at all."""
+        turn = self._turn
+        applicable, missing = 0, []
+        for need in safety_screen._REQUIRED.get(kind, ()):
+            if need.ride and turn.no_riding_advice:
+                continue
+            if need.when is not None and not need.when(turn):
+                continue
+            applicable += 1
+            seen = covered + "\n" + "\n".join(missing)
+            if need.card:
+                seen += "\n" + self._shown
+            if need.lift:
+                seen += "\n" + lift
+            if re.search(safety_screen._check_rx(need.check, turn.loc), seen, re.I):
+                continue
+            text = safety_screen._need_text(need, turn)
+            if text and text not in missing:
+                missing.append(text)
+        return missing, applicable
+
+    def _missing_lines(self) -> list[str]:
+        hold = self._hold()
+        opened = getattr(hold, "opened_at", None)
+        new = hold is not None and opened is not None and opened >= self.since
+        lift = None
+        if new and not self._lift_said:
+            lift = safety_screen.lift_sentence(hold)
+            if lift:
+                # Only the part of it the reply hasn't already said, in any
+                # words: a layoff reply that gave the screening word for word
+                # never hears it again from the lift.
+                kept_pieces, dropped = [], False
+                for p in _pieces(lift):
+                    if _norm(p.strip()) in _norm(self.said) or _same_substance(p, self.said):
+                        dropped = True
+                        continue
+                    if dropped and not kept_pieces:
+                        p = _capitalise(re.sub(r"^\s*otherwise,?\s+", "", p, flags=re.I))
+                    kept_pieces.append(p)
+                lift = "".join(kept_pieces).strip() or None
+
+        if self.cut_off:
+            # The coach never finished: every line the law lists that the
+            # words so far leave out, as the fixed reply would give them.
+            lines = safety_screen._required_lines(
+                self._turn, self.said, self._shown, lift or ""
+            )
+            floor = self._floor()
+            if floor is not None and not instructs_at(
+                floor[0], "\n".join([self.said, *lines])
+            ):
+                lines.insert(0, self._floor_line(*floor))
+            return self._with_hold(lines, hold, new, lift)
+        lines = self._guaranteed()
+        covered = "\n".join([self.said, *lines])
+        reply_tier = _care_tier(covered, self._loc)
+        turn = self._turn
+        for kind in safety_screen._KIND_ORDER:
+            if kind not in turn.kinds or kind == "crisis":
+                continue
+            if _guarantee_tier(kind, self.severity.get(kind)) is not None:
+                continue  # the guarantee above is its line
+            missing, applicable = self._law_lines(kind, covered, lift or "")
+            if not missing:
+                continue
+            if kind in _FIXED_ANSWER_KINDS or (
+                len(missing) == applicable and reply_tier is None
+            ):
+                # A fixed answer, or the coach said nothing about it at all
+                # and sent the rider nowhere: these lines are the reply's only
+                # safety content for it.
+                lines.extend(missing)
+                covered = "\n".join([covered, *missing])
+            else:
+                logger.info(
+                    "Reply check left the coach's words on %s as written (%d line(s) not added)",
+                    kind, len(missing),
+                )
+        return self._with_hold(lines, hold, new, lift)
+
+    def _with_hold(self, lines: list[str], hold, new: bool, lift: str | None) -> list[str]:
+        """The lines not already said, then the hold sentence and how it
+        lifts for a hold opened (or raised) this turn."""
+        kept = []
+        # The floor's line is an instruction the card above only gives on a
+        # condition ("If you passed out"): only the reply itself can stand
+        # in for it.
+        floor = self._floor()
+        floor_line = self._floor_line(*floor) if floor is not None else None
+        for line in lines:
+            shown = "" if line == floor_line else self._shown
+            if _same_substance(line, "\n".join([self.said, *kept]), shown):
+                logger.info("Reply check left out a line already said: %r", line[:160])
+                continue
+            kept.append(line)
+        tail = []
+        raised = (
+            hold is not None and self._hold_said
+            and safety_service.HOLD_LEVELS.get(getattr(hold, "level", None), 0)
+            > safety_service.HOLD_LEVELS.get(self._hold_said_level, 0)
+        )
+        if (new and not self._hold_said) or raised:
+            sentence = hold_sentence(hold, self.since)
+            if sentence:
+                tail.append(sentence)
+                # Said again in the right level's words: the rewrite lets it
+                # through once more.
+                self._hold_said = False
+        if lift:
+            tail.append(lift)
+        if tail:
+            kept.append(" ".join(tail))
+        return kept
+
+
+# ── A reply that sends the rider for care holds the plan ───────────────────
+#
+# Round 1, layer 3: in 20 of 22 replies the coach sent the rider to the right
+# service, but a hold went on in only 9, and only when the coach chose to
+# call its hold tool: fainting mid-interval, a fit after a head injury and a
+# suspected DVT were sent to A&E with the plan still live. So the reply
+# itself is read once it is complete: when the coach tells the rider (not a
+# hypothetical, not a general question) to call 999, 112 or 911 or go to A&E
+# today and no full hold is open, a full hold opens; when it tells them to
+# call NHS 111 or see a GP today and no hold is open, an easy-riding one
+# does. Never in a crisis-only turn: crisis has no training hold by design.
+#
+# Live round 2: a suspected broken collarbone sent to "assessing today at
+# A&E" (L19) and a suspected DVT sent to NHS 111 today with "no riding on
+# it" (L20) kept only the classifier's easy_only hold, so the app still let
+# them ride. The hold now follows the highest instruction in the reply, read
+# as each sentence goes out (_HoldFollowsReply), and upgrades an easy_only
+# hold: the emergency number, A&E or the emergency department in any words
+# ("go to A&E", "assessing today at A&E", "get an X-ray today"), or a
+# same-day route next to "no riding at all", hold everything; NHS 111, a
+# same-day GP or a same-day assessment alone hold to easy riding.
+
+# Where a hold the reply opened says it came from.
+REPLY_HOLD_SOURCE = "reply"
+# The red flags a reply hold is never named after.
+_NOT_A_BODY_FLAG = frozenset(
+    {"crisis", "distress_check", "safety_question", "minor", "responsibility", "big_jump"}
+)
+
+_EMERGENCY_NUMBER = (
+    r"(?:999|112|911|15 \(samu\)|an ambulance|for an ambulance|the ambulance|emergency "
+    r"services)"
+)
+_HOSPITAL = (
+    r"(?:a&e|accident and emergency|(?:the|an|your nearest) emergency department|"
+    r"(?:the|an) emergency room|the er\b|les urgences|urgences|hospital)"
+)
+_EMERGENCY_ACTION_RX = re.compile(
+    rf"\b(?:call|ring|phone|dial|get someone to call|have someone call)\s+{_EMERGENCY_NUMBER}"
+    r"|\b(?:call|ring|phone|dial)\s+(?:the|your local|your)\s+emergency number\b"
+    rf"|\b(?:go|get|head|get yourself|go straight|get straight|make your way|get a lift)"
+    rf"\s+(?:straight\s+|now\s+|today\s+|down\s+|back\s+|right\s+)?(?:to|into)\s+{_HOSPITAL}"
+    rf"|\b(?:seen|seeing|checked|checking|assessed|assessing|assessment|looked at|examined|"
+    rf"x-?rayed|treated)\b[^.;!?]{{0,30}}\b(?:at|in|by)\s+{_HOSPITAL}"
+    rf"|\b(?:seen|checked|assessed)\s+today\b[^.;!?]{{0,40}}{_HOSPITAL}"
+    rf"|\b{_HOSPITAL}\s*(?:\([^)]*\)\s*)?(?:today|now|tonight|straight away|right away|"
+    rf"immediately)\b"
+    r"|\bx-?ray(?:ed|s)?\b[^.;!?]{0,25}\btoday\b|\btoday\b[^.;!?]{0,25}\bx-?ray"
+)
+_URGENT_ACTION_RX = re.compile(
+    r"\b(?:call|ring|phone|contact|try|use)\s+(?:nhs\s+)?111\b"
+    r"|\b(?:get|be|getting|being|needs?|need to be)\s+(?:it\s+|this\s+|that\s+|yourself\s+|"
+    r"your\s+\w+\s+)?(?:seen|seeing|checked|checking|looked at|assessed|assessing)\b"
+    r"[^.;!?]{0,25}\btoday\b"
+    r"|\b(?:see|call|ring|phone|contact|speak to|talk to|book in with|get in to see)\s+"
+    r"(?:your|a)\s+(?:gp|doctor)\b[^.;!?]{0,30}\b(?:today|this (?:morning|afternoon|"
+    r"evening)|straight away|urgently|right away|same[- ]day)\b"
+    r"|\bsame[- ]day\s+(?:gp\s+)?(?:appointment|gp|doctor|assessment|check|review)\b"
+    r"|\bnhs 111\b[^.;!?]{0,15}\b(?:today|now|tonight)\b"
+    r"|\burgent care\b[^.;!?]{0,20}\btoday\b"
+)
+# The reply rules out riding altogether, easy riding included: next to a
+# same-day route, that is a full hold (L20, "No riding on it ... until
+# you've been checked"). "Don't ride through the pain" and "no riding hard"
+# are not.
+_NO_RIDING_AT_ALL_RX = re.compile(
+    r"\bno riding(?: or training)?(?: of any kind| at all| whatsoever| on it)\b"
+    r"|\bno riding(?: or training)?\s+(?:until|till|before)\b"
+    r"|\bno riding(?: or training)?\s*(?:[.;:]|$)"
+    r"|\b(?:don't|do not)\s+(?:ride|cycle|train)\s+(?:at all|until|till)\b"
+    r"|\b(?:don't|do not)\s+ride\s*,\s*not even\b"
+    r"|\bnot even (?:an easy spin|easy|one-handed|on the turbo|indoors|gently|a spin)\b"
+    r"|\bnothing on the bike\b|\bstay off the bike\b"
+    r"|\b(?:don't|do not)\s+get (?:back )?on the bike\b"
+)
+# Splits a sentence where one instruction ends and the next begins.
+_CLAUSE_SPLIT_RX = re.compile(
+    r";\s*|,\s*(?:and|but|then|so)\s+(?=\w)|\s+and then\s+|,\s*(?=otherwise\b)|"
+    r"(?<=[.!?])\s+|\n+"
+)
+# The branch every answer lands on: "If it settled, you still need to be seen
+# today", "Otherwise, go to A&E".
+_DEFAULT_BRANCH_RX = re.compile(
+    r"\b(?:otherwise|either way|regardless|whatever happens|still need|still needs|"
+    r"still have to|still has to|you still)\b"
+)
+# Words before an action that make it a hypothetical ("if it comes back,
+# call 999", "you could call 111"), and after one ("call 999 if it does").
+_LEAD_CONDITION_RX = re.compile(
+    r"\b(?:if|in case|whenever|when|unless|once|as soon as|any time|anytime|until|"
+    r"would|could|might|can|may|able to)\b(?!')|^\W*should\b"
+)
+_AFTER_CONDITION_RX = re.compile(
+    r"\b(?:if|in case|whenever|when|unless|once|as soon as|any time|anytime|should)\b"
+)
+# "if" that isn't one: "see if it settles", "even if it has settled".
+_NOT_CONDITION_RX = re.compile(
+    r"\b(?:see|check|ask|wonder|not sure|unsure|even)\s+if\b|\bas if\b|\bwhat if\b"
+)
+_NEGATION_BEFORE_RX = re.compile(
+    r"(?:\b(?:don't|do not|no need to|not|never|needn't|without|nothing)\b|n't\b)"
+    r"(?:\s+[a-z'&]+){0,3}\s*$"
+)
+# A list of symptoms after the action makes it a safety net: "call 999 for
+# chest pain, collapse or confusion".
+_SYMPTOMS_AFTER_RX = re.compile(
+    r"^[^.;!?]{0,12}\b(?:for|with|at the first sign of|on)\b[^.;!?]{0,80}\b(?:pain|fit|"
+    r"faint|dizz|confus|breath|collaps|drows|numb|weak|slur|vision|vomit|bleed|worse|"
+    r"signs?|symptoms?|seizure|heatstroke|any of)"
+)
+
+
+_BRACKETS_RX = re.compile(r"\s*\([^)]*\)")
+
+
+def _directive(clause: str, m: re.Match) -> bool:
+    """Whether the action `m` in this clause is an instruction to the rider
+    now, rather than a hypothetical or a safety net."""
+    low = _NOT_CONDITION_RX.sub(lambda x: " " * len(x.group(0)), clause)
+    lead, after = low[: m.start()], low[m.end():]
+    if _NEGATION_BEFORE_RX.search(lead):
+        return False
+    if _DEFAULT_BRANCH_RX.search(low):
+        return True
+    if _LEAD_CONDITION_RX.search(lead) or _AFTER_CONDITION_RX.search(after):
+        return False
+    return not _SYMPTOMS_AFTER_RX.search(after)
+
+
+# Words before "no riding at all" that make it a hypothetical: "if even easy
+# riding hurts, don't ride at all".
+_NO_RIDE_CONDITION_RX = re.compile(
+    r"\b(?:if|in case|whenever|when|unless|as soon as|any time|anytime|should)\b(?!')"
+)
+
+
+def _no_riding_at_all(reply: str) -> str | None:
+    """The sentence in which the reply rules out riding altogether, as an
+    instruction rather than a hypothetical, or None."""
+    for sentence in _UNIT_SPLIT_RX.split(reply or ""):
+        for clause in _CLAUSE_SPLIT_RX.split(sentence or ""):
+            if not clause or not clause.strip():
+                continue
+            low = _NOT_CONDITION_RX.sub(lambda x: " " * len(x.group(0)), _norm(clause))
+            for m in _NO_RIDING_AT_ALL_RX.finditer(low):
+                if not _NO_RIDE_CONDITION_RX.search(low[: m.start()]):
+                    return sentence.strip()
+    return None
+
+
+def escalation_in(reply: str) -> tuple[str | None, str]:
+    """("hold_all", sentence) when the reply tells the rider to call the
+    emergency number or go to A&E (or the emergency department, or for an
+    X-ray) now or today, or sends them to be seen today and rules out riding
+    altogether; ("easy_only", sentence) when it tells them to call NHS 111,
+    see a GP today or have a same-day assessment; else (None, "").
+    Conditionals ("if it comes back, call 999") and safety nets ("call 999
+    for chest pain or collapse") don't count."""
+    urgent = None
+    for sentence in _UNIT_SPLIT_RX.split(reply or ""):
+        for clause in _CLAUSE_SPLIT_RX.split(sentence or ""):
+            if not clause or not clause.strip():
+                continue
+            # "999 (112 in the EU, 911 in the US)": the brackets never change
+            # what the instruction is.
+            low = _BRACKETS_RX.sub("", _norm(clause))
+            for m in _EMERGENCY_ACTION_RX.finditer(low):
+                if _directive(low, m):
+                    return "hold_all", sentence.strip()
+            if urgent is None:
+                for m in _URGENT_ACTION_RX.finditer(low):
+                    if _directive(low, m):
+                        urgent = sentence.strip()
+                        break
+    if not urgent:
+        return None, ""
+    no_riding = _no_riding_at_all(reply)
+    if no_riding:
+        both = urgent if no_riding == urgent else f"{urgent} {no_riding}"
+        return "hold_all", both
+    return "easy_only", urgent
+
+
+# ── The tier the facts set, and nothing below it ───────────────────────────
+#
+# Live round 3: the cards and holds were right every time; the unsafe
+# replies were the coach's own routing under them. L4: the rider blacked out
+# on the bike, the card said "If you passed out ... call 999 now", and the
+# coach agreed it was a blackout, then wrote "call 999 now if it's not
+# settled ... and otherwise get seen today, A&E or NHS 111". R12: "999 ...
+# is only for chest pain, collapse or confusion on the day itself". So each
+# turn's red flags set a floor, the least urgent care the rider's facts allow
+# (0: the emergency number or A&E now; 1: seen today), and before a sentence
+# reaches the rider:
+#   - at the emergency floor, a sentence that offers a same-day route (A&E
+#     today, NHS 111, a GP today) goes, and so does one that gives the
+#     emergency number only on a condition before the reply has said it
+#     plainly ("call 999 if it's not settled");
+#   - at the same-day floor, a sentence that puts the visit off (the GP this
+#     week) before the reply has said today goes;
+#   - in any safety turn, a sentence that narrows when to call the emergency
+#     number ("999 is only for", "only call 999 if") goes.
+# The first sentence to go makes way for the floor's one line, in the
+# rider's numbers, when the reply hasn't said it yet; a reply that ends
+# without it gets the line at the end.
+#
+# The floor is the card's own branch for the facts. A red flag at emergency
+# severity is the emergency floor (the severity rules already read the facts:
+# passing out, a fit after a blow to the head, a racing heart with dizziness),
+# except chest pain, which is always read at emergency severity although its
+# card sends pain that settled quickly with none of the signs to be seen
+# today (R1): its floor is the emergency only when the rider's words give one
+# of the signs (safety_screen.chest_direct_line) or it is happening now. A
+# head injury read at emergency severity for being knocked out is the same:
+# its card says A&E today, so the emergency floor needs a fit or one of the
+# card's emergency signs in the rider's words (_HEAD_EMERGENCY_RX).
+
+# Red flags whose card names a rung of care for the facts: at emergency
+# severity the emergency number now, at urgent seen today.
+_FLOOR_KINDS = frozenset({
+    "chest_pain", "palpitations", "fainting", "head_injury", "gi_bleed", "dvt", "fracture",
+})
+# Red flags whose card needs emergency care now at any severity.
+_FLOOR_ALWAYS_EMERGENCY = frozenset({"cauda_equina", "compartment"})
+# Red flags whose card names the emergency number only at emergency severity:
+# below it they carry a safety net (a fever's rest, the heat warning), not a
+# visit.
+_FLOOR_AT_EMERGENCY_ONLY = frozenset({"fever", "heat"})
+
+# After a blow to the head, the signs the card sends to the emergency number
+# (a fit is head_fit_said): drowsiness, confusion, weakness, slurred speech,
+# trouble with vision or balance, a headache that gets worse, repeated
+# vomiting, clear fluid from the nose or ears. Being knocked out, a memory
+# gap or a headache that hasn't gone is the card's "A&E today", which is
+# also the law's own line for them (safety_screen.head_direct_line).
+_HEAD_EMERGENCY_RX = re.compile(
+    r"\bdrows\w*|\bhard to wake\b|\bconfus\w*|\bslurr\w*|\bweak(?:ness)?\b|"
+    r"\b(?:blurr\w*|double|blurry) vision\b|\btrouble (?:seeing|with (?:my )?(?:vision|balance|"
+    r"eyes))\b|\b(?:lost|losing) (?:my )?balance\b|\b(?:can't|cannot|couldn't) (?:see|walk) "
+    r"(?:straight|properly)\b|\b(?:getting|got|gets|going|keeps getting) worse\b|"
+    r"\bworse and worse\b|\b(?:keep|kept|keeps|been) (?:being sick|vomiting|throwing up)\b|"
+    r"\b(?:sick|vomited|threw up|thrown up)\b[^.!?\n]{0,20}\b(?:again|twice|three times|"
+    r"several times|repeatedly|more than once)\b|\bclear fluid\b"
+)
+
+# Chest pain the rider says is there now: the card's "if it's still
+# happening".
+_CHEST_NOW_RX = re.compile(
+    r"\bright now\b|\bat the moment\b|\bhappening now\b|\bstill (?:got it|have it|there|"
+    r"going|happening|hurts|hurting|tight|aching)\b|\b(?:hurts|tight|aching|sore) now\b"
+)
+
+# The floor's one line at the emergency rung, by red flag: the card's own
+# instruction, said as a conclusion for the facts the rider gave.
+_FLOOR_LINE = {
+    "chest_pain": (
+        "Chest pain that's happening now is an emergency: call {emergency} now, and don't "
+        "wait to see if it settles."
+    ),
+    "palpitations": (
+        "A racing or irregular heart that comes with dizziness, faintness, chest pain or "
+        "breathlessness is an emergency: stop and call {emergency} now."
+    ),
+    "fainting": "Passing out like this is an emergency: call {emergency} now, even if you feel fine.",
+    "head_injury": "What you describe after a blow to the head is an emergency: call {emergency} now.",
+    "gi_bleed": (
+        "This can mean bleeding in the stomach or gut, and it's an emergency: call "
+        "{emergency} now."
+    ),
+    "dvt": (
+        "A swollen calf with chest pain, sudden breathlessness or coughing up blood is an "
+        "emergency: call {emergency} now."
+    ),
+    "cauda_equina": _EMERGENCY_LINE["cauda_equina"],
+    "compartment": _EMERGENCY_LINE["compartment"],
+    "heat": (
+        "This sounds like heatstroke, which is an emergency: call {emergency} now and cool "
+        "down while you wait."
+    ),
+}
+_FLOOR_LINE_DEFAULT = "What you describe is an emergency: call {emergency} now."
+
+# What the reply says in place of a sentence that narrowed when to call the
+# emergency number, in the rider's numbers: safety_screen.EMERGENCY_ANY_LINE
+# when the check there has it (one wording everywhere), else this, from
+# Forma's terms (s.2).
+EMERGENCY_WHEN_LINE = (
+    "Call {emergency} for any emergency, including chest pain, collapse, confusion, a bad "
+    "crash or a head injury."
+)
+
+_NOW_WORDS = r"(?:now|right now|straight away|right away|immediately|at once)"
+# The emergency rung in the reply's words: the emergency number, an
+# ambulance, or A&E now ("go straight to A&E", "get to A&E now").
+_RUNG_0_RX = re.compile(
+    r"\b(?:call|ring|phone|dial|calling|ringing|phoning|dialling|get someone to call|"
+    rf"have someone call|get someone to ring)\s+(?:{_EMERGENCY_NUMBER}|15(?= or 112\b)|"
+    r"(?:the |your local |your )?emergency (?:number|services))"
+    rf"|{_HOSPITAL}[^.;!?]{{0,15}}\b{_NOW_WORDS}\b"
+    rf"|\b(?:go|get|head|make your way)\s+(?:straight|right)\s+(?:back\s+)?(?:to|into)\s+"
+    rf"{_HOSPITAL}"
+)
+# A same-day route, a rung below the emergency: NHS 111, A&E today, seen
+# today, a GP today.
+_RUNG_1_RX = re.compile(
+    r"\b(?:nhs\s+)?111\b(?![^.;!?]{0,25}\boption 2\b)"
+    rf"|{_HOSPITAL}\s*(?:today|tonight|later(?: today| on)?|this (?:morning|afternoon|evening))\b"
+    rf"|\b(?:today|tonight)\b[^.;!?]{{0,25}}{_HOSPITAL}"
+    r"|\b(?:seen|seeing|checked|checking|assessed|assessing|looked at|examined|x-?rayed)\b"
+    r"[^.;!?]{0,25}\b(?:today|tonight)\b"
+    r"|\b(?:gp|doctor)\b[^.;!?]{0,30}\b(?:today|urgently|same[- ]day)\b"
+    r"|\bsame[- ]day\b|\burgent (?:care|treatment)\b|\bwalk-in\b|\bout-of-hours\b"
+    r"|\bminor injur\w*"
+)
+# A route that puts the visit off: the GP this week, when you can.
+_LATER_ROUTE_RX = re.compile(
+    r"\b(?:gp|doctor|physio\w*)\b[^.;!?]{0,40}\b(?:in the next (?:few|couple of) (?:days|weeks)|"
+    r"in a (?:few|couple of) days|this week|next week|within (?:a|the next|the) (?:week|few "
+    r"days|fortnight)|when you can|in the coming days|soon|at some point)\b"
+    r"|\b(?:book|make)\s+(?:in\s+)?(?:a\s+|an\s+)?(?:routine\s+)?(?:gp\s+|doctor's\s+)?"
+    r"appointment\b"
+    r"|\broutine (?:gp )?appointment\b"
+)
+# Words before a route that turn it down ("not NHS 111", "rather than A&E
+# today") or presume it ("when you're seen today, tell them").
+_ROUTE_REFUSED_RX = re.compile(
+    r"(?:\b(?:not|no|never|rather than|instead of|without)\b|n't\b)(?:\s+[a-z'&]+){0,3}\s*$"
+)
+_ROUTE_PRESUMED_RX = re.compile(
+    r"\b(?:when|once|after|while|by the time)\s+(?:you(?:'re|'ve| are| have| get)?|they)\b"
+)
+# The branch of a reply a card itself offers: "if it has settled", "if none
+# of those", "otherwise".
+_SETTLED_BRANCH_RX = re.compile(
+    r"\bif\b[^.!?\n]{0,40}\b(?:settled|gone|passed|eased|cleared|stopped|hasn't come back|"
+    r"not come back|went away|none of)\b|\botherwise\b"
+)
+_EMERGENCY_ROUTE = (
+    rf"(?:{_EMERGENCY_NUMBER}|(?:the |your local |your )?emergency (?:number|services|"
+    rf"department)|{_HOSPITAL})"
+)
+# A sentence that narrows when to call the emergency number: "999 is only
+# for", "only call 999 if", "call 999 only if", "save 999 for".
+_NARROWS_RX = re.compile(
+    r"\bonly\s+(?:ever\s+)?(?:call|ring|dial|phone|use|go to|need|needs)\s+"
+    rf"(?:to\s+(?:call|ring|dial|phone)\s+)?{_EMERGENCY_ROUTE}"
+    rf"|{_EMERGENCY_ROUTE}(?:\s+is|\s+are|'s|\s+should|\s+must|\s+would)(?:\s+[a-z']+){{0,2}}?"
+    r"\s+(?:only|just|strictly|solely|reserved)\b(?:\s+[a-z']+){0,2}?\s+(?:for|if|when|in)\b"
+    rf"|{_EMERGENCY_ROUTE}(?:\s+now)?\s+(?:only|just)\s+(?:if|when|for|in)\b"
+    rf"|\b(?:save|keep)\s+{_EMERGENCY_ROUTE}\s+for\b"
+)
+# "Don't call 999 unless you collapse."
+_NARROWS_UNLESS_RX = re.compile(
+    r"\b(?:don't|do not|no need to|needn't)\s+(?:call|ring|dial|phone|go to)\s+"
+    rf"{_EMERGENCY_ROUTE}[^.;!?]{{0,60}}\bunless\b"
+)
+_NOT_RX = re.compile(r"\bnot\b|n't\b")
+# A crisis sentence: its own routes (NHS 111 option 2, the danger line) are
+# the crisis protocol's, never a body red flag's floor.
+_CRISIS_TALK_RX = re.compile(
+    r"option 2|crisis|mental health|samaritans|\bshout\b|85258|116 ?123|\b988\b|"
+    r"hurt(?:ing)? yourself|harm|end(?:ing)? your life|suicid|act on (?:it|this|them|that)|"
+    r"taken something|unsafe|in danger"
+)
+# The coach saying, as a fact, that the rider lost consciousness: "that's a
+# blackout", "you lost consciousness". A fact the coach confirms is the
+# emergency floor whatever the first reading was.
+_BLACKOUT_SAID_RX = re.compile(
+    r"\b(?:that's|that was|that is|this is|this was|it was|it's|sounds like)\s+(?:a\s+)?"
+    r"(?:blackout|black-out|loss of consciousness)\b"
+    r"|\byou (?:lost consciousness|passed out|blacked out|were unconscious|were knocked out|"
+    r"were out cold)\b"
+)
+_NOT_A_STATEMENT_RX = re.compile(
+    r"\b(?:if|whether|did|have|were|unless|in case|might|may|could|maybe|perhaps)\b"
+)
+
+
+def _clauses(text: str) -> list[str]:
+    """The text as clauses, lower case, brackets out: "999 (112 in the EU,
+    911 in the US)" never changes what an instruction is."""
+    out = []
+    for sentence in _UNIT_SPLIT_RX.split(text or ""):
+        for clause in _CLAUSE_SPLIT_RX.split(sentence or ""):
+            if clause and clause.strip():
+                out.append(_BRACKETS_RX.sub("", _norm(clause)))
+    return out
+
+
+def _routes(clause: str, rx: re.Pattern) -> list[re.Match]:
+    """The routes in a clause the words before them neither turn down nor
+    presume."""
+    return [
+        m for m in rx.finditer(clause)
+        if not _ROUTE_REFUSED_RX.search(clause[: m.start()])
+        and not _ROUTE_PRESUMED_RX.search(clause[: m.start()])
+    ]
+
+
+def instructs_at(tier: int, text: str) -> bool:
+    """Whether the text tells the rider, as an instruction rather than a
+    hypothetical or a safety net, to get care at this tier or a more urgent
+    one: 0, the emergency number or A&E now; 1, seen today (the card's own
+    "if it has settled" branch counts)."""
+    for clause in _clauses(text):
+        if any(_directive(clause, m) for m in _RUNG_0_RX.finditer(clause)):
+            return True
+        if tier < 1:
+            continue
+        for rx in (_RUNG_1_RX, _EMERGENCY_ACTION_RX, _URGENT_ACTION_RX):
+            for m in rx.finditer(clause):
+                if _directive(clause, m) or _SETTLED_BRANCH_RX.search(clause[: m.start()]):
+                    return True
+    return False
+
+
+def narrows_emergency(sentence: str) -> bool:
+    """Whether the sentence narrows when to call the emergency number or go
+    to A&E ("999 is only for chest pain, collapse or confusion"). "Not only
+    for" widens it, and stays."""
+    low = _BRACKETS_RX.sub("", _norm(sentence))
+    if _NARROWS_UNLESS_RX.search(low):
+        return True
+    for m in _NARROWS_RX.finditer(low):
+        if _NOT_RX.search(m.group(0)) or _NOT_RX.search(low[max(0, m.start() - 6): m.start()]):
+            continue
+        return True
+    return False
+
+
+def floor_tier(kind: str, severity: str | None, message: str = "") -> int | None:
+    """The floor one red flag sets: 0 for the emergency number or A&E now, 1
+    for seen today, None for neither (see the comment above)."""
+    if kind in _FLOOR_ALWAYS_EMERGENCY:
+        return 0
+    if kind in _FLOOR_AT_EMERGENCY_ONLY:
+        return 0 if severity == "emergency" else None
+    if kind not in _FLOOR_KINDS:
+        return None
+    tier = _guarantee_tier(kind, severity)
+    if kind == "chest_pain" and tier == 0 and not (
+        safety_screen.chest_direct_line(message)
+        or safety_screen._said_plainly(_CHEST_NOW_RX, _norm(message))
+    ):
+        return 1
+    if kind == "head_injury" and tier == 0 and not (
+        safety_screen.head_fit_said(message)
+        or safety_screen._said_plainly(_HEAD_EMERGENCY_RX, _norm(message))
+    ):
+        # Knocked out, a memory gap or a headache still there, read at
+        # emergency severity: the card's own branch is A&E today, never
+        # below it.
+        return 1
+    return tier
+
+
+def _crisis_only(screen, reply: str, country: str | None) -> bool:
+    """A crisis turn with no physical red flag, or a turn whose reply gave
+    the crisis lines although the check found nothing."""
+    kinds = set(screen.kinds)
+    if "crisis" in kinds and not (kinds - {"crisis", "distress_check"}):
+        return True
+    if not kinds:
+        crisis_rx = safety_screen._local(country).get("crisis_rx")
+        return bool(crisis_rx and re.search(crisis_rx, reply or "", re.I))
+    return False
+
+
+def _hold_on_escalation(
+    db: Session, user: User, screen, reply: str, since: datetime
+) -> SafetyHold | None:
+    """Open the hold the coach's own reply calls for (see the comment
+    above), and record why. Returns the hold it opened, or None. Never
+    raises."""
+    try:
+        kinds = set(screen.kinds)
+        if "safety_question" in kinds and not (kinds - _NOT_A_BODY_FLAG):
+            return None
+        country = getattr(user, "country", None)
+        if _crisis_only(screen, reply, country):
+            return None
+        level, clause = escalation_in(reply)
+        if level is None:
+            return None
+        current = safety_service.current_hold(db, user.id)
+        if current is not None and (current.level == "hold_all" or level == "easy_only"):
+            return None
+        # The red flag stays the rider's own, so the hold the reply raises is
+        # the same episode's (safety_service.open_hold raises an easy hold in
+        # place rather than opening a second one). A reply hold lifts by a
+        # doctor only, whatever its red flag (safety_service.doctor_only), so
+        # an injury sent to A&E is never "a physio or doctor" (L19 to L21).
+        red_flag = next(
+            (h.kind for h in screen.hits if h.kind not in _NOT_A_BODY_FLAG), "escalation"
+        )
+        # The reason the hold notice shows: the red flag when it is a medical
+        # one, otherwise what the reply did.
+        reason = (
+            safety_screen.HOLD_REASONS.get(red_flag) if red_flag in safety_screen.HOLD_FOR
+            else None
+        ) or (
+            "Sent for emergency care in chat" if level == "hold_all"
+            else "Sent to be seen today in chat"
+        )
+        note = f'The coach\'s reply said: "{clause[:300]}"'
+        hold = safety_service.open_hold(
+            db, user, level, reason, REPLY_HOLD_SOURCE, red_flag=red_flag, note=note,
+            commit=False,
+        )
+        db.flush()
+        db.add(SafetyEvent(
+            user_id=user.id, kind="escalation", source=REPLY_HOLD_SOURCE,
+            matched=clause[:200], hold_id=hold.id,
+        ))
+        db.commit()
+    except Exception:
+        logger.exception("Opening the hold a reply called for failed (user=%s)", user.id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return None
+    logger.info(
+        "The coach's reply sent the rider for care: %s hold opened (user=%s)", level, user.id
+    )
+    _resync_hold_marks(db, user)
+    return hold
+
+
+class _HoldFollowsReply:
+    """Reads the reply as each sentence goes out and opens the hold its own
+    words call for at once (_hold_on_escalation), so a hold sentence later
+    in the same reply says the right level. Only ever raises the hold, and
+    asks the database only when the reply's level goes up."""
+
+    def __init__(self, db: Session, user: User, screen, since: datetime):
+        self.db, self.user, self.screen, self.since = db, user, screen, since
+        self.level = 0
+
+    def __call__(self, said: str) -> None:
+        level, _ = escalation_in(said)
+        rank = safety_service.HOLD_LEVELS.get(level, 0) if level else 0
+        if rank <= self.level:
+            return
+        self.level = rank
+        _hold_on_escalation(self.db, self.user, self.screen, said, self.since)
+
+
+def _flag_crisis_turn(db: Session, user: User, screen, since: datetime) -> None:
+    """Every crisis turn is flagged for Gareth's review, whether or not the
+    coach called flag_for_review itself (round 1: one in five did). One
+    flag per turn; the alert email itself stays one per half hour. Never
+    raises."""
+    if "crisis" not in set(screen.kinds):
+        return
+    try:
+        flagged = (
+            db.query(SafetyEvent.id)
+            .filter(
+                SafetyEvent.user_id == user.id,
+                SafetyEvent.kind == "crisis",
+                SafetyEvent.source == "coach_tool",
+                SafetyEvent.created_at >= since,
+            )
+            .first()
+            is not None
+        )
+        if flagged:
+            return
+        _execute_tool(db, user, "flag_for_review", {
+            "reason": "crisis",
+            "note": "Flagged automatically: crisis words in chat.",
+        })
+    except Exception:
+        logger.exception("Flagging a crisis turn for review failed (user=%s)", user.id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 def _flush_after_failure(
@@ -2176,6 +3927,8 @@ def _flush_after_failure(
     """What the reply check still holds when the model call fails part way:
     the last sentences, any line the SAFETY LAW requires, or, in a safety
     turn where nothing had reached the rider, the whole fixed reply."""
+    if isinstance(guard, _CheckedReply):
+        guard.cut_off = True
     try:
         out = guard.feed(scrub.flush()) + guard.flush()
     except Exception:
@@ -2224,9 +3977,12 @@ _ops_lock = threading.Lock()
 
 
 def _credit_exhausted(error: BaseException | None) -> bool:
-    """The Anthropic account has run out of credit: every reply fails until
-    it is topped up, so the first failure is enough to tell Gareth."""
-    return error is not None and "credit balance is too low" in str(error).lower()
+    """The Anthropic account can't be billed any more: out of credit, or the
+    monthly spend limit has been reached (which blocked the coach on 12 Oct
+    2026 with credit still in the account). Every reply fails until Gareth
+    acts, so the first failure is enough to tell him."""
+    text = str(error).lower() if error is not None else ""
+    return "credit balance is too low" in text or "api usage limits" in text
 
 
 def _worth_retrying(error: BaseException) -> bool:
@@ -2270,11 +4026,19 @@ def _alert_on_outage(
     now = datetime.utcnow()
     if _credit_exhausted(error):
         reason = "credit"
-        excerpt = (
-            "The Anthropic account's credit balance is too low, so the coach can't "
-            "reply to anyone. Chat replies, briefings and emails all fail until the "
-            "account is topped up. Riders with a red flag still get the fixed safety reply."
-        )
+        if "usage limits" in str(error).lower():
+            excerpt = (
+                "The Anthropic account has hit its monthly spend limit, so the coach can't "
+                "reply to anyone, even with credit still in the account. Raise the limit in "
+                "the console (Settings, then Limits) and replies resume at once. Riders with a "
+                "red flag still get the fixed safety reply."
+            )
+        else:
+            excerpt = (
+                "The Anthropic account's credit balance is too low, so the coach can't "
+                "reply to anyone. Chat replies, briefings and emails all fail until the "
+                "account is topped up. Riders with a red flag still get the fixed safety reply."
+            )
     else:
         try:
             failed = (
@@ -2497,6 +4261,17 @@ def _child_reply(guard: "safety_screen.ReplyGuard") -> str:
     return "\n\n".join(paragraphs)
 
 
+def _child_reply_after(guard: "safety_screen.ReplyGuard", scrub: StreamHumanizer) -> str:
+    """The fixed under-18 words for a reply the classifier read as a
+    child's part way through: whatever the model was still writing is let
+    go unsent, and nothing it was waiting to confirm goes out."""
+    scrub.flush()
+    guard._buf = ""
+    guard._pending = []
+    guard._colon = ""
+    return _child_reply(guard)
+
+
 def _run_in_background(fn, *args) -> None:
     """Run a slow outside call (Stripe) off the reply's path. Tests replace
     this to run it inline."""
@@ -2566,15 +4341,29 @@ def _stated_age(text: str) -> int | None:
 # ── The second check on the rider's words (the safety classifier) ──────────
 #
 # The regex check runs first, and any emergency or crisis card it brings goes
-# out at once. Then a small model (app.services.safety_classifier) reads the
-# message, with the rider's last two messages for context, and its verdict is
-# merged with the regex's: it can add a red flag the regex missed ("life
-# isn't worth living") or set aside one the regex misread ("hay fever"). The
-# merged hits are acted on exactly as the regex's always have been
+# out at once. A small model (app.services.safety_classifier) reads the
+# message too, with the rider's last two messages for context, and its
+# verdict is merged with the regex's: it can add a red flag the regex missed
+# ("life isn't worth living") or set aside one the regex misread ("hay
+# fever"). Merged hits are acted on exactly as the regex's always have been
 # (safety_screen.screen_message): holds, records, alerts, the SAFETY CONTEXT
-# line and any card it adds, all before a word of the model's reply. A
+# line and any card.
+#
+# It runs alongside the coach's own reply, never in front of it (round 1:
+# Haiku answered in about 1.8 s, the chat waited 1.5 s, and six turns in ten
+# went without it). It starts at the beginning of the turn. If it has
+# answered by the time the reply starts, its whole verdict is acted on
+# first. Otherwise the regex's hits are acted on and the reply streams; when
+# the verdict lands (mid-stream, or in the wait before "done", up to
+# CLASSIFIER_DEADLINE_SECONDS after it started) any red flag it adds is acted
+# on at once: its card goes out, the hold opens, the record is written, any
+# alert is sent, the reply check takes it in so the lines it needs still go
+# at the end, and the card is kept on the stored reply. A red flag it sets
+# aside after the regex has acted stands: the rider has already been told.
+# If the rider leaves before it answers, the verdict is still acted on when
+# it lands, on a database session of its own (_TurnSafety.detach). A
 # missing, slow or failing classifier leaves the regex's result exactly as
-# it was: it can never break or hold up a chat for longer than its wait.
+# it was.
 #
 # The classifier module's interface, as this wiring calls it:
 #   classify_safety(text, recent, country, user_id=..., surface=...) -> a
@@ -2586,9 +4375,15 @@ def _stated_age(text: str) -> int | None:
 #       when the result is not ok).
 # It never gets the database session: it runs on a thread of its own.
 
-# The classifier stops itself at 1.5 s; the chat waits a little longer than
-# that for it, and then goes on without it.
-CLASSIFIER_WAIT_SECONDS = 2.0
+# How long after it starts the classifier's verdict still counts. The chat
+# waits for whatever is left of it before "done", never longer.
+CLASSIFIER_DEADLINE_SECONDS = 6.0
+# How long the turn waits for the verdict before the coach's reply starts:
+# none at all, the reply never waits for it. (Tests give it a head start to
+# pin the order; nothing in production should.)
+CLASSIFIER_HEAD_START_SECONDS = 0.0
+# How often a wait looks to see whether the verdict has landed.
+_CLASSIFIER_POLL_SECONDS = 0.02
 # What a SafetyEvent records as its source when the classifier found it.
 CLASSIFIER_SOURCE = "classifier"
 # How many of the rider's earlier messages the classifier reads for context.
@@ -2597,8 +4392,8 @@ CLASSIFIER_CONTEXT_MESSAGES = 2
 _CARDS_AT_ONCE = frozenset({"emergency", "crisis"})
 # At most this many classifier calls in flight: one that hangs past its own
 # timeout can never pile up threads. A turn that finds them all busy goes on
-# with the regex alone.
-_classifier_slots = threading.BoundedSemaphore(8)
+# with the regex alone. Sixteen, because a call now lives up to 6 s.
+_classifier_slots = threading.BoundedSemaphore(16)
 
 
 def _load_classifier():
@@ -2746,45 +4541,68 @@ def _classifier_request(
     return (merge, future) if future is not None else None
 
 
-async def _second_opinion(
+class _SecondOpinion:
+    """The classifier's verdict on its way: the call, started at the
+    beginning of the turn on a thread of its own, the merge that reads it,
+    and when it started, so every wait for it ends at the same deadline.
+    Nothing here cancels the call: a wait that gives up leaves it running,
+    and a later look can still find its answer."""
+
+    def __init__(self, merge, future: concurrent.futures.Future):
+        self.merge = merge
+        self.future = future
+        self.started = time.monotonic()
+
+    def remaining(self) -> float:
+        return max(0.0, CLASSIFIER_DEADLINE_SECONDS - (time.monotonic() - self.started))
+
+    def done(self) -> bool:
+        return self.future.done()
+
+    def verdict(self):
+        """The verdict, once it has answered: None for no answer, an error
+        or nothing to say."""
+        if not self.future.done():
+            return None
+        try:
+            return self.future.result(timeout=0)
+        except Exception:
+            logger.exception("Safety classifier failed: the regex check stands")
+            return None
+
+    async def wait(self, limit: float | None = None) -> bool:
+        """Wait for the answer without blocking the event loop, at most
+        `limit` seconds and never past the deadline. True when it has
+        answered."""
+        budget = self.remaining() if limit is None else min(limit, self.remaining())
+        ends = time.monotonic() + budget
+        while not self.future.done():
+            left = ends - time.monotonic()
+            if left <= 0:
+                return False
+            await asyncio.sleep(min(_CLASSIFIER_POLL_SECONDS, left))
+        return True
+
+    def wait_sync(self, limit: float | None = None) -> bool:
+        """wait() for the non-streaming path."""
+        budget = self.remaining() if limit is None else min(limit, self.remaining())
+        if budget > 0:
+            concurrent.futures.wait([self.future], timeout=budget)
+        return self.future.done()
+
+
+def _start_second_opinion(
     db: Session, user: User, session: ChatSession, current_id: str, text: str,
     regex_hits: list, surface: str = "coach",
-):
-    """(merge, verdict) from the classifier, or None. Waits without blocking
-    the event loop, so the cards already sent reach the rider meanwhile."""
+) -> _SecondOpinion | None:
+    """Start the classifier on this message and return at once, or None
+    when there is none to ask (a child's account, no classifier, every slot
+    busy)."""
     request = _classifier_request(db, user, session, current_id, text, regex_hits, surface)
     if request is None:
         return None
     merge, future = request
-    try:
-        verdict = await asyncio.wait_for(asyncio.wrap_future(future), CLASSIFIER_WAIT_SECONDS)
-    except asyncio.TimeoutError:
-        logger.warning("Safety classifier timed out: the regex check stands (user=%s)", user.id)
-        return None
-    except Exception:
-        logger.exception("Safety classifier failed: the regex check stands (user=%s)", user.id)
-        return None
-    return None if verdict is None else (merge, verdict)
-
-
-def _second_opinion_sync(
-    db: Session, user: User, session: ChatSession, current_id: str, text: str,
-    regex_hits: list, surface: str = "coach",
-):
-    """_second_opinion for the non-streaming path."""
-    request = _classifier_request(db, user, session, current_id, text, regex_hits, surface)
-    if request is None:
-        return None
-    merge, future = request
-    try:
-        verdict = future.result(timeout=CLASSIFIER_WAIT_SECONDS)
-    except concurrent.futures.TimeoutError:
-        logger.warning("Safety classifier timed out: the regex check stands (user=%s)", user.id)
-        return None
-    except Exception:
-        logger.exception("Safety classifier failed: the regex check stands (user=%s)", user.id)
-        return None
-    return None if verdict is None else (merge, verdict)
+    return _SecondOpinion(merge, future)
 
 
 def _rule_severities() -> dict[str, str]:
@@ -2816,8 +4634,11 @@ def _as_hit(item, known: dict[str, str]):
     return hit if hit.kind in known else None
 
 
-def _is_card_at_once(kind: str) -> bool:
-    name = safety_screen.CARD_FOR_KIND.get(kind)
+def _is_card_at_once(hit) -> bool:
+    """Whether this hit's own card goes out at once: by the hit, not its kind,
+    so heatstroke (a heat hit at emergency severity) counts as the emergency
+    card it brings."""
+    name = safety_screen.card_for_hit(hit)
     return name is not None and safety_screen.CARD_STYLE.get(name) in _CARDS_AT_ONCE
 
 
@@ -2840,7 +4661,7 @@ def _merged_hits(merge, regex_hits: list, verdict) -> list | None:
             hits.append(hit)
             kinds.add(hit.kind)
     for hit in regex_hits:
-        if hit.kind not in kinds and (hit.kind == "minor" or _is_card_at_once(hit.kind)):
+        if hit.kind not in kinds and (hit.kind == "minor" or _is_card_at_once(hit)):
             hits.append(hit)
             kinds.add(hit.kind)
     return None if hits == list(regex_hits) else hits
@@ -3019,6 +4840,508 @@ def _cards_after(result, shown: list[tuple[str, str, str]]) -> list[dict]:
     return [chunk for chunk in result.card_chunks() if chunk.get("card") not in sent]
 
 
+# ── The card's tier ─────────────────────────────────────────────────────────
+#
+# Live round 2: a suspected fracture, a DVT and cauda equina (injury at
+# urgent severity, from the classifier) got the knee card, "book a physio
+# within the next week" (L19 to L21); active heatstroke got the warning-level
+# heat card (L17, L18); a friend's stimulant got the medicine card beside the
+# emergency one (L22). A card shown is now at the tier of the most severe red
+# flag in the turn, and never milder than what the coach's reply already
+# says: a card made for a milder case than the one in front of it goes
+# unsent (no card is better than a contradicting one), and the reply check
+# still guarantees the emergency number. Emergency cards are always at the
+# top tier; the crisis card always goes with a crisis.
+
+
+def _card_tier(name: str | None) -> int | None:
+    """How urgent the case a card was written for is: 0 for the emergency
+    cards, otherwise the most severe rule that brings it (the fever card was
+    written for an urgent case, the injury card for an everyday one). None
+    for the crisis card, which is on its own track, and for a card that
+    signposts help rather than naming a rung of care (restriction)."""
+    style = safety_screen.CARD_STYLE.get(name or "")
+    if style is None or style == "crisis" or name in _SIGNPOST_CARDS:
+        return None
+    if style == "emergency":
+        return 0
+    known = _rule_severities()
+    kinds = [k for k, n in safety_screen.CARD_FOR_KIND.items() if n == name]
+    if name == "postnatal":
+        kinds.append("pregnancy")
+    return min((_severity_tier(known.get(k)) for k in kinds), default=_ROUTINE_TIER)
+
+
+def _required_card_tier(screen, said: str = "") -> int:
+    """The tier a card must reach to be shown: the most severe body red flag
+    in the turn, or the coach's own instruction so far if that is higher
+    (the emergency number or A&E: 0; NHS 111 or a GP today: 1)."""
+    tiers = [_guarantee_tier(h.kind, h.severity) for h in screen.hits]
+    body = min((t for t in tiers if t is not None), default=_ROUTINE_TIER)
+    level, _ = escalation_in(said) if said and said.strip() else (None, "")
+    reply = 0 if level == "hold_all" else 1 if level == "easy_only" else _ROUTINE_TIER
+    return min(body, reply)
+
+
+def _withhold_cards(db: Session, screen, names: set[str]) -> None:
+    """Take cards that were never shown off the turn's record: the result
+    (so the stored reply, the reply check and a reload never show them), the
+    SAFETY CONTEXT line, and the card_shown of the red flags that brought
+    them."""
+    names_now = list(screen.card_names or [None] * len(screen.cards))
+    kept = [(card, name) for card, name in zip(screen.cards, names_now) if name not in names]
+    gone = [card for card, name in zip(screen.cards, names_now) if name in names]
+    screen.cards = [card for card, _ in kept]
+    screen.card_names = [name for _, name in kept]
+    if screen.context_line and gone:
+        texts = [text for _, text in gone]
+        screen.context_line = "\n".join(
+            line for line in screen.context_line.split("\n")
+            if not (
+                line.startswith("The app has already shown the rider this")
+                and any(f'"{text}"' in line for text in texts)
+            )
+        )
+    ids = [
+        screen.event_ids[h.kind] for h in screen.hits
+        if h.kind in screen.event_ids and safety_screen.card_for_hit(h) in names
+    ]
+    if not ids:
+        return
+    try:
+        for event in db.query(SafetyEvent).filter(SafetyEvent.id.in_(ids)):
+            event.card_shown = None
+        db.commit()
+    except Exception:
+        logger.exception("Recording a card that was not shown failed")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def _cards_at_tier(db: Session, screen, chunks: list[dict], said: str = "") -> list[dict]:
+    """The card chunks to send: every one at or above the tier the turn
+    needs (_required_card_tier). The rest are taken off the record and never
+    sent. Never raises: on a failure every chunk goes, as before."""
+    try:
+        need = _required_card_tier(screen, said)
+        keep, drop = [], set()
+        for chunk in chunks:
+            tier = _card_tier(chunk.get("card"))
+            if tier is None or tier <= need:
+                keep.append(chunk)
+            else:
+                drop.add(chunk.get("card"))
+        if drop:
+            logger.info("Card(s) %s not shown: milder than the turn needs", sorted(drop))
+            _withhold_cards(db, screen, drop)
+        return keep
+    except Exception:
+        logger.exception("Choosing the cards at the turn's tier failed")
+        return chunks
+
+
+def _act_on_late_verdict(
+    db: Session, user: User, text: str, regex_hits: list, have: set[str], merge, verdict,
+    *, message_id: str | None, source: str,
+):
+    """Act on a verdict that landed after the turn had already acted on its
+    red flags: every red flag it adds that isn't already in `have` is acted
+    on exactly as screen_message acts on any (hold, record, card, alert),
+    and the record says the classifier found it. One it sets aside stands:
+    the rider has already been told. Returns the ScreenResult for the
+    additions, or None when there are none. Never raises."""
+    regex_kinds = {h.kind for h in regex_hits}
+    try:
+        merged = _merged_hits(merge, regex_hits, verdict)
+    except Exception:
+        logger.exception("Merging a late classifier verdict failed (user=%s)", user.id)
+        return None
+    if merged is None:
+        merged = list(regex_hits)
+    set_aside = sorted(regex_kinds - {h.kind for h in merged})
+    if set_aside:
+        logger.info(
+            "Safety classifier set aside %s after the regex had acted: it stands (user=%s)",
+            set_aside, user.id,
+        )
+    known = set(have) | regex_kinds
+    new = [h for h in merged if h.kind not in known]
+    if not new:
+        # Inside the quiet window after a lift, an admission with no age is
+        # still Gareth's to see.
+        _admission_after_lift(
+            db, user, text, [], safety_screen.ScreenResult(), verdict, regex_kinds,
+            message_id=message_id, source=source,
+        )
+        return None
+    try:
+        late = _screen_message_on(new)(db, user, text, message_id=message_id, source=source)
+    except Exception:
+        logger.exception("Acting on a late classifier verdict failed (user=%s)", user.id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return None
+    _mark_classifier_events(db, late, {h.kind for h in new})
+    _admission_after_lift(
+        db, user, text, new, late, verdict, regex_kinds, message_id=message_id, source=source,
+    )
+    try:
+        safety_screen.alert_founder_for(late, user, text)
+    except Exception:
+        logger.exception("Alerting on a late classifier verdict failed (user=%s)", user.id)
+    return late if late.hits else None
+
+
+def _apply_detached(
+    user_id: str, text: str, regex_hits: list, have: set[str] | None, merge, verdict,
+    *, message_id: str | None, source: str,
+) -> None:
+    """Act on the classifier's verdict after the rider has left the chat,
+    on a database session of its own: holds, records and alerts, with no
+    card to send. `have` is None when the turn never acted on the regex's
+    hits either, and then they are acted on too. Never raises."""
+    try:
+        from app.database import SessionLocal
+
+        db = SessionLocal()
+    except Exception:
+        logger.exception("Opening a session for a late classifier verdict failed")
+        return
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            return
+        if have is None:
+            opinion = (merge, verdict) if verdict is not None else None
+            result = _screen_turn(
+                db, user, text, regex_hits, opinion, [], message_id=message_id, source=source,
+            )
+            safety_screen.alert_founder_for(result, user, text)
+        elif verdict is not None:
+            _act_on_late_verdict(
+                db, user, text, regex_hits, have, merge, verdict,
+                message_id=message_id, source=source,
+            )
+    except Exception:
+        logger.exception("Acting on a late classifier verdict failed (user=%s)", user_id)
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _fold_late(screen, late) -> None:
+    """Take a late verdict's additions into the turn's ScreenResult, as if
+    the check had found them at the start: hits (most severe first, a crisis
+    replacing the training-talk check and a head injury the knock), cards,
+    records, alerts and the SAFETY CONTEXT line for any later model call."""
+    added = late.kinds
+    hits = [
+        h for h in screen.hits
+        if not (h.kind == "distress_check" and "crisis" in added)
+        and not (h.kind == "head_knock" and "head_injury" in added)
+    ]
+    order = {s: i for i, s in enumerate(safety_screen.SEVERITIES)}
+    screen.hits = sorted(hits + list(late.hits), key=lambda h: order.get(h.severity, len(order)))
+    names = list(screen.card_names or [None] * len(screen.cards))
+    late_names = late.card_names or [None] * len(late.cards)
+    for (style, card), name in zip(late.cards, late_names):
+        if name is None or name not in names:
+            screen.cards.append((style, card))
+            names.append(name)
+    screen.card_names = names
+    screen.event_ids.update(late.event_ids)
+    screen.alerts = list(screen.alerts) + [k for k in late.alerts if k not in screen.alerts]
+    if late.context_line:
+        screen.context_line = (
+            late.context_line if not screen.context_line
+            else f"{screen.context_line}\n\nA second check on the same message then found "
+                 f"more, so this applies too.\n{late.context_line}"
+        )
+
+
+# ── Reading the model while the verdict may land ────────────────────────────
+#
+# Live round 2: classifier cards reached the rider 21 to 70 s after the
+# verdict (L2, L4, L6, L7, L13, L16, L19, L20). The verdict landed 1 to 2 s
+# into the turn, but the turn only looked for it when the model sent a
+# stream event, and the model can send nothing for 20 s and more (a thinking
+# block), while `for event in stream` held the event loop. The model's
+# stream is now read on a thread of its own (_pump_model): the turn wakes at
+# least every _STREAM_POLL_SECONDS, with or without an event, and sends a
+# card the moment its verdict is in. The same look happens between tools.
+
+# How often a turn waiting on the model looks for the classifier's verdict.
+_STREAM_POLL_SECONDS = 0.05
+
+
+async def _pump_model(open_stream, ready):
+    """Read one model call on a thread of its own and hand over what it
+    sends as it comes: ("event", event) for each stream event and ("final",
+    message) once it ends. ("due", None) comes when `ready()` says there is
+    something to act on (the classifier's verdict has landed): in its place
+    among the model's events (after every event sent before the verdict
+    landed, before every one after), or within _STREAM_POLL_SECONDS while
+    the model says nothing. So a card goes out between the words written
+    before its verdict and the words after it, however long the model stays
+    silent. `ready` must be safe to call from any thread. An error the call
+    raises (as it opens or part way) is raised here, after any events before
+    it. Closing this generator early stops the reading at the model's next
+    event; the call itself then ends as it always did."""
+    loop = asyncio.get_running_loop()
+    items: queue.SimpleQueue = queue.SimpleQueue()
+    wake = asyncio.Event()
+    stop = threading.Event()
+
+    def put(item) -> None:
+        items.put(item)
+        try:
+            loop.call_soon_threadsafe(wake.set)
+        except RuntimeError:
+            pass  # the loop has closed: the rider has gone
+
+    def read() -> None:
+        marked = False
+        try:
+            with open_stream() as stream:
+                for event in stream:
+                    if not marked and ready():
+                        put(("due", None))
+                        marked = True
+                    put(("event", event))
+                    if stop.is_set():
+                        break
+                final = None if stop.is_set() else stream.get_final_message()
+            put(("final", final))
+        except BaseException as e:  # noqa: BLE001, raised again in the turn
+            put(("error", e))
+
+    threading.Thread(target=read, daemon=True, name="forma-coach-stream").start()
+    try:
+        while True:
+            try:
+                kind, value = items.get_nowait()
+            except queue.Empty:
+                # Whether the verdict has landed is read before the queue is
+                # looked at again, so an event sent before it goes first.
+                landed = ready()
+                try:
+                    kind, value = items.get_nowait()
+                except queue.Empty:
+                    if landed:
+                        yield "due", None
+                        continue
+                    wake.clear()
+                    if items.empty():
+                        try:
+                            await asyncio.wait_for(wake.wait(), _STREAM_POLL_SECONDS)
+                        except asyncio.TimeoutError:
+                            pass
+                    continue
+            if kind == "due":
+                if ready():
+                    yield "due", None
+                continue
+            if kind == "error":
+                raise value
+            yield kind, value
+            if kind == "final":
+                return
+    finally:
+        stop.set()
+
+
+class _TurnSafety:
+    """One turn's red flags: the regex's acted on at once, the classifier's
+    verdict acted on whenever it lands (see the section comment above).
+
+        safety = _TurnSafety(...)        # starts the classifier
+        screen = await safety.screen_now()
+        for chunk in safety.poll(): ...  # between streamed events
+        for chunk in await safety.settle(): ...  # before "done"
+        safety.detach()                  # in a finally: the rider left early
+    """
+
+    def __init__(
+        self, db: Session, user: User, session: ChatSession, message_id: str | None,
+        text: str, regex_hits: list, shown: list[tuple[str, str, str]], *,
+        source: str, surface: str,
+    ):
+        self.db, self.user, self.text = db, user, text
+        self.message_id, self.source = message_id, source
+        self.regex_hits = list(regex_hits)
+        self.shown = list(shown)
+        self.sent = {name for _, _, name in shown}
+        self.screen = None
+        self.guard = None
+        # The kinds a late verdict added, and whether one has landed since
+        # the caller last rebuilt its prompt.
+        self.late_kinds: set[str] = set()
+        self.changed = False
+        self._lock = threading.Lock()
+        self.second = _start_second_opinion(
+            db, user, session, message_id, text, regex_hits, surface
+        )
+        self.resolved = self.second is None
+
+    # ── Before the reply ──
+
+    def _screen(self, answered: bool):
+        opinion = None
+        if answered:
+            with self._lock:
+                self.resolved = True
+            verdict = self.second.verdict()
+            if verdict is not None:
+                opinion = (self.second.merge, verdict)
+        self.screen = _screen_turn(
+            self.db, self.user, self.text, self.regex_hits, opinion, self.shown,
+            message_id=self.message_id, source=self.source,
+        )
+        return self.screen
+
+    async def screen_now(self):
+        """Act on this turn's red flags now: with the classifier's whole
+        verdict when it has already answered, otherwise the regex's alone."""
+        answered = False
+        if self.second is not None:
+            answered = await self.second.wait(CLASSIFIER_HEAD_START_SECONDS)
+        return self._screen(answered)
+
+    def screen_now_sync(self):
+        answered = False
+        if self.second is not None:
+            answered = self.second.wait_sync(CLASSIFIER_HEAD_START_SECONDS)
+        return self._screen(answered)
+
+    def cards_after_screen(self) -> list[dict]:
+        """The cards still to send once the turn has acted (fever and heat
+        warnings, any the classifier added), at the turn's tier."""
+        chunks = _cards_at_tier(self.db, self.screen, _cards_after(self.screen, self.shown))
+        self.sent |= {c.get("card") for c in chunks}
+        return chunks
+
+    # ── While and after the reply ──
+
+    @property
+    def child(self) -> bool:
+        """A late verdict read the rider as under 18: the reply stops."""
+        return "minor" in self.late_kinds
+
+    def due(self) -> bool:
+        """Whether a verdict has landed that poll() has yet to act on."""
+        return not self.resolved and self.screen is not None and self.second.done()
+
+    def poll(self) -> list[dict]:
+        """The card chunks for a verdict that has just landed, after acting
+        on it; nothing while it is still on its way. Never waits."""
+        if not self.due():
+            return []
+        return self._take()
+
+    async def settle(self) -> list[dict]:
+        """Wait for whatever is left of the classifier's time, then poll."""
+        if self.resolved or self.screen is None:
+            return []
+        if not await self.second.wait():
+            return self._give_up()
+        return self._take()
+
+    def settle_sync(self) -> list[dict]:
+        if self.resolved or self.screen is None:
+            return []
+        if not self.second.wait_sync():
+            return self._give_up()
+        return self._take()
+
+    def _give_up(self) -> list[dict]:
+        with self._lock:
+            self.resolved = True
+        logger.warning(
+            "Safety classifier gave no answer within %.1fs: the regex check stands (user=%s)",
+            CLASSIFIER_DEADLINE_SECONDS, self.user.id,
+        )
+        return []
+
+    def _take(self) -> list[dict]:
+        with self._lock:
+            if self.resolved:
+                return []
+            self.resolved = True
+        try:
+            return self._act(self.second.verdict())
+        except Exception:
+            # Never into the stream: the regex's check stands.
+            logger.exception("Acting on a late classifier verdict failed (user=%s)", self.user.id)
+            return []
+
+    def _act(self, verdict) -> list[dict]:
+        if verdict is None:
+            return []
+        late = _act_on_late_verdict(
+            self.db, self.user, self.text, self.regex_hits, set(self.screen.kinds),
+            self.second.merge, verdict, message_id=self.message_id, source=self.source,
+        )
+        if late is None:
+            return []
+        _fold_late(self.screen, late)
+        self.late_kinds |= late.kinds
+        self.changed = True
+        chunks = [c for c in late.card_chunks() if c.get("card") not in self.sent]
+        said = getattr(self.guard, "said", "") if self.guard is not None else ""
+        chunks = _cards_at_tier(self.db, self.screen, chunks, said)
+        self.sent |= {c.get("card") for c in chunks}
+        if self.guard is not None:
+            try:
+                self.guard.absorb(self.screen)
+            except Exception:
+                logger.exception("The reply check could not take in a late red flag")
+        return chunks
+
+    def detach(self) -> None:
+        """The turn is ending before the verdict was acted on (the rider
+        closed the chat mid-reply): act on it when it lands, on a database
+        session of its own. With no screen yet, the regex's hits were never
+        acted on either, so they go with it."""
+        with self._lock:
+            if self.resolved and self.screen is not None:
+                return
+            self.resolved = True
+        user_id, text = self.user.id, self.text
+        regex_hits, message_id, source = list(self.regex_hits), self.message_id, self.source
+        have = None if self.screen is None else set(self.screen.kinds)
+        if self.second is None:
+            if have is None and regex_hits:
+                threading.Thread(
+                    target=_apply_detached, daemon=True, name="forma-safety-late",
+                    args=(user_id, text, regex_hits, None, None, None),
+                    kwargs={"message_id": message_id, "source": source},
+                ).start()
+            return
+        merge, started = self.second.merge, self.second.started
+
+        def land(future):
+            verdict = None
+            if time.monotonic() - started <= CLASSIFIER_DEADLINE_SECONDS + 1.0:
+                try:
+                    verdict = future.result(timeout=0)
+                except Exception:
+                    verdict = None
+            if verdict is None and have is not None:
+                return
+            _apply_detached(
+                user_id, text, regex_hits, have, merge, verdict,
+                message_id=message_id, source=source,
+            )
+
+        self.second.future.add_done_callback(land)
+
+
 async def stream_response(
     db: Session, user: User, session: ChatSession, user_message: str,
     attachment_ids: list[str] | None = None,
@@ -3033,9 +5356,14 @@ async def stream_response(
     land in the context so the coach can read them, and stay out of the
     rider's ride history until the rider asks for them to be saved.
 
+    The safety classifier runs alongside the reply (_TurnSafety): a card it
+    adds can arrive part way through the text, and "done" waits for whatever
+    is left of its time.
+
     Yields SSE-formatted chunks:
         data: {"type": "safety", "kind": "emergency"|"crisis"|"warning", "text": "..."}
-                                          -- the fixed red-flag cards, before any text
+                    -- the fixed red-flag cards: the regex's before any text,
+                       the classifier's the moment it finds one
         data: {"type": "text", "content": "..."}
         data: {"type": "plan_updated"}   -- signals frontend to refresh training data
         data: {"type": "done"}
@@ -3045,246 +5373,328 @@ async def stream_response(
     user_msg = add_user_message(db, session, user_message)
 
     # The red-flag check runs before anything else. The regex's emergency and
-    # crisis cards reach the rider at once; then the classifier's verdict is
-    # merged in and acted on, and any card still to show goes out before a
-    # word of the model's reply (SAFETY LAW, plan section E).
+    # crisis cards reach the rider at once (SAFETY LAW, plan section E), and
+    # the classifier starts on the message alongside everything after them.
     regex_hits, shown = _regex_first(user, user_message)
-    for style, card, name in shown:
-        yield f"data: {json.dumps(_card_chunk(style, card, name))}\n\n"
-    opinion = await _second_opinion(db, user, session, user_msg.id, user_message, regex_hits)
-    screen = _screen_turn(
-        db, user, user_message, regex_hits, opinion, shown,
-        message_id=user_msg.id, source="chat",
+    safety = _TurnSafety(
+        db, user, session, user_msg.id, user_message, regex_hits, shown,
+        source="chat", surface="coach",
     )
-    for chunk in _cards_after(screen, shown):
-        yield f"data: {json.dumps(chunk)}\n\n"
-    safety_screen.alert_founder_for(screen, user, user_message)
-    intro, known = _intro_for(db, user, session)
-    guard = _reply_guard(db, user, screen, turn_started)
-
-    if _child_account(db, user, screen):
-        # Fixed words only: nothing more of a child's data reaches the model,
-        # the memory or the title.
-        reply = _child_reply(guard)
-        if intro:
-            yield _sse_text(intro + " ")
-        yield _sse_text(reply)
-        saved = f"{intro} {reply}" if intro else reply
-        add_assistant_message(db, session, saved, None, 0)
-        _keep_exchange(db, user, turn_started, user_message, saved)
-        _after_child_turn(db, user, turn_started)
-        yield f'data: {json.dumps({"type": "done"})}\n\n'
-        return
-
-    # Build context
-    rider_context = _build_rider_context(db, user, attachment_ids)
-    dossier_block = _dossier_block(db, user)
-
-    # Build system prompt with rider context + per-message semantic recall
-    system = _system_blocks(
-        user,
-        f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
-        f"{dossier_block}"
-        f"Today's date: {date.today().isoformat()}",
-        volatile=_turn_notes(
-            screen, intro, _relevant_memories(db, user, user_message), known
-        ),
-    )
-
-    # Build message history
-    messages = _build_messages(session)
-
-    # Stream from Claude with agentic tool loop, via the forma-core funnel
-    full_response = ""
-    tokens_used = 0
-    plan_was_updated = False
-    reply_failed = False
-    scrub = StreamHumanizer()
-
-    if intro:
-        yield f'data: {json.dumps({"type": "text", "content": intro + " "})}\n\n'
-
-    _text = _sse_text
-
     try:
-        # Agentic loop, keeps going while Claude wants to call tools
-        max_iterations = 5
-        for _ in range(max_iterations):
-            # After a tool round the model starts a fresh sentence. Without a
-            # break it glues on: "waiting for time to appear.Filed." (2 Sep).
-            out = guard.round_break()
-            if out:
-                full_response += out
-                yield _text(out)
-            # One more try after a short pause when the call fails before
-            # any words arrive: nothing has reached the rider or the reply
-            # check, so a second try can't repeat or garble anything.
-            for attempt in (1, 2):
-                heard = False
-                try:
-                    with forma_core.stream(
+        for style, card, name in shown:
+            yield f"data: {json.dumps(_card_chunk(style, card, name))}\n\n"
+        screen = await safety.screen_now()
+        for chunk in safety.cards_after_screen():
+            yield f"data: {json.dumps(chunk)}\n\n"
+        safety_screen.alert_founder_for(screen, user, user_message)
+        intro, known = _intro_for(db, user, session)
+        guard = _reply_guard(db, user, screen, turn_started)
+        safety.guard = guard
+
+        if _child_account(db, user, screen):
+            # Fixed words only: nothing more of a child's data reaches the
+            # model, the memory or the title.
+            reply = _child_reply(guard)
+            if intro:
+                yield _sse_text(intro + " ")
+            yield _sse_text(reply)
+            saved = f"{intro} {reply}" if intro else reply
+            add_assistant_message(db, session, saved, _cards_snapshot(screen), 0)
+            _flag_crisis_turn(db, user, screen, turn_started)
+            _keep_exchange(db, user, turn_started, user_message, saved)
+            _after_child_turn(db, user, turn_started)
+            yield f'data: {json.dumps({"type": "done"})}\n\n'
+            return
+
+        # Build context
+        rider_context = _build_rider_context(db, user, attachment_ids)
+        dossier_block = _dossier_block(db, user)
+        recall = _relevant_memories(db, user, user_message)
+        # A verdict that landed while the context was built goes out now.
+        for chunk in safety.poll():
+            yield f"data: {json.dumps(chunk)}\n\n"
+        context_block = (
+            f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
+            f"{dossier_block}"
+            f"Today's date: {date.today().isoformat()}"
+        )
+
+        def system_now():
+            # Rider context + the red-flag context + per-message recall. Built
+            # again for a later call when a late verdict has added a red flag.
+            return _system_blocks(
+                user, context_block, volatile=_turn_notes(safety.screen, intro, recall, known),
+            )
+
+        system = system_now()
+        safety.changed = False
+
+        # Build message history
+        messages = _build_messages(session)
+
+        # Stream from Claude with agentic tool loop, via the forma-core funnel
+        full_response = ""
+        tokens_used = 0
+        plan_was_updated = False
+        reply_failed = False
+        scrub = StreamHumanizer()
+
+        if intro:
+            yield f'data: {json.dumps({"type": "text", "content": intro + " "})}\n\n'
+
+        _text = _sse_text
+
+        try:
+            # Agentic loop, keeps going while Claude wants to call tools
+            max_iterations = 5
+            for _ in range(max_iterations):
+                # After a tool round the model starts a fresh sentence. Without a
+                # break it glues on: "waiting for time to appear.Filed." (2 Sep).
+                out = guard.round_break()
+                if out:
+                    full_response += out
+                    yield _text(out)
+                if safety.changed:
+                    system = system_now()
+                    safety.changed = False
+                # One more try after a short pause when the call fails before
+                # any words arrive: nothing has reached the rider or the reply
+                # check, so a second try can't repeat or garble anything.
+                final = None
+                for attempt in (1, 2):
+                    heard = False
+                    # Every argument is read here, on the turn's own thread:
+                    # the database session never crosses to the reader.
+                    call = dict(
                         user_id=user.id,
                         task="chat",
                         surface="coach",
                         system=system,
                         messages=messages,
                         tools=COACH_TOOLS,
-                    ) as stream:
-                        for event in stream:
-                            if event.type == "content_block_delta":
-                                if hasattr(event.delta, "text"):
-                                    heard = True
-                                    # Every sentence passes the reply check on
-                                    # its way to the rider (ReplyGuard).
-                                    out = guard.feed(scrub.feed(event.delta.text))
-                                    if out:
-                                        full_response += out
-                                        yield _text(out)
-
-                        final = stream.get_final_message()
+                    )
+                    events = _pump_model(
+                        lambda call=call: forma_core.stream(**call), ready=safety.due
+                    )
+                    try:
+                        async for kind, event in events:
+                            if kind == "final":
+                                final = event
+                                break
+                            if kind == "due":
+                                # The classifier's verdict, the moment it
+                                # lands, whether or not the model is saying
+                                # anything.
+                                for chunk in safety.poll():
+                                    yield f"data: {json.dumps(chunk)}\n\n"
+                                if safety.child:
+                                    break
+                            elif (
+                                event.type == "content_block_delta"
+                                and hasattr(event.delta, "text")
+                            ):
+                                heard = True
+                                # Every sentence passes the reply check on
+                                # its way to the rider (ReplyGuard).
+                                out = guard.feed(scrub.feed(event.delta.text))
+                                if out:
+                                    full_response += out
+                                    yield _text(out)
+                        break
+                    except Exception as e:
+                        if attempt == 2 or heard or not _worth_retrying(e):
+                            raise
+                        logger.warning("Coach chat call failed, trying once more (user=%s): %s", user.id, e)
+                        await asyncio.sleep(MODEL_RETRY_BACKOFF_SECONDS)
+                    finally:
+                        await events.aclose()
+                if final is None:
+                    # The classifier read the rider as under 18 part way
+                    # through: no more coaching, and the reply closes as every
+                    # later one will.
                     break
-                except Exception as e:
-                    if attempt == 2 or heard or not _worth_retrying(e):
-                        raise
-                    logger.warning("Coach chat call failed, trying once more (user=%s): %s", user.id, e)
-                    await asyncio.sleep(MODEL_RETRY_BACKOFF_SECONDS)
-            tokens_used += (
-                final.usage.input_tokens + final.usage.output_tokens
-                if final.usage else 0
-            )
-
-            # Check if Claude wants to use tools
-            tool_use_blocks = [
-                block for block in final.content
-                if block.type == "tool_use"
-            ]
-
-            if not tool_use_blocks or final.stop_reason != "tool_use":
-                # No tool calls, we're done
-                break
-
-            # The model has stopped to act. What it wrote is complete, but a
-            # claim that it has already acted waits for the tool's result.
-            out = guard.feed(scrub.flush()) + guard.before_tools()
-            if out:
-                full_response += out
-                yield _text(out)
-
-            # Execute tool calls and build tool_result messages
-            # Append assistant message with all content blocks
-            messages.append({"role": "assistant", "content": final.content})
-
-            tool_results = []
-            ran = []
-            for tool_block in tool_use_blocks:
-                label = _tool_status(db, user, tool_block.name, tool_block.input)
-                if label:
-                    yield f'data: {json.dumps({"type": "status", "content": label})}\n\n'
-                result_text = _execute_tool(
-                    db, user, tool_block.name, tool_block.input
+                tokens_used += (
+                    final.usage.input_tokens + final.usage.output_tokens
+                    if final.usage else 0
                 )
-                ran.append((tool_block.name, result_text))
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_block.id,
-                    "content": result_text,
-                })
-                if tool_block.name == "propose_plan_change":
-                    # The plan has not moved, but something is now waiting on
-                    # the rider, so the app can raise the card straight away.
-                    yield f'data: {json.dumps({"type": "proposal_created"})}\n\n'
-                if tool_block.name not in _NO_PLAN_CHANGE_TOOLS:
-                    plan_was_updated = True
 
-            messages.append({"role": "user", "content": tool_results})
-            out = guard.after_tools(ran)
+                # Check if Claude wants to use tools
+                tool_use_blocks = [
+                    block for block in final.content
+                    if block.type == "tool_use"
+                ]
+
+                if not tool_use_blocks or final.stop_reason != "tool_use":
+                    # No tool calls, we're done
+                    break
+
+                # The model has stopped to act. What it wrote is complete, but a
+                # claim that it has already acted waits for the tool's result.
+                out = guard.feed(scrub.flush()) + guard.before_tools()
+                if out:
+                    full_response += out
+                    yield _text(out)
+
+                # Execute tool calls and build tool_result messages
+                # Append assistant message with all content blocks
+                messages.append({"role": "assistant", "content": final.content})
+
+                tool_results = []
+                ran = []
+                for tool_block in tool_use_blocks:
+                    label = _tool_status(db, user, tool_block.name, tool_block.input)
+                    if label:
+                        yield f'data: {json.dumps({"type": "status", "content": label})}\n\n'
+                    result_text = _execute_tool(
+                        db, user, tool_block.name, tool_block.input
+                    )
+                    ran.append((tool_block.name, result_text))
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_block.id,
+                        "content": result_text,
+                    })
+                    if tool_block.name == "propose_plan_change":
+                        # The plan has not moved, but something is now waiting on
+                        # the rider, so the app can raise the card straight away.
+                        yield f'data: {json.dumps({"type": "proposal_created"})}\n\n'
+                    if tool_block.name not in _NO_PLAN_CHANGE_TOOLS:
+                        plan_was_updated = True
+                    # A verdict that landed while the tool ran goes out now.
+                    for chunk in safety.poll():
+                        yield f"data: {json.dumps(chunk)}\n\n"
+
+                messages.append({"role": "user", "content": tool_results})
+                out = guard.after_tools(ran)
+                if out:
+                    full_response += out
+                    yield _text(out)
+                for chunk in safety.poll():
+                    yield f"data: {json.dumps(chunk)}\n\n"
+
+                # Signal frontend that training plan was modified
+                if plan_was_updated:
+                    yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
+
+                # Loop continues. Claude will respond to the tool results
+
+            # The model's last words go out, then whatever is left of the
+            # classifier's time runs out before "done", so a late card still
+            # reaches the open chat and the lines it needs still close the
+            # reply.
+            if not safety.child:
+                out = guard.feed(scrub.flush()) + guard.finish_body()
+                if out:
+                    full_response += out
+                    yield _text(out)
+            for chunk in await safety.settle():
+                yield f"data: {json.dumps(chunk)}\n\n"
+            if safety.child:
+                # Read as under 18 part way through: whatever coaching was
+                # still on its way goes, and the fixed words close the reply.
+                out = ("\n\n" if full_response.strip() else "") + _child_reply_after(guard, scrub)
+            else:
+                # A reply that sent the rider for care holds the plan; the
+                # hold sentence then closes the reply.
+                _hold_on_escalation(db, user, screen, guard.said, turn_started)
+                out = guard.finish_tail()
             if out:
                 full_response += out
                 yield _text(out)
 
-            # Signal frontend that training plan was modified
-            if plan_was_updated:
-                yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
-
-            # Loop continues. Claude will respond to the tool results
-
-        out = guard.feed(scrub.flush()) + guard.flush()
-        if out:
-            full_response += out
-            yield _text(out)
-
-    except forma_core.BudgetExceededError:
-        if screen.hits:
-            # The quota never stands between a rider and the safety answer:
-            # fixed words cost nothing.
-            out = _flush_after_failure(guard, scrub, after=full_response)
+        except forma_core.BudgetExceededError:
+            for chunk in await safety.settle():
+                yield f"data: {json.dumps(chunk)}\n\n"
+            if screen.hits:
+                # The quota never stands between a rider and the safety answer:
+                # fixed words cost nothing.
+                out = _flush_after_failure(guard, scrub, after=full_response)
+                if out:
+                    full_response += out
+                    yield _text(out)
+            if not full_response.strip():
+                full_response = forma_core.QUOTA_MESSAGE
+                yield _text(full_response)
+        except Exception as e:
+            # ANY failure, provider error, timeout, tool bug, must never leave
+            # the rider staring at an empty bubble. Log the real cause; the rider
+            # gets something honest, and in a red-flag turn, the fixed safety
+            # reply: a failure must never cost the emergency number.
+            logger.exception("Coach chat stream failed: %s", e)
+            reply_failed = True
+            for chunk in await safety.settle():
+                yield f"data: {json.dumps(chunk)}\n\n"
+            out = _reply_after_failure(guard, scrub, full_response, screen)
             if out:
                 full_response += out
                 yield _text(out)
-        if not full_response.strip():
-            full_response = forma_core.QUOTA_MESSAGE
-            yield _text(full_response)
-    except Exception as e:
-        # ANY failure, provider error, timeout, tool bug, must never leave
-        # the rider staring at an empty bubble. Log the real cause; the rider
-        # gets something honest, and in a red-flag turn, the fixed safety
-        # reply: a failure must never cost the emergency number.
-        logger.exception("Coach chat stream failed: %s", e)
-        reply_failed = True
-        out = _reply_after_failure(guard, scrub, full_response, screen)
-        if out:
-            full_response += out
-            yield _text(out)
-        _record_reply_failure(db, user, screen, user_msg.id, error=e, source="chat")
+            _record_reply_failure(db, user, screen, user_msg.id, error=e, source="chat")
 
-    # The coach put the account on hold as possibly under 18 this turn: the
-    # reply ends as every later one will.
-    out = _minor_closing_for_turn(
-        db, user, turn_started, full_response, "crisis" in screen.kinds
-    )
-    if out:
-        full_response += out
-        yield _text(out)
-
-    # The model can spend its whole token budget before any prose reaches
-    # the rider (a truncated tool call streams zero text and raises nothing).
-    # A rider's message must NEVER sit unanswered in the history.
-    if not full_response.strip():
-        full_response = (
-            "I got cut off before I could answer that properly. "
-            "Send it again and I'll get straight to the point."
+        child_now = safety.child
+        # The coach, or the classifier, put the account on hold as possibly
+        # under 18 this turn: the reply ends as every later one will.
+        out = _minor_closing_for_turn(
+            db, user, turn_started, full_response, "crisis" in screen.kinds
         )
-        yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
+        if out:
+            full_response += out
+            yield _text(out)
 
-    saved = f"{intro} {full_response}" if intro else full_response
-    add_assistant_message(db, session, saved, _snapshot(rider_context, screen), tokens_used)
-    _keep_exchange(db, user, turn_started, user_message, saved)
-
-    # Final plan_updated signal if tools were used (in case frontend missed it)
-    if plan_was_updated:
-        yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
-
-    yield f'data: {json.dumps({"type": "done"})}\n\n'
-
-    # Memory extraction, write this exchange into the brain (Pillar 2).
-    # Runs after the client has received `done`, so it never delays the stream.
-    # A failed turn has nothing worth remembering, only the failure.
-    if not reply_failed:
-        try:
-            from app.services.memory_service import extract_memories
-
-            extract_memories(
-                db,
-                user,
-                f"Rider: {user_message}\n\nForma: {full_response}",
-                source="chat",
-                source_ref=session.id,
+        # The model can spend its whole token budget before any prose reaches
+        # the rider (a truncated tool call streams zero text and raises nothing).
+        # A rider's message must NEVER sit unanswered in the history.
+        if not full_response.strip():
+            full_response = (
+                "I got cut off before I could answer that properly. "
+                "Send it again and I'll get straight to the point."
             )
-        except Exception:
-            logger.exception("Memory extraction after chat failed (user=%s)", user.id)
+            yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
 
-    # Name the thread from its content while it still wears the default name.
-    maybe_autotitle_session(db, user, session)
+        saved = f"{intro} {full_response}" if intro else full_response
+        # The cards go on the stored reply, a late one included, so a reload
+        # shows them again.
+        add_assistant_message(
+            db, session, saved,
+            _cards_snapshot(screen) if child_now else _snapshot(rider_context, screen),
+            tokens_used,
+        )
+        _flag_crisis_turn(db, user, screen, turn_started)
+        _keep_exchange(db, user, turn_started, user_message, saved)
+        if child_now:
+            _after_child_turn(db, user, turn_started)
+
+        # Final plan_updated signal if tools were used (in case frontend missed it)
+        if plan_was_updated:
+            yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
+
+        yield f'data: {json.dumps({"type": "done"})}\n\n'
+
+        if child_now:
+            return
+
+        # Memory extraction, write this exchange into the brain (Pillar 2).
+        # Runs after the client has received `done`, so it never delays the stream.
+        # A failed turn has nothing worth remembering, only the failure.
+        if not reply_failed:
+            try:
+                from app.services.memory_service import extract_memories
+
+                extract_memories(
+                    db,
+                    user,
+                    f"Rider: {user_message}\n\nForma: {full_response}",
+                    source="chat",
+                    source_ref=session.id,
+                )
+            except Exception:
+                logger.exception("Memory extraction after chat failed (user=%s)", user.id)
+
+        # Name the thread from its content while it still wears the default name.
+        maybe_autotitle_session(db, user, session)
+    finally:
+        # The rider left before the classifier answered: its verdict is
+        # still acted on when it lands.
+        safety.detach()
 
 
 VOICE_MODE_ADDENDUM = """
@@ -3376,6 +5786,7 @@ async def stream_voice_response(
     4. Yield both text chunks and base64-encoded audio chunks
 
     SSE event types:
+        data: {"type": "safety", ...}   -- as in stream_response, and spoken
         data: {"type": "text", "content": "..."}
         data: {"type": "audio", "content": "<base64>", "sentence_index": N}
         data: {"type": "plan_updated"}
@@ -3393,268 +5804,345 @@ async def stream_voice_response(
     user_msg = add_user_message(db, session, user_message)
 
     # The red-flag check, exactly as in stream_response: the regex's
-    # emergency and crisis cards at once, the classifier's verdict merged in,
-    # and every other card before any text.
+    # emergency and crisis cards at once, the classifier alongside the reply.
     regex_hits, shown = _regex_first(user, user_message)
-    for style, card, name in shown:
-        yield f"data: {json.dumps(_card_chunk(style, card, name))}\n\n"
-    opinion = await _second_opinion(
-        db, user, session, user_msg.id, user_message, regex_hits, "coach_voice"
+    safety = _TurnSafety(
+        db, user, session, user_msg.id, user_message, regex_hits, shown,
+        source="chat_voice", surface="coach_voice",
     )
-    screen = _screen_turn(
-        db, user, user_message, regex_hits, opinion, shown,
-        message_id=user_msg.id, source="chat_voice",
-    )
-    for chunk in _cards_after(screen, shown):
-        yield f"data: {json.dumps(chunk)}\n\n"
-    safety_screen.alert_founder_for(screen, user, user_message)
-    intro, known = _intro_for(db, user, session)
-    guard = _reply_guard(db, user, screen, turn_started)
-    child = _child_account(db, user, screen)
+    try:
+        for style, card, name in shown:
+            yield f"data: {json.dumps(_card_chunk(style, card, name))}\n\n"
+        screen = await safety.screen_now()
+        for chunk in safety.cards_after_screen():
+            yield f"data: {json.dumps(chunk)}\n\n"
+        safety_screen.alert_founder_for(screen, user, user_message)
+        intro, known = _intro_for(db, user, session)
+        guard = _reply_guard(db, user, screen, turn_started)
+        safety.guard = guard
+        child = _child_account(db, user, screen)
 
-    # Build context (none for an account that may be a child's: the reply
-    # is fixed words and nothing more of their data goes anywhere)
-    rider_context = "" if child else _build_rider_context(db, user, attachment_ids)
-    dossier_block = "" if child else _dossier_block(db, user)
+        # Build context (none for an account that may be a child's: the reply
+        # is fixed words and nothing more of their data goes anywhere)
+        rider_context = "" if child else _build_rider_context(db, user, attachment_ids)
+        dossier_block = "" if child else _dossier_block(db, user)
+        recall = None if child else _relevant_memories(db, user, user_message)
+        context_block = (
+            f"{VOICE_MODE_ADDENDUM}\n\n"
+            f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
+            f"{dossier_block}"
+            f"Today's date: {date.today().isoformat()}"
+        )
 
-    # Build system prompt with voice mode addendum + per-message recall
-    system = _system_blocks(
-        user,
-        f"{VOICE_MODE_ADDENDUM}\n\n"
-        f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
-        f"{dossier_block}"
-        f"Today's date: {date.today().isoformat()}",
-        volatile=_turn_notes(
-            screen, intro, None if child else _relevant_memories(db, user, user_message),
-            known,
-        ),
-    )
+        def system_now():
+            # Voice mode addendum + rider context + per-message recall, built
+            # again for a later call when a late verdict has added a red flag.
+            return _system_blocks(
+                user, context_block, volatile=_turn_notes(safety.screen, intro, recall, known),
+            )
 
-    # Build message history
-    messages = _build_messages(session)
+        system = system_now()
+        safety.changed = False
 
-    # Stream from Claude, via the forma-core funnel
-    full_response = ""
-    sentence_buffer = ""
-    sentence_index = 0
-    tokens_used = 0
-    voice_enabled = is_voice_enabled()
-    plan_was_updated = False
-    reply_failed = False
-    scrub = StreamHumanizer()
+        # Build message history
+        messages = _build_messages(session)
 
-    # A rider in voice mode may not be looking at the screen: the card is
-    # spoken too, before anything else.
-    if voice_enabled:
-        for _, card_text in screen.cards:
-            try:
-                audio_b64 = base64.b64encode(await text_to_speech(card_text)).decode("utf-8")
-                yield f'data: {json.dumps({"type": "audio", "content": audio_b64, "sentence_index": sentence_index})}\n\n'
-                sentence_index += 1
-            except Exception as tts_err:
-                logger.warning("TTS failed for a safety card: %s", tts_err)
+        # Stream from Claude, via the forma-core funnel
+        full_response = ""
+        sentence_buffer = ""
+        sentence_index = 0
+        tokens_used = 0
+        voice_enabled = is_voice_enabled()
+        plan_was_updated = False
+        reply_failed = False
+        scrub = StreamHumanizer()
 
-    if intro:
-        sentence_buffer = intro + " "
-        yield f'data: {json.dumps({"type": "text", "content": intro + " "})}\n\n'
-
-    async def emit(text: str):
-        """Send checked text to the rider, and speak each sentence it completes."""
-        nonlocal full_response, sentence_buffer, sentence_index
-        if not text:
-            return
-        full_response += text
-        sentence_buffer += text
-        yield f'data: {json.dumps({"type": "text", "content": text})}\n\n'
-        if not voice_enabled:
-            return
-        while _SENTENCE_END.search(sentence_buffer):
-            match = _SENTENCE_END.search(sentence_buffer)
-            complete_sentence = sentence_buffer[:match.end()].strip()
-            sentence_buffer = sentence_buffer[match.end():]
-            if complete_sentence and len(complete_sentence) > 5:
+        async def speak_cards(cards):
+            """A rider in voice mode may not be looking at the screen: a card
+            is spoken too, the moment it goes out."""
+            nonlocal sentence_index
+            if not voice_enabled:
+                return
+            for card_text in cards:
                 try:
-                    audio_b64 = base64.b64encode(
-                        await text_to_speech(complete_sentence)
-                    ).decode("utf-8")
+                    audio_b64 = base64.b64encode(await text_to_speech(card_text)).decode("utf-8")
                     yield f'data: {json.dumps({"type": "audio", "content": audio_b64, "sentence_index": sentence_index})}\n\n'
                     sentence_index += 1
-                except Exception:
-                    pass
+                except Exception as tts_err:
+                    logger.warning("TTS failed for a safety card: %s", tts_err)
 
-    try:
-        # Agentic loop, keeps going while Claude wants to call tools. An
-        # account that may be a child's never reaches the model.
-        max_iterations = 0 if child else 5
-        if child:
-            async for chunk in emit(_child_reply(guard)):
-                yield chunk
-            _after_child_turn(db, user, turn_started)
-        for _ in range(max_iterations):
-            async for chunk in emit(guard.round_break()):
-                yield chunk
-            # One more try when the call fails before any words arrive, as in
-            # stream_response.
-            for attempt in (1, 2):
-                heard = False
-                try:
-                    with forma_core.stream(
+        async def late_cards(chunks):
+            """A card the classifier added, sent and spoken."""
+            for chunk in chunks:
+                yield f"data: {json.dumps(chunk)}\n\n"
+            async for piece in speak_cards([c.get("text", "") for c in chunks if c.get("text")]):
+                yield piece
+
+        async for piece in speak_cards([card_text for _, card_text in screen.cards]):
+            yield piece
+        # A verdict that landed while the context was built goes out now.
+        async for chunk in late_cards(safety.poll()):
+            yield chunk
+
+        if intro:
+            sentence_buffer = intro + " "
+            yield f'data: {json.dumps({"type": "text", "content": intro + " "})}\n\n'
+
+        async def emit(text: str):
+            """Send checked text to the rider, and speak each sentence it completes."""
+            nonlocal full_response, sentence_buffer, sentence_index
+            if not text:
+                return
+            full_response += text
+            sentence_buffer += text
+            yield f'data: {json.dumps({"type": "text", "content": text})}\n\n'
+            if not voice_enabled:
+                return
+            while _SENTENCE_END.search(sentence_buffer):
+                match = _SENTENCE_END.search(sentence_buffer)
+                complete_sentence = sentence_buffer[:match.end()].strip()
+                sentence_buffer = sentence_buffer[match.end():]
+                if complete_sentence and len(complete_sentence) > 5:
+                    try:
+                        audio_b64 = base64.b64encode(
+                            await text_to_speech(complete_sentence)
+                        ).decode("utf-8")
+                        yield f'data: {json.dumps({"type": "audio", "content": audio_b64, "sentence_index": sentence_index})}\n\n'
+                        sentence_index += 1
+                    except Exception:
+                        pass
+
+        try:
+            # Agentic loop, keeps going while Claude wants to call tools. An
+            # account that may be a child's never reaches the model.
+            max_iterations = 0 if child else 5
+            if child:
+                async for chunk in emit(_child_reply(guard)):
+                    yield chunk
+                _after_child_turn(db, user, turn_started)
+            for _ in range(max_iterations):
+                async for chunk in emit(guard.round_break()):
+                    yield chunk
+                if safety.changed:
+                    system = system_now()
+                    safety.changed = False
+                # One more try when the call fails before any words arrive, as in
+                # stream_response.
+                final = None
+                for attempt in (1, 2):
+                    heard = False
+                    # Every argument is read here, on the turn's own thread:
+                    # the database session never crosses to the reader.
+                    call = dict(
                         user_id=user.id,
                         task="chat_voice",  # shorter max_tokens, conciseness matters
                         surface="coach_voice",
                         system=system,
                         messages=messages,
                         tools=COACH_TOOLS,
-                    ) as stream:
-                        for event in stream:
-                            if event.type == "content_block_delta":
-                                if hasattr(event.delta, "text"):
-                                    heard = True
-                                    # Checked a sentence at a time, then sent and spoken.
-                                    async for chunk in emit(
-                                        guard.feed(scrub.feed(event.delta.text))
-                                    ):
-                                        yield chunk
-
-                        final = stream.get_final_message()
+                    )
+                    events = _pump_model(
+                        lambda call=call: forma_core.stream(**call), ready=safety.due
+                    )
+                    try:
+                        async for kind, event in events:
+                            if kind == "final":
+                                final = event
+                                break
+                            if kind == "due":
+                                # The classifier's verdict, the moment it
+                                # lands, whether or not the model is saying
+                                # anything.
+                                async for chunk in late_cards(safety.poll()):
+                                    yield chunk
+                                if safety.child:
+                                    break
+                            elif (
+                                event.type == "content_block_delta"
+                                and hasattr(event.delta, "text")
+                            ):
+                                heard = True
+                                # Checked a sentence at a time, then sent and spoken.
+                                async for chunk in emit(
+                                    guard.feed(scrub.feed(event.delta.text))
+                                ):
+                                    yield chunk
+                        break
+                    except Exception as e:
+                        if attempt == 2 or heard or not _worth_retrying(e):
+                            raise
+                        logger.warning("Coach voice call failed, trying once more (user=%s): %s", user.id, e)
+                        await asyncio.sleep(MODEL_RETRY_BACKOFF_SECONDS)
+                    finally:
+                        await events.aclose()
+                if final is None:
                     break
-                except Exception as e:
-                    if attempt == 2 or heard or not _worth_retrying(e):
-                        raise
-                    logger.warning("Coach voice call failed, trying once more (user=%s): %s", user.id, e)
-                    await asyncio.sleep(MODEL_RETRY_BACKOFF_SECONDS)
-            tokens_used += (
-                final.usage.input_tokens + final.usage.output_tokens
-                if final.usage else 0
-            )
-
-            # Check if Claude wants to use tools
-            tool_use_blocks = [
-                block for block in final.content
-                if block.type == "tool_use"
-            ]
-
-            if not tool_use_blocks or final.stop_reason != "tool_use":
-                break
-
-            async for chunk in emit(guard.feed(scrub.flush()) + guard.before_tools()):
-                yield chunk
-
-            # Execute tool calls
-            messages.append({"role": "assistant", "content": final.content})
-
-            tool_results = []
-            ran = []
-            for tool_block in tool_use_blocks:
-                label = _tool_status(db, user, tool_block.name, tool_block.input)
-                if label:
-                    yield f'data: {json.dumps({"type": "status", "content": label})}\n\n'
-                result_text = _execute_tool(
-                    db, user, tool_block.name, tool_block.input
+                tokens_used += (
+                    final.usage.input_tokens + final.usage.output_tokens
+                    if final.usage else 0
                 )
-                ran.append((tool_block.name, result_text))
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_block.id,
-                    "content": result_text,
-                })
-                if tool_block.name == "propose_plan_change":
-                    # The plan has not moved, but something is now waiting on
-                    # the rider, so the app can raise the card straight away.
-                    yield f'data: {json.dumps({"type": "proposal_created"})}\n\n'
-                if tool_block.name not in _NO_PLAN_CHANGE_TOOLS:
-                    plan_was_updated = True
 
-            messages.append({"role": "user", "content": tool_results})
-            async for chunk in emit(guard.after_tools(ran)):
-                yield chunk
-            if plan_was_updated:
-                yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
+                # Check if Claude wants to use tools
+                tool_use_blocks = [
+                    block for block in final.content
+                    if block.type == "tool_use"
+                ]
 
-        if not child:
-            async for chunk in emit(guard.feed(scrub.flush()) + guard.flush()):
-                yield chunk
-            # The coach put the account on hold as possibly under 18 this
-            # turn: the reply ends, and is spoken, as every later one will be.
-            async for chunk in emit(_minor_closing_for_turn(
-                db, user, turn_started, full_response, "crisis" in screen.kinds
-            )):
-                yield chunk
+                if not tool_use_blocks or final.stop_reason != "tool_use":
+                    break
 
-        # Handle any remaining text in buffer
-        if voice_enabled and sentence_buffer.strip() and len(
-            sentence_buffer.strip()
-        ) > 5:
+                async for chunk in emit(guard.feed(scrub.flush()) + guard.before_tools()):
+                    yield chunk
+
+                # Execute tool calls
+                messages.append({"role": "assistant", "content": final.content})
+
+                tool_results = []
+                ran = []
+                for tool_block in tool_use_blocks:
+                    label = _tool_status(db, user, tool_block.name, tool_block.input)
+                    if label:
+                        yield f'data: {json.dumps({"type": "status", "content": label})}\n\n'
+                    result_text = _execute_tool(
+                        db, user, tool_block.name, tool_block.input
+                    )
+                    ran.append((tool_block.name, result_text))
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_block.id,
+                        "content": result_text,
+                    })
+                    if tool_block.name == "propose_plan_change":
+                        # The plan has not moved, but something is now waiting on
+                        # the rider, so the app can raise the card straight away.
+                        yield f'data: {json.dumps({"type": "proposal_created"})}\n\n'
+                    if tool_block.name not in _NO_PLAN_CHANGE_TOOLS:
+                        plan_was_updated = True
+                    # A verdict that landed while the tool ran goes out now.
+                    async for chunk in late_cards(safety.poll()):
+                        yield chunk
+
+                messages.append({"role": "user", "content": tool_results})
+                async for chunk in emit(guard.after_tools(ran)):
+                    yield chunk
+                async for chunk in late_cards(safety.poll()):
+                    yield chunk
+                if plan_was_updated:
+                    yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
+
+            # The model's last words, then whatever is left of the classifier's
+            # time runs out before "done".
+            if not child and not safety.child:
+                async for chunk in emit(guard.feed(scrub.flush()) + guard.finish_body()):
+                    yield chunk
+            async for chunk in late_cards(await safety.settle()):
+                yield chunk
+            if not child:
+                if safety.child:
+                    async for chunk in emit(
+                        ("\n\n" if full_response.strip() else "")
+                        + _child_reply_after(guard, scrub)
+                    ):
+                        yield chunk
+                else:
+                    _hold_on_escalation(db, user, screen, guard.said, turn_started)
+                    async for chunk in emit(guard.finish_tail()):
+                        yield chunk
+                # The coach or the classifier put the account on hold as
+                # possibly under 18 this turn: the reply ends, and is spoken,
+                # as every later one will be.
+                async for chunk in emit(_minor_closing_for_turn(
+                    db, user, turn_started, full_response, "crisis" in screen.kinds
+                )):
+                    yield chunk
+
+            # Handle any remaining text in buffer
+            if voice_enabled and sentence_buffer.strip() and len(
+                sentence_buffer.strip()
+            ) > 5:
+                try:
+                    audio_bytes = await text_to_speech(
+                        sentence_buffer.strip()
+                    )
+                    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+                    yield f'data: {json.dumps({"type": "audio", "content": audio_b64, "sentence_index": sentence_index})}\n\n'
+                except Exception as tts_err:
+                    # Degrade to text-only but say so in the logs, a dead
+                    # ElevenLabs key should never be an invisible failure.
+                    logger.warning("TTS failed (text continues): %s", tts_err)
+
+        except forma_core.BudgetExceededError:
+            async for chunk in late_cards(await safety.settle()):
+                yield chunk
+            if screen.hits:
+                # The quota never stands between a rider and the safety answer.
+                async for chunk in emit(_flush_after_failure(guard, scrub, after=full_response)):
+                    yield chunk
+            if not full_response.strip():
+                full_response = forma_core.QUOTA_MESSAGE
+                yield _sse_text(full_response)
+        except Exception as e:
+            # Never leave the rider with silence AND an empty bubble. A red-flag
+            # turn gets the fixed safety reply, spoken as well as shown.
+            logger.exception("Coach voice stream failed: %s", e)
+            reply_failed = True
             try:
-                audio_bytes = await text_to_speech(
-                    sentence_buffer.strip()
-                )
-                audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
-                yield f'data: {json.dumps({"type": "audio", "content": audio_b64, "sentence_index": sentence_index})}\n\n'
-            except Exception as tts_err:
-                # Degrade to text-only but say so in the logs, a dead
-                # ElevenLabs key should never be an invisible failure.
-                logger.warning("TTS failed (text continues): %s", tts_err)
+                async for chunk in late_cards(await safety.settle()):
+                    yield chunk
+                async for chunk in emit(_reply_after_failure(guard, scrub, full_response, screen)):
+                    yield chunk
+            except Exception:
+                logger.exception("Sending the reply after a voice failure failed")
+            _record_reply_failure(db, user, screen, user_msg.id, error=e, source="chat_voice")
 
-    except forma_core.BudgetExceededError:
-        if screen.hits:
-            # The quota never stands between a rider and the safety answer.
-            async for chunk in emit(_flush_after_failure(guard, scrub, after=full_response)):
-                yield chunk
+        child = child or safety.child
+        # A rider's message must NEVER sit unanswered in the history (the
+        # truncated-tool-call case streams zero text and raises nothing).
         if not full_response.strip():
-            full_response = forma_core.QUOTA_MESSAGE
-            yield _sse_text(full_response)
-    except Exception as e:
-        # Never leave the rider with silence AND an empty bubble. A red-flag
-        # turn gets the fixed safety reply, spoken as well as shown.
-        logger.exception("Coach voice stream failed: %s", e)
-        reply_failed = True
-        try:
-            async for chunk in emit(_reply_after_failure(guard, scrub, full_response, screen)):
-                yield chunk
-        except Exception:
-            logger.exception("Sending the reply after a voice failure failed")
-        _record_reply_failure(db, user, screen, user_msg.id, error=e, source="chat_voice")
-
-    # A rider's message must NEVER sit unanswered in the history (the
-    # truncated-tool-call case streams zero text and raises nothing).
-    if not full_response.strip():
-        full_response = (
-            "I got cut off before I could answer that properly. "
-            "Send it again and I'll get straight to the point."
-        )
-        yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
-
-    saved = f"{intro} {full_response}" if intro else full_response
-    add_assistant_message(
-        db, session, saved, None if child else _snapshot(rider_context, screen), tokens_used
-    )
-    _keep_exchange(db, user, turn_started, user_message, saved)
-
-    if plan_was_updated:
-        yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
-
-    yield f'data: {json.dumps({"type": "done"})}\n\n'
-
-    if child:
-        return
-
-    # Memory extraction, voice conversations feed the brain too (Pillar 2).
-    # A failed turn has nothing worth remembering, only the failure.
-    if not reply_failed:
-        try:
-            from app.services.memory_service import extract_memories
-
-            extract_memories(
-                db, user,
-                f"Rider: {user_message}\n\nForma: {full_response}",
-                source="chat", source_ref=session.id,
+            full_response = (
+                "I got cut off before I could answer that properly. "
+                "Send it again and I'll get straight to the point."
             )
-        except Exception:
-            logger.exception("Memory extraction after voice chat failed (user=%s)", user.id)
+            yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
 
-    # Name the thread from its content while it still wears the default name.
-    maybe_autotitle_session(db, user, session)
+        saved = f"{intro} {full_response}" if intro else full_response
+        add_assistant_message(
+            db, session, saved,
+            _cards_snapshot(screen) if child else _snapshot(rider_context, screen), tokens_used,
+        )
+        _flag_crisis_turn(db, user, screen, turn_started)
+        _keep_exchange(db, user, turn_started, user_message, saved)
+        if safety.child:
+            _after_child_turn(db, user, turn_started)
+
+        if plan_was_updated:
+            yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
+
+        yield f'data: {json.dumps({"type": "done"})}\n\n'
+
+        if child:
+            return
+
+        # Memory extraction, voice conversations feed the brain too (Pillar 2).
+        # A failed turn has nothing worth remembering, only the failure.
+        if not reply_failed:
+            try:
+                from app.services.memory_service import extract_memories
+
+                extract_memories(
+                    db, user,
+                    f"Rider: {user_message}\n\nForma: {full_response}",
+                    source="chat", source_ref=session.id,
+                )
+            except Exception:
+                logger.exception("Memory extraction after voice chat failed (user=%s)", user.id)
+
+        # Name the thread from its content while it still wears the default name.
+        maybe_autotitle_session(db, user, session)
+    finally:
+        # The rider left before the classifier answered: its verdict is
+        # still acted on when it lands.
+        safety.detach()
 
 
 def get_non_streaming_response(
@@ -3663,91 +6151,113 @@ def get_non_streaming_response(
     """
     Non-streaming version for simpler integrations.
     Returns the full response text, with any red-flag card at the top (there
-    is no separate channel to send it on).
+    is no separate channel to send it on). The classifier runs alongside the
+    model call, and the reply waits for both.
     """
     turn_started = datetime.utcnow()
     user_msg = add_user_message(db, session, user_message)
 
-    # The red-flag check, with the classifier's verdict merged in, as in
+    # The red-flag check, with the classifier alongside, as in
     # stream_response. With no separate channel, every card goes at the top.
     regex_hits, shown = _regex_first(user, user_message)
-    opinion = _second_opinion_sync(db, user, session, user_msg.id, user_message, regex_hits)
-    screen = _screen_turn(
-        db, user, user_message, regex_hits, opinion, shown,
-        message_id=user_msg.id, source="chat_sync",
+    safety = _TurnSafety(
+        db, user, session, user_msg.id, user_message, regex_hits, shown,
+        source="chat_sync", surface="coach",
     )
-    safety_screen.alert_founder_for(screen, user, user_message)
-    intro, known = _intro_for(db, user, session)
-    guard = _reply_guard(db, user, screen, turn_started)
-
-    def _with_cards(text: str) -> str:
-        body = f"{intro} {text}" if intro else text
-        return "\n\n".join([card for _, card in screen.cards] + [body])
-
-    if _child_account(db, user, screen):
-        # Fixed words only, as in stream_response.
-        reply = _with_cards(_child_reply(guard))
-        add_assistant_message(db, session, reply, None, 0)
-        _keep_exchange(db, user, turn_started, user_message, reply)
-        _after_child_turn(db, user, turn_started)
-        return reply
-
-    rider_context = _build_rider_context(db, user)
-
-    system = _system_blocks(
-        user,
-        f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
-        f"Today's date: {date.today().isoformat()}",
-        volatile=_turn_notes(screen, intro, None, known),
-    )
-
-    messages = _build_messages(session)
-
     try:
-        response = _call_with_retry(
-            user_id=user.id,
-            task="chat_sync",
-            surface="coach",
-            system=system,
-            messages=messages,
+        screen = safety.screen_now_sync()
+        safety_screen.alert_founder_for(screen, user, user_message)
+        intro, known = _intro_for(db, user, session)
+        guard = _reply_guard(db, user, screen, turn_started)
+        safety.guard = guard
+
+        def _with_cards(text: str) -> str:
+            body = f"{intro} {text}" if intro else text
+            # Only the cards at the turn's tier, the reply's own words included.
+            _cards_at_tier(db, screen, screen.card_chunks(), guard.said)
+            return "\n\n".join([card for _, card in screen.cards] + [body])
+
+        def _child_turn() -> str:
+            # Fixed words only, as in stream_response.
+            reply = _with_cards(_child_reply(guard))
+            add_assistant_message(db, session, reply, _cards_snapshot(screen), 0)
+            _flag_crisis_turn(db, user, screen, turn_started)
+            _keep_exchange(db, user, turn_started, user_message, reply)
+            _after_child_turn(db, user, turn_started)
+            return reply
+
+        if _child_account(db, user, screen):
+            return _child_turn()
+
+        rider_context = _build_rider_context(db, user)
+
+        system = _system_blocks(
+            user,
+            f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
+            f"Today's date: {date.today().isoformat()}",
+            volatile=_turn_notes(screen, intro, None, known),
         )
-    except Exception as e:
-        # A red-flag turn still gets the fixed safety reply, quota or not;
-        # anything else gets the quota message or an honest retry line.
-        failed = not isinstance(e, forma_core.BudgetExceededError)
-        if failed:
-            logger.exception("Coach non-streaming call failed: %s", e)
-        text = guard.flush() if screen.hits else ""
-        if not text.strip():
-            text = forma_core.QUOTA_MESSAGE if not failed else safety_screen.REPLY_FAILED_MESSAGE
-        reply = _with_cards(text)
-        add_assistant_message(db, session, reply, None, 0)
-        if failed:
-            _record_reply_failure(db, user, screen, user_msg.id, error=e, source="chat_sync")
-        _keep_exchange(db, user, turn_started, user_message, reply)
-        return reply
 
-    # The same sentence-by-sentence check as the streamed reply.
-    content = guard.feed(humanize(response_text(response))) + guard.flush()
-    tokens_used = (
-        response.usage.input_tokens + response.usage.output_tokens
-        if response.usage else 0
-    )
+        messages = _build_messages(session)
 
-    content = _with_cards(content)
-    add_assistant_message(db, session, content, _snapshot(rider_context, screen), tokens_used)
-    _keep_exchange(db, user, turn_started, user_message, content)
+        try:
+            response = _call_with_retry(
+                user_id=user.id,
+                task="chat_sync",
+                surface="coach",
+                system=system,
+                messages=messages,
+            )
+        except Exception as e:
+            # A red-flag turn still gets the fixed safety reply, quota or not;
+            # anything else gets the quota message or an honest retry line.
+            safety.settle_sync()
+            failed = not isinstance(e, forma_core.BudgetExceededError)
+            if failed:
+                logger.exception("Coach non-streaming call failed: %s", e)
+            text = guard.flush() if screen.hits else ""
+            if not text.strip():
+                text = forma_core.QUOTA_MESSAGE if not failed else safety_screen.REPLY_FAILED_MESSAGE
+            reply = _with_cards(text)
+            add_assistant_message(db, session, reply, None, 0)
+            if failed:
+                _record_reply_failure(db, user, screen, user_msg.id, error=e, source="chat_sync")
+            _flag_crisis_turn(db, user, screen, turn_started)
+            _keep_exchange(db, user, turn_started, user_message, reply)
+            return reply
 
-    # Memory extraction, every conversational surface writes to the brain.
-    try:
-        from app.services.memory_service import extract_memories
+        # The model has answered; the classifier has whatever is left of its
+        # time, and anything it adds is acted on before the reply goes.
+        safety.settle_sync()
+        if safety.child:
+            return _child_turn()
 
-        extract_memories(
-            db, user,
-            f"Rider: {user_message}\n\nForma: {content}",
-            source="chat", source_ref=session.id,
+        # The same sentence-by-sentence check as the streamed reply.
+        content = guard.feed(humanize(response_text(response))) + guard.finish_body()
+        _hold_on_escalation(db, user, screen, guard.said, turn_started)
+        content += guard.finish_tail()
+        tokens_used = (
+            response.usage.input_tokens + response.usage.output_tokens
+            if response.usage else 0
         )
-    except Exception:
-        logger.exception("Memory extraction after non-streaming chat failed (user=%s)", user.id)
 
-    return content
+        content = _with_cards(content)
+        add_assistant_message(db, session, content, _snapshot(rider_context, screen), tokens_used)
+        _flag_crisis_turn(db, user, screen, turn_started)
+        _keep_exchange(db, user, turn_started, user_message, content)
+
+        # Memory extraction, every conversational surface writes to the brain.
+        try:
+            from app.services.memory_service import extract_memories
+
+            extract_memories(
+                db, user,
+                f"Rider: {user_message}\n\nForma: {content}",
+                source="chat", source_ref=session.id,
+            )
+        except Exception:
+            logger.exception("Memory extraction after non-streaming chat failed (user=%s)", user.id)
+
+        return content
+    finally:
+        safety.detach()

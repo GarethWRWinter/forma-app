@@ -1,6 +1,6 @@
 """Safety endpoints: the gate state the app reads, clearance, the fever
-lift, the head-injury lift, "this was a mistake", acknowledgements, and what
-the trainer was told at session start.
+lift, the head-injury lift, the seizure lift, "this was a mistake",
+acknowledgements, and what the trainer was told at session start.
 
 Deliberately behind get_current_user only, never the paywall: a lapsed
 membership must not hide a hold or block a clearance. While the account is
@@ -79,6 +79,10 @@ def _refusal(hold: SafetyHold, how: str) -> str:
         return "This hold isn't for a fever, so it can't be lifted that way."
     if how == "head_clearance":
         return "This hold isn't for a head injury, so it can't be lifted that way."
+    if how == "seizure_clearance":
+        return (
+            "This hold isn't for a fit after a head injury, so it can't be lifted that way."
+        )
     return "This hold can't be lifted that way."
 
 
@@ -96,6 +100,12 @@ class FeverLiftBody(BaseModel):
 
 
 class HeadInjuryLiftBody(BaseModel):
+    hold_id: str = Field(min_length=1, max_length=36)
+    by: str = Field(min_length=1, max_length=200)
+    limits: str | None = Field(default=None, max_length=2000)
+
+
+class SeizureLiftBody(BaseModel):
     hold_id: str = Field(min_length=1, max_length=36)
     by: str = Field(min_length=1, max_length=200)
     limits: str | None = Field(default=None, max_length=2000)
@@ -206,6 +216,37 @@ def lift_head_injury(
         raise NotFoundException(detail="That hold wasn't found.")
     sync_hold_marks(db, current_user.id)
     logger.info("Rider %s declared a head injury checked (hold %s)", current_user.id, body.hold_id)
+    return safety_service.safety_state(db, current_user)
+
+
+@router.post("/safety/seizure-lift", dependencies=[Depends(rate_limit(20, 3600))])
+def lift_head_seizure(
+    body: SeizureLiftBody,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The rider declares a doctor has assessed the seizure after their head
+    injury and cleared them to ride (round 3, L7). The seizure hold lifts,
+    with the head-injury holds of the same episode, and nothing graded
+    follows: how they build back follows that doctor's advice, which the
+    limits record. Only a doctor: a physio or a midwife is refused."""
+    if not body.by.strip():
+        raise BadRequestException(detail="Tell me which doctor assessed you, for example your GP.")
+    try:
+        hold = safety_service.lift_head_seizure(
+            db, current_user, body.hold_id, body.by, body.limits, request=request
+        )
+    except safety_service.ClearanceOutOfScope as refused:
+        db.rollback()
+        raise BadRequestException(detail=str(refused))
+    except safety_service.HoldNotLiftable as refused:
+        db.rollback()
+        raise BadRequestException(detail=_refusal(refused.hold, "seizure_clearance"))
+    if hold is None:
+        raise NotFoundException(detail="That hold wasn't found.")
+    sync_hold_marks(db, current_user.id)
+    logger.info("Rider %s declared a seizure assessed (hold %s)", current_user.id, body.hold_id)
     return safety_service.safety_state(db, current_user)
 
 

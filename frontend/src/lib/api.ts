@@ -949,13 +949,16 @@ export type ScreeningTier = "none" | "easy_only" | "hold_all";
     its own declaration, never the general clearance: a doctor has checked
     them since and they've had no symptoms for 24 hours. That leaves easy
     riding until two weeks after the injury, and no racing or group riding
-    until SafetyState.no_racing_or_group_until. "expires": ends by itself at
-    expires_at. "layoff": the easy start after a break. "admin_only": an
-    under-18 account or a hold set by hand. */
+    until SafetyState.no_racing_or_group_until. "head_seizure": a fit after
+    a head injury, lifted only by its own declaration that a doctor has
+    assessed the seizure and cleared them to ride; nothing graded follows.
+    "expires": ends by itself at expires_at. "layoff": the easy start after
+    a break. "admin_only": an under-18 account or a hold set by hand. */
 export type SafetyLiftKind =
   | "doctor"
   | "fever_self"
   | "head_injury"
+  | "head_seizure"
   | "expires"
   | "layoff"
   | "admin_only";
@@ -966,7 +969,9 @@ export interface SafetyHold {
   reason: string;
   red_flag: string | null;
   /** "screening" and "admin" holds can't be marked a mistake. */
-  source: "screening" | "detector" | "coach_tool" | "layoff" | "admin";
+  /** "reply": the coach's own reply sent the rider for care (999, A&E, NHS 111
+      or a GP today) and the hold went on by itself. */
+  source: "screening" | "detector" | "coach_tool" | "reply" | "layoff" | "admin" | "profile";
   opened_at: string;
   /** Read only through components/safety, which owns what each kind offers. */
   lift_kind?: SafetyLiftKind;
@@ -1063,6 +1068,15 @@ export const safety = {
       before day 21 (SafetyState.no_racing_or_group_until). */
   liftHeadInjury: (holdId: string, by: string, limits?: string) =>
     request<SafetyState>("/users/me/safety/head-injury-lift", {
+      method: "POST",
+      body: JSON.stringify({ hold_id: holdId, by, limits: limits || null }),
+    }),
+
+  /** The rider says a doctor has assessed the seizure after their head
+      injury and cleared them to ride: the seizure hold lifts, with the head
+      injury behind it, and how they build back follows that doctor. */
+  liftHeadSeizure: (holdId: string, by: string, limits?: string) =>
+    request<SafetyState>("/users/me/safety/seizure-lift", {
       method: "POST",
       body: JSON.stringify({ hold_id: holdId, by, limits: limits || null }),
     }),
@@ -1411,11 +1425,24 @@ export interface ChatSessionUpdate {
   archived?: boolean;
 }
 
+/** A fixed red-flag card, as the stream sends it and as a stored reply keeps
+    it. "card" names which card it is (chest, crisis, fever...). The chat page
+    shows the emergency and crisis styles; a "warning" card's lines travel in
+    the reply itself (safety_screen.RENDERED_CARD_STYLES). */
+export interface ChatSafetyCard {
+  kind: "emergency" | "crisis" | "warning";
+  text: string;
+  card?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   created_at: string;
+  /** The card or cards shown at the top of this reply when it was sent, so a
+      reload shows them again. Absent on replies that had none. */
+  safety_card?: ChatSafetyCard | ChatSafetyCard[] | null;
 }
 
 /**
@@ -1441,18 +1468,69 @@ export interface ChatAttachment {
 /**
  * One SSE chunk from sendMessage / sendVoiceMessage.
  *
- * "safety" arrives before any of the coach's text when the message hit an
- * emergency or crisis red flag. Its text is fixed (not written by the model)
- * and should be shown as a card the rider can't miss.
+ * "safety" is a fixed red-flag card (not written by the model). It can arrive
+ * at any point in the stream: first, part way through the coach's text, or
+ * just before "done". Wherever it lands, it belongs at the top of the reply
+ * being streamed (components/coach/coach-thread).
  */
 export type ChatStreamChunk =
   | { type: "text"; content: string }
   | { type: "status"; content: string }
   | { type: "audio"; content: string; sentence_index: number }
-  | { type: "safety"; kind: "emergency" | "crisis"; text: string }
+  | ({ type: "safety" } & ChatSafetyCard)
   | { type: "proposal_created" }
   | { type: "plan_updated" }
   | { type: "done" };
+
+/** The JSON payload of one SSE line, or null for anything else (a comment, a
+    blank line, a payload that isn't JSON). Tolerates CRLF and "data:" with or
+    without the space. */
+function sseData(line: string): ChatStreamChunk | null {
+  const clean = line.endsWith("\r") ? line.slice(0, -1) : line;
+  if (!clean.startsWith("data:")) return null;
+  try {
+    const data = JSON.parse(clean.slice(5).trimStart());
+    return data && typeof data === "object" && typeof data.type === "string"
+      ? (data as ChatStreamChunk)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The chunks of a chat stream, in the order the server sent them. Network
+ * reads can split a line anywhere, so lines are rebuilt before parsing, and
+ * whatever is left when the stream closes is read too: a last chunk without
+ * its trailing newline (a safety card just before "done", say) still counts.
+ */
+export async function* readChatStream(
+  body: ReadableStream<Uint8Array>
+): AsyncGenerator<ChatStreamChunk> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      const data = sseData(line);
+      if (data) yield data;
+    }
+  }
+
+  buffer += decoder.decode();
+  for (const line of buffer.split("\n")) {
+    const data = sseData(line);
+    if (data) yield data;
+  }
+}
 
 export const chat = {
   getSessions: (includeArchived?: boolean) =>
@@ -1514,27 +1592,7 @@ export const chat = {
       throw new ApiError("Failed to send message", response.status);
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            yield data;
-          } catch {}
-        }
-      }
-    }
+    yield* readChatStream(response.body);
   },
 
   /**
@@ -1563,27 +1621,8 @@ export const chat = {
       throw new ApiError("Failed to send voice message", response.status);
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            yield data; // yields {type: "text"|"audio"|"done", ...}
-          } catch {}
-        }
-      }
-    }
+    // text, audio, safety, plan_updated and done chunks, in order
+    yield* readChatStream(response.body);
   },
 
   /** Convert text to speech. Returns audio blob for playback. */

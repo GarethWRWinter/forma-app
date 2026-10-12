@@ -198,6 +198,16 @@ export function HealthSettings() {
                 setCleared(liftedMessage(next));
               }}
             />
+          ) : clearing && offer === "head_seizure" && hold ? (
+            <ClearanceForm
+              kind="head_seizure"
+              holdId={hold.id}
+              onCancel={() => setClearing(false)}
+              onDone={(next) => {
+                setClearing(false);
+                setCleared(liftedMessage(next));
+              }}
+            />
           ) : clearing && offer === "head_injury" && hold ? (
             <ClearanceForm
               kind="head_injury"
@@ -221,9 +231,11 @@ export function HealthSettings() {
               <p className="text-sm text-vb-text-dim">
                 {offer === "fever_self"
                   ? "Has your fever been gone for 24 hours, without paracetamol or ibuprofen?"
-                  : offer === "head_injury"
-                    ? "Has a doctor checked you since you hit your head?"
-                    : "Has a doctor, midwife or physio cleared you for hard training?"}
+                  : offer === "head_seizure"
+                    ? "Has a doctor assessed the seizure after your head injury?"
+                    : offer === "head_injury"
+                      ? "Has a doctor checked you since you hit your head?"
+                      : "Has a doctor, midwife or physio cleared you for hard training?"}
               </p>
               <Button size="sm" variant="ghost" onClick={() => setClearing(true)}>
                 {offer === "fever_self" ? FEVER_LIFT_BUTTON : <>I&apos;ve been cleared</>}

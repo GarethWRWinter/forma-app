@@ -116,10 +116,11 @@ TASKS: dict[str, TaskConfig] = {
     # the retention product, and it has to sound like the coach they met.
     "outreach_email": TaskConfig(SONNET, 700),
     # The second safety screen: reads one rider message, returns JSON flags
-    # (app/services/safety_classifier.py). It runs before the reply, so it
-    # gets 1.5 s and no retries; a slow or failed call just leaves the regex
-    # screen's hits standing.
-    "safety_classify": TaskConfig(HAIKU, 400, timeout=1.5, max_retries=0),
+    # (app/services/safety_classifier.py). It runs alongside the reply, never
+    # in front of it, so it gets the classifier's whole 6 s deadline
+    # (safety_classifier.DEADLINE_SECONDS) and no retries; a slow or failed
+    # call just leaves the regex screen's hits standing.
+    "safety_classify": TaskConfig(HAIKU, 400, timeout=6.0, max_retries=0),
 }
 
 # The only tasks that go out without SAFETY_LAW: none of them speaks to the

@@ -38,8 +38,9 @@ class SafetyHold(Base):
     """A brake on what the plan, the coach and ride mode may prescribe.
 
     level: "easy_only" (recovery and endurance only) | "hold_all" (nothing).
-    source: "screening" | "detector" | "coach_tool" | "layoff" | "admin" |
-    "profile" (an under-18 date of birth given on the account).
+    source: "screening" | "detector" | "coach_tool" | "reply" (the coach's
+    reply sent the rider for care) | "layoff" | "admin" | "profile" (an
+    under-18 date of birth given on the account).
     lifted_how: "clearance" | "mistake" | "admin" | "superseded" |
     "fever_self" | "head_clearance" | "expired".
     expires_at: set only on a hold that ends by itself, such as the easy week

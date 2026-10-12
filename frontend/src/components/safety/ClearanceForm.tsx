@@ -31,6 +31,12 @@ interface Shared {
  * the hold into easy riding until two weeks after the injury, with no racing
  * or group riding before day 21.
  *
+ * "head_seizure": a fit after a head injury has its own declaration, never
+ * the head injury's routine check: a doctor has assessed the seizure and
+ * cleared them to ride. Only a doctor can make it, and nothing graded
+ * follows: how they build back follows that doctor's advice, which the
+ * limits record.
+ *
  * "fever_self": the rider's own word that the fever has gone. No clinician is
  * named and nothing says "hard training", because neither is claimed. The
  * server turns the hold into an easy week that ends by itself.
@@ -43,6 +49,7 @@ export function ClearanceForm(
     (
       | { kind?: "doctor" }
       | { kind: "head_injury"; holdId: string }
+      | { kind: "head_seizure"; holdId: string }
       | { kind: "fever_self"; holdId: string }
     )
 ) {
@@ -58,7 +65,11 @@ export function ClearanceForm(
   }
   return (
     <DoctorClearanceForm
-      headInjuryHoldId={props.kind === "head_injury" ? props.holdId : undefined}
+      lift={
+        props.kind === "head_injury" || props.kind === "head_seizure"
+          ? { kind: props.kind, holdId: props.holdId }
+          : undefined
+      }
       onDone={props.onDone}
       onCancel={props.onCancel}
       className={props.className}
@@ -154,15 +165,16 @@ function FeverLiftForm({ holdId, onDone, onCancel, className }: Shared & { holdI
   );
 }
 
-/** A doctor's clearance, or (with headInjuryHoldId) a head injury's own check. */
+/** A doctor's clearance, or (with `lift`) a head injury's or a seizure's
+    own declaration for that hold. */
 function DoctorClearanceForm({
-  headInjuryHoldId,
+  lift,
   onDone,
   onCancel,
   className,
-}: Shared & { headInjuryHoldId?: string }) {
+}: Shared & { lift?: { kind: "head_injury" | "head_seizure"; holdId: string } }) {
   const applyState = useApplySafetyState();
-  const copy = clearanceCopy(headInjuryHoldId ? "head_injury" : "doctor");
+  const copy = clearanceCopy(lift ? lift.kind : "doctor");
   const [ticked, setTicked] = useState(false);
   const [by, setBy] = useState("");
   const [limits, setLimits] = useState("");
@@ -176,15 +188,24 @@ function DoctorClearanceForm({
       return;
     }
     if (!by) {
-      setError(headInjuryHoldId ? "Tell me which doctor checked you." : "Tell me who cleared you.");
+      setError(
+        lift?.kind === "head_seizure"
+          ? "Tell me which doctor assessed you."
+          : lift
+            ? "Tell me which doctor checked you."
+            : "Tell me who cleared you."
+      );
       return;
     }
     setSaving(true);
     try {
       const avoid = limits.trim() || undefined;
-      const state = headInjuryHoldId
-        ? await safety.liftHeadInjury(headInjuryHoldId, by, avoid)
-        : await safety.confirmClearance(by, avoid);
+      const state =
+        lift?.kind === "head_seizure"
+          ? await safety.liftHeadSeizure(lift.holdId, by, avoid)
+          : lift
+            ? await safety.liftHeadInjury(lift.holdId, by, avoid)
+            : await safety.confirmClearance(by, avoid);
       applyState(state);
       onDone?.(state);
     } catch (err) {

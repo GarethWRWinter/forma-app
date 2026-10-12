@@ -17,11 +17,14 @@ the answer is always JSON in one shape:
 Each benign reason names the kind it explains away and the rider's exact
 words, so a merge can check that it accounts for what the regex matched.
 
-It never holds up a reply. The whole call has 1.5 s of wall-clock time
-(the SDK also gives up at 1.5 s and never retries). A timeout, a provider
-error, a budget refusal, a refusal or any malformed answer returns
-ClassifierResult(ok=False), and merge() then leaves the regex hits exactly
-as they were.
+It never holds up a reply. The chat starts it at the beginning of the turn
+and runs it alongside the coach's own model call, applying its verdict
+whenever it lands (coach_service._TurnSafety), so it can have 6 s of
+wall-clock time (DEADLINE_SECONDS; the SDK gives up then too and never
+retries). Live, Haiku answers in about 1.8 s; the 1.5 s it used to get meant
+six turns in ten went without it. A timeout, a provider error, a budget
+refusal, a refusal or any malformed answer returns ClassifierResult(ok=False),
+and merge() then leaves the regex hits exactly as they were.
 
 merge(regex_hits, result) applies three rules:
   1. Union. A flag the regex missed is added when the model says it is about
@@ -36,6 +39,14 @@ merge(regex_hits, result) applies three rules:
      head injury, crisis and under 18 are never downgraded or dropped. The
      model may raise a severity within a kind; raising is always allowed.
   3. Unavailable (ok=False or None): the regex hits stand, unchanged.
+  4. Fit and tier. A flag the classifier adds whose card would contradict
+     the rider's words (a fever with no illness named, a pregnancy read as
+     a fever, someone else's tablets read as the rider's medicine) is left
+     out, and the coach handles it. Then every hit takes the tier its words
+     set (safety_screen.tier_hits), so its card always matches its kind: a
+     possible break, clot or nerve pressure at the base of the spine is its
+     own red flag, never the knee-niggle card; skipped beats at rest are
+     ectopics; a fit after a blow to the head is an emergency.
 
 Prompt injection. The rider's words go to the model as data between tags it
 is told to treat as data, with any copy of those tags stripped out first.
@@ -90,7 +101,12 @@ MODEL_KINDS: dict[str, str] = {
     "palpitations": "palpitations",
     "fainting": "fainting",
     "head_injury": "head_injury",
+    "gi_bleed": "gi_bleed",
     "fever": "fever",
+    "fracture": "fracture",
+    "dvt": "dvt",
+    "cauda_equina": "cauda_equina",
+    "compartment": "compartment",
     "injury": "injury",
     "pregnancy": "pregnancy",
     "medication": "medication",
@@ -108,7 +124,8 @@ DOWNGRADABLE = frozenset(
 )
 # Never downgraded or dropped, whatever the model says.
 NEVER_DOWNGRADE = frozenset(
-    {"chest_pain", "palpitations", "fainting", "head_injury", "crisis", "minor"}
+    {"chest_pain", "palpitations", "fainting", "head_injury", "gi_bleed", "crisis", "minor",
+     "fracture", "dvt", "cauda_equina", "compartment"}
 )
 
 # Most severe first, the same order as safety_screen.SEVERITIES.
@@ -122,13 +139,26 @@ KIND_SEVERITIES: dict[str, tuple[str, ...]] = {
     "palpitations": ("emergency", "urgent"),
     "fainting": ("emergency", "urgent"),
     "head_injury": ("emergency", "urgent"),
+    # A stomach bleed (SAFETY LAW 2o): vomiting blood or coffee grounds, or
+    # black poo with faintness, is an emergency; black or tarry poo alone is
+    # A&E today.
+    "gi_bleed": ("emergency", "urgent"),
     "fever": ("urgent",),
+    # The injury red flags (SAFETY LAW 2e): a doctor today or now, never a
+    # physio. Code sets the final tier from the rider's words
+    # (safety_screen.tier_hits).
+    "fracture": ("urgent",),
+    "dvt": ("emergency", "urgent"),
+    "cauda_equina": ("emergency", "urgent"),
+    "compartment": ("emergency",),
     "injury": ("urgent", "info"),
     "pregnancy": ("info",),
     "medication": ("info",),
     "condition": ("info",),
     "restriction": ("info",),
-    "heat": ("urgent", "info"),
+    # Heatstroke (confusion, slurred speech, collapse, a fit, hot dry skin)
+    # is an emergency; heat exhaustion is urgent; hot weather alone is info.
+    "heat": ("emergency", "urgent", "info"),
     "crisis": ("crisis",),
     "minor": ("minor",),
     "distress_check": ("info",),
@@ -255,65 +285,139 @@ Use only these kinds. Pick the severity from the kind's own options.
 chest_pain (emergency). Chest pain, pressure, tightness, heaviness, burning \
 or discomfort, including behind the breastbone or sternum, on effort, after \
 it or at rest. Pain spreading to the jaw, neck, arm or back. Breathlessness at \
-rest, or far out of proportion to the effort. A tight chest strap or a heart \
-rate monitor is kit, not chest pain.
+rest, or far out of proportion to the effort. "Indigestion" or heartburn that \
+came on with effort, above all when it spread to the neck, jaw or arm or came \
+with clamminess or a cold sweat, is chest_pain, whether or not it has settled \
+and whether or not they had eaten. A tight chest strap or a heart rate \
+monitor is kit, not chest pain.
 
-palpitations (urgent, or emergency when it comes with chest pain, fainting \
-or breathlessness). A heart that races, pounds, flutters, skips or beats \
-irregularly beyond what the effort explains. A heart rate that suddenly jumps \
-very high while soft pedalling or at rest. A high heart rate on a hard climb \
-is just effort.
+palpitations (urgent, or emergency when it comes with chest pain, \
+dizziness, fainting or breathlessness). A heart that races, pounds, \
+flutters, skips or beats irregularly beyond what the effort explains. \
+Skipped, extra or thumping beats felt at rest are palpitations at urgent; \
+code decides whether they are the GP-soon kind. A heart rate that suddenly \
+jumps very high while soft pedalling or at rest. A high heart rate on a hard \
+climb is just effort. "My heart skipped a beat when I saw the result" is \
+excitement, not a flag.
 
 fainting (emergency if they lost consciousness, blacked out or collapsed; \
 urgent if they nearly fainted). Going grey, woozy, light-headed or faint \
 during or after effort, having to lie down, tunnel vision before a near \
 collapse. "Blacked out the dates in my diary" is not fainting.
 
-head_injury (urgent, or emergency for being knocked out, a fit, repeated \
-vomiting, worsening confusion or a headache that keeps getting worse). Any \
+head_injury (urgent, or emergency for being knocked out, a fit or seizure, \
+repeated vomiting, worsening confusion or a headache that keeps getting \
+worse; a fit after a blow to the head is always emergency). Any \
 blow to the head, a crash or fall with a cracked or damaged helmet, or signs \
 after a crash, fall, spill or off: headaches, feeling sick, blurred vision, \
 confusion, a memory gap. A crash said in the recent messages counts as the \
 cause when the latest message gives the signs. A helmet damaged by being \
 dropped, with nobody wearing it, is not a head injury.
 
+gi_bleed (emergency for vomiting blood or anything like coffee grounds, or \
+for black poo with feeling faint or dizzy or a collapse; urgent otherwise). \
+A possible bleed in the stomach or gut: black, tarry or dark red poo, \
+vomiting blood, or vomit that looks like coffee grounds. Painkillers \
+(ibuprofen, naproxen, aspirin or other anti-inflammatories) taken with any \
+of these, or with poo that is only dark, make it gi_bleed, never injury or \
+medication. Black poo the rider puts down to iron tablets, bismuth or a \
+black food, with no painkiller, no tar-like poo and no faintness, is no \
+flag. Coughing up blood is not gi_bleed.
+
 fever (urgent). A fever or high temperature, chills, flu, covid, a chest \
 infection, or illness below the neck: aching all over, a chesty cough, a \
 stomach bug, vomiting. A cold only above the neck (runny nose, sore throat) \
-without a temperature is not a fever.
+without a temperature is not a fever. Signs of pregnancy are never a fever \
+(see pregnancy).
 
-injury (info, or urgent for a likely break, being unable to bear weight, or \
-a hot swollen joint). A current injury or worrying pain: swelling, sharp pain, \
+fracture (urgent). A possible break or dislocation now, after a crash, a \
+fall or a blow: a lump or a bone that looks out of place, a lump over the \
+collarbone, an arm they can't lift, a leg they can't put weight on, a joint \
+that popped out, or hearing or feeling a crack. Not one already X-rayed, set \
+or healing.
+
+dvt (urgent, or emergency with chest pain, breathlessness or coughing up \
+blood). A calf or the back of the knee that is swollen, hot, red or tender, \
+above all after a flight or a long drive, even when the rider calls it a \
+strain.
+
+cauda_equina (emergency for any change in bladder or bowel control, urgent \
+otherwise). Numbness around the bottom, genitals or inner thighs, new trouble \
+controlling or passing pee or poo, or new leg numbness or weakness, with back \
+pain. Numbness from the saddle alone that goes when they get off the bike is \
+not this.
+
+compartment (emergency). Severe pain that keeps getting worse in a calf, \
+shin, thigh or forearm that is swollen and tight or hard, or with numbness or \
+pins and needles below it, above all after a crash or a blow. Shin pain that \
+goes when they stop riding is not this.
+
+injury (info, or urgent for a hot swollen joint or being unable to bear \
+weight with no crash). Use fracture, dvt, cauda_equina or compartment \
+instead whenever their signs are there. A current injury or worrying pain: \
+swelling, sharp pain, \
 pain that is getting worse, a joint that locks or gives way, a sprain, a \
-tear, a fracture. Damage to the bike is not an injury.
+tear, a fracture. Damage to the bike is not an injury. Superficial grazes, \
+road rash, small cuts and bruises with no other sign are not an injury that \
+needs a hold: report no injury flag for them, and give a benign reason of \
+kind injury that quotes the graze words. Any other sign makes it an injury: \
+swelling, pain on putting weight on it or moving it, a lump, or a joint or \
+bone that looks wrong, numbness, tingling or weakness, a deep or gaping cut, \
+or a wound that is hot, red and spreading. A crash or fall is still checked \
+for head_injury on its own terms.
 
 pregnancy (info). The rider is pregnant or had a baby in the last 12 months: \
 expecting, a trimester, weeks pregnant, giving birth, postnatal, \
 breastfeeding. A partner's pregnancy is about someone else unless the rider \
-says they are the one carrying.
+says they are the one carrying. Signs of pregnancy are pregnancy, never fever \
+or an infection: a positive pregnancy test, a positive test with no illness \
+named and no illness signs, a missed or late period linked to a possible \
+baby, morning sickness, a scan, a midwife or booking appointment, a due date \
+or a bump. Never report fever for these. A positive covid or flu test, or a \
+positive test with a temperature, a cough or aching all over, is fever.
 
 medication (info). The rider takes a medicine that changes how to train: \
 beta blockers (bisoprolol, atenolol, propranolol and others), any blood \
 pressure medicine (amlodipine, ramipril, lisinopril and others), blood \
 thinners (warfarin, apixaban, rivaroxaban, clopidogrel and others), insulin \
-or other diabetes medicine that can cause hypos.
+or other diabetes medicine that can cause hypos. Routine medicines that do \
+not change how to train (an asthma inhaler, levothyroxine, a statin, an \
+antihistamine, contraception), mentioned in passing, are no flag. Someone \
+else's medicine, a stimulant or a drug that wasn't prescribed to the rider is \
+never medication: report the symptoms it causes (palpitations, chest_pain, \
+fainting) instead.
 
 condition (info). A diagnosed condition that changes how to train: a heart \
 condition, murmur, arrhythmia or atrial fibrillation, cardiomyopathy, high \
-blood pressure, diabetes, asthma, epilepsy, long covid. A condition that is \
-well controlled, or that a doctor knows about, is still current: flag it.
+blood pressure, diabetes, asthma, epilepsy, long covid. Always flag a heart \
+matter, blood pressure, diabetes treated with insulin or another diabetes \
+medicine that can cause hypos, epilepsy, or anything to do with blood \
+thinners, however well controlled and even when a doctor knows. Any other \
+condition that is well controlled on routine medicine and mentioned in \
+passing (asthma with an inhaler, an underactive thyroid on levothyroxine, \
+eczema) is information for the coach, not a hold: report no flag for it, \
+and give a benign reason of kind condition that quotes those words. A \
+condition that is new, not controlled, or causing symptoms now is a flag.
 
 eating (info). Under-eating or restriction while training: skipping meals \
 to lose weight, a daily intake under about 1,800 calories, cutting out a food \
 group and riding fasted every day to lose weight, losing weight faster than \
 about 1% of body weight a week, making themselves sick or purging, \
-laxatives, bingeing, guilt or fear around food, earning food with riding, \
-missed or stopped periods, training compulsively.
+laxatives, bingeing, guilt or fear around food, fear that fuel will make them \
+fat, long rides planned without food to stay light, earning food with \
+riding, missed or stopped periods, always feeling cold beside any of these, \
+training compulsively.
 
-heat (info for riding in hot weather: 30C or 86F and above, a heatwave or a \
-heat alert, now or coming up; urgent for heat illness: stopped sweating, hot \
-dry skin, dizziness, confusion, headache or sickness in the heat, \
-heatstroke, heat exhaustion).
+heat (the same ladder as the SAFETY LAW, worst first. emergency for \
+heatstroke happening now or just now, during or after a hot ride: confusion, \
+talking nonsense or slurred speech, collapse, a fit, or hot dry skin or \
+having stopped sweating, even if they also feel cold or shivery. urgent for \
+heat exhaustion: a headache, dizziness, feeling faint, nausea or vomiting, \
+cramps or heavy sweating in the heat, and for heatstroke that is over but \
+has left them unwell. info for riding in hot weather with no symptoms: 30C or \
+86F and above, a heatwave or a heat alert, now or coming up). Never give \
+worse signs a lower severity than milder ones: confusion in the heat is \
+always emergency, never urgent.
 
 crisis (crisis). Thoughts of suicide or of not wanting to be here, wanting \
 to die, life not being worth living, self-harm, a plan or the means (pills \
@@ -343,9 +447,9 @@ False when it is over and resolved, hypothetical, or a worry about the \
 future.
 
 When you are unsure whether chest_pain, palpitations, fainting, \
-head_injury, crisis or minor is current and about the rider, set both to \
-true. For the other kinds, set them true only when the message makes it \
-clear.
+head_injury, gi_bleed, fracture, dvt, cauda_equina, compartment, crisis or \
+minor is current and about the rider, set both to true. For the other \
+kinds, set them true only when the message makes it clear.
 
 Report past events that are over and done with no flag at all. A red flag \
 the rider says they do not have ("no chest pain", "didn't hit my head", "not \
@@ -369,9 +473,12 @@ and the exact look-alike words as the quote. Typical cases: hay fever (an \
 allergy, not a fever); an idiom ("race day fever", "pregnant pause"); the \
 bike or kit rather than the body; something in the past that has healed; \
 someone else's problem; weather that is not hot or is in the past with no \
-symptoms. Never give a benign reason for chest pain, palpitations, fainting, \
-head injury, crisis or under 18. If such words look harmless, report \
-nothing for them. Never give a benign reason for something you also report \
+symptoms; surface grazes or road rash with no other sign; a well-controlled \
+condition on routine medicine mentioned in passing that is not a heart, \
+blood pressure, insulin-treated diabetes, epilepsy or blood-thinner matter. \
+Never give a benign reason for chest pain, palpitations, fainting, head \
+injury, a possible stomach bleed, crisis or under 18. If such words look \
+harmless, report nothing for them. Never give a benign reason for something you also report \
 as a current flag about the rider, unless the same message has both a real \
 mention and a separate look-alike, in which case quote only the look-alike.
 
@@ -408,6 +515,29 @@ effort"
 Message: "Blacked out the dates in my diary for the training camp"
 {"flags":[],"stated_age":null,"benign_reasons":[]}
 
+Message: "Felt like heartburn halfway up the hill and it went up into my jaw, \
+settled when I stopped"
+{"flags":[{"kind":"chest_pain","severity":"emergency","about_rider":true,\
+"current":true,"quote":"Felt like heartburn halfway up the hill"}],\
+"stated_age":null,"benign_reasons":[]}
+
+Message: "In bed at night I can feel my heart miss a beat and then a big \
+thump, nothing else"
+{"flags":[{"kind":"palpitations","severity":"urgent","about_rider":true,\
+"current":true,"quote":"I can feel my heart miss a beat and then a big thump"}],\
+"stated_age":null,"benign_reasons":[]}
+
+Message: "On the climb my heart went fast and jumpy and I went light-headed"
+{"flags":[{"kind":"palpitations","severity":"emergency","about_rider":true,\
+"current":true,"quote":"my heart went fast and jumpy and I went light-headed"}],\
+"stated_age":null,"benign_reasons":[]}
+
+Message: "Took one of my brother's ADHD pills before the crit, heart's \
+pounding and I feel shaky and dizzy"
+{"flags":[{"kind":"palpitations","severity":"emergency","about_rider":true,\
+"current":true,"quote":"heart's pounding and I feel shaky and dizzy"}],\
+"stated_age":null,"benign_reasons":[]}
+
 Message: "sternum pain on efforts, goes when I stop"
 {"flags":[{"kind":"chest_pain","severity":"emergency","about_rider":true,\
 "current":true,"quote":"sternum pain on efforts"}],"stated_age":null,\
@@ -441,6 +571,12 @@ Message: "Had a crash this morning and now my vision is blurry"
 Message: "My helmet's cracked from being dropped off the shelf, getting a new \
 one"
 {"flags":[],"stated_age":null,"benign_reasons":[]}
+
+Message: "Hit my head when I came off and my partner says I had a seizure on \
+the verge"
+{"flags":[{"kind":"head_injury","severity":"emergency","about_rider":true,\
+"current":true,"quote":"my partner says I had a seizure on the verge"}],\
+"stated_age":null,"benign_reasons":[]}
 
 Message: "went over the bars yesterday, can't remember the bit before I hit \
 the ground"
@@ -485,6 +621,42 @@ Message: "My knee's swollen and it's getting worse every ride"
 "current":true,"quote":"My knee's swollen and it's getting worse"}],\
 "stated_age":null,"benign_reasons":[]}
 
+Message: "Slid out on a wet roundabout, a bit of road rash on my hip and \
+elbow but nothing else"
+{"flags":[],"stated_age":null,"benign_reasons":[{"kind":"injury",\
+"reason":"surface grazes, no other sign","quote":"a bit of road rash on \
+my hip and elbow"}]}
+
+Message: "Came off on gravel, grazed knee, and now it's swollen and I can't \
+bend it"
+{"flags":[{"kind":"injury","severity":"info","about_rider":true,\
+"current":true,"quote":"now it's swollen and I can't bend it"}],\
+"stated_age":null,"benign_reasons":[]}
+
+Message: "Clipped a kerb and went down on my shoulder, there's a bump on my \
+collarbone and I can't raise my arm"
+{"flags":[{"kind":"fracture","severity":"urgent","about_rider":true,\
+"current":true,"quote":"a bump on my collarbone and I can't raise my arm"}],\
+"stated_age":null,"benign_reasons":[]}
+
+Message: "Ten hours in the car back from the Alps and my left calf is red, \
+warm and puffy. Foam roller ok?"
+{"flags":[{"kind":"dvt","severity":"urgent","about_rider":true,\
+"current":true,"quote":"my left calf is red, warm and puffy"}],\
+"stated_age":null,"benign_reasons":[]}
+
+Message: "Lower back's been bad since the gravel race and today my bum feels \
+numb and I couldn't pee properly this morning"
+{"flags":[{"kind":"cauda_equina","severity":"emergency","about_rider":true,\
+"current":true,"quote":"my bum feels numb and I couldn't pee properly"}],\
+"stated_age":null,"benign_reasons":[]}
+
+Message: "Took a knock to the shin in the crash, now it's rock hard and \
+swollen and the pain keeps getting worse"
+{"flags":[{"kind":"compartment","severity":"emergency","about_rider":true,\
+"current":true,"quote":"now it's rock hard and swollen and the pain keeps \
+getting worse"}],"stated_age":null,"benign_reasons":[]}
+
 Message: "Week 12 of the block, pregnant with possibilities, haha"
 {"flags":[],"stated_age":null,"benign_reasons":[{"kind":"pregnancy",\
 "reason":"a figure of speech","quote":"pregnant with possibilities"}]}
@@ -494,6 +666,22 @@ should change?"
 {"flags":[{"kind":"pregnancy","severity":"info","about_rider":true,\
 "current":true,"quote":"We're expecting our first in March, I'm the one \
 carrying"}],"stated_age":null,"benign_reasons":[]}
+
+Message: "Two lines on the test this morning, due in the spring. Can I keep \
+racing?"
+{"flags":[{"kind":"pregnancy","severity":"info","about_rider":true,\
+"current":true,"quote":"Two lines on the test this morning, due in the \
+spring"}],"stated_age":null,"benign_reasons":[]}
+
+Message: "Morning sickness is grim but I want to keep up the club rides"
+{"flags":[{"kind":"pregnancy","severity":"info","about_rider":true,\
+"current":true,"quote":"Morning sickness is grim"}],"stated_age":null,\
+"benign_reasons":[]}
+
+Message: "Tested positive for covid, temperature and aching all over"
+{"flags":[{"kind":"fever","severity":"urgent","about_rider":true,\
+"current":true,"quote":"Tested positive for covid, temperature and aching \
+all over"}],"stated_age":null,"benign_reasons":[]}
 
 Message: "My wife is 20 weeks pregnant so I'm riding less"
 {"flags":[{"kind":"pregnancy","severity":"info","about_rider":false,\
@@ -522,6 +710,21 @@ Message: "I'm diabetic and use a CGM on rides"
 "current":true,"quote":"I'm diabetic"}],"stated_age":null,\
 "benign_reasons":[]}
 
+Message: "My asthma's well controlled with a preventer inhaler, what's on \
+tomorrow?"
+{"flags":[],"stated_age":null,"benign_reasons":[{"kind":"condition",\
+"reason":"well controlled, routine medicine","quote":"My asthma's well \
+controlled with a preventer inhaler"}]}
+
+Message: "Epilepsy's well controlled, no seizures for five years"
+{"flags":[{"kind":"condition","severity":"info","about_rider":true,\
+"current":true,"quote":"Epilepsy's well controlled"}],"stated_age":null,\
+"benign_reasons":[]}
+
+Message: "Started iron tablets last week and my poo's gone black, is that \
+normal?"
+{"flags":[],"stated_age":null,"benign_reasons":[]}
+
 Message: "I feel guilty every time I eat and I've been purging"
 {"flags":[{"kind":"eating","severity":"info","about_rider":true,\
 "current":true,"quote":"I feel guilty every time I eat and I've been \
@@ -532,14 +735,19 @@ Message: "I've been making myself sick after eating"
 "current":true,"quote":"I've been making myself sick after eating"}],\
 "stated_age":null,"benign_reasons":[]}
 
+Message: "Planning five hours fasted on Sunday so I stay light for the hill \
+climb, gels just make me fat"
+{"flags":[{"kind":"eating","severity":"info","about_rider":true,\
+"current":true,"quote":"Planning five hours fasted on Sunday so I stay light"}],\
+"stated_age":null,"benign_reasons":[]}
+
 Message: "Took on 90g of carbs an hour, about 1,500 calories on the bike"
 {"flags":[],"stated_age":null,"benign_reasons":[{"kind":"eating",\
 "reason":"fuelling on the bike","quote":"1,500 calories"}]}
 
-Message: "Felt dizzy and stopped sweating in the heat on the ride, then got a \
-headache"
+Message: "Felt dizzy and sick in the heat on the ride, then got a headache"
 {"flags":[{"kind":"heat","severity":"urgent","about_rider":true,\
-"current":true,"quote":"Felt dizzy and stopped sweating in the heat"}],\
+"current":true,"quote":"Felt dizzy and sick in the heat on the ride"}],\
 "stated_age":null,"benign_reasons":[]}
 
 Message: "I think I had heatstroke on the ride yesterday, still wiped out"
@@ -555,6 +763,22 @@ Message: "It's meant to be 34 degrees on Saturday for the sportive"
 Message: "It was 30 degrees in Mallorca last month, glorious"
 {"flags":[],"stated_age":null,"benign_reasons":[{"kind":"heat",\
 "reason":"past weather, no symptoms","quote":"30 degrees"}]}
+
+Message: "My wife says I was confused and slurring my words after the hot \
+ride, still feel odd"
+{"flags":[{"kind":"heat","severity":"emergency","about_rider":true,\
+"current":true,"quote":"I was confused and slurring my words after the hot ride"}],\
+"stated_age":null,"benign_reasons":[]}
+
+Message: "Been on ibuprofen all week for my knee and my poo has gone black"
+{"flags":[{"kind":"gi_bleed","severity":"urgent","about_rider":true,\
+"current":true,"quote":"my poo has gone black"}],"stated_age":null,\
+"benign_reasons":[]}
+
+Message: "Threw up something that looked like coffee grounds after the ride"
+{"flags":[{"kind":"gi_bleed","severity":"emergency","about_rider":true,\
+"current":true,"quote":"Threw up something that looked like coffee grounds"}],\
+"stated_age":null,"benign_reasons":[]}
 
 Message: "life isn't worth living since she left"
 {"flags":[{"kind":"crisis","severity":"crisis","about_rider":true,\
@@ -658,8 +882,11 @@ class MergeOutcome:
     downgraded: list[str] = field(default_factory=list)
     upgraded: list[str] = field(default_factory=list)
     # Benign reasons the merge did not act on, by kind: a protected kind, an
-    # injection, words not in the message, or the regex still finding it.
+    # injection, words not in the message, or the regex still finding it;
+    # and flags left out because their card would contradict the message.
     ignored: list[str] = field(default_factory=list)
+    # Whether the tiers the rider's words set changed a kind or a severity.
+    tiered: bool = False
 
 
 # ── Text helpers ────────────────────────────────────────────────────────────
@@ -773,15 +1000,22 @@ def user_content(text: str, recent: list[str] | None, country: str | None) -> st
 
 # ── Calling the model ───────────────────────────────────────────────────────
 
+# The classifier's whole budget in wall-clock seconds. It runs alongside the
+# coach's reply rather than in front of it, so it can wait for a slow answer;
+# the chat waits for it, at most this long after it started, before "done".
+DEADLINE_SECONDS = 6.0
+
+
 # Classifier calls run here so the caller can stop waiting at the deadline.
-# The SDK's own 1.5 s timeout with no retries means a worker is never stuck
-# for long after the caller has moved on.
-_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="safety-classify")
+# The SDK's own timeout (the deadline) with no retries means a worker is
+# never stuck for long after the caller has moved on. Sixteen, because a call
+# now lives for up to 6 s rather than 1.5 s.
+_POOL = ThreadPoolExecutor(max_workers=16, thread_name_prefix="safety-classify")
 
 
 def deadline_seconds() -> float:
     """The classifier's whole budget in wall-clock seconds."""
-    return forma_core.TASKS[TASK].timeout or 1.5
+    return DEADLINE_SECONDS
 
 
 def _call_model(text: str, recent, country, user_id: str, surface: str):
@@ -1010,6 +1244,79 @@ def _most_severe(severities) -> str:
     return min(severities, key=lambda s: _RANK.get(s, len(_RANK)))
 
 
+# ── A flag the message doesn't support ──────────────────────────────────────
+#
+# A flag the classifier adds opens a hold and brings a card in that kind's
+# words. When the rider's message has nothing those words fit, the card
+# contradicts them (round 2, L14: a positive pregnancy test read as a fever,
+# a fever card and a hold the rider could not honestly clear, and a false
+# health fact on the record). Such a flag is left out, and the coach, who
+# reads the whole message, handles it. Only additions are checked: a kind
+# the regex found stands on the regex's words.
+
+# Illness below the neck, in any words. Not "morning sickness", and not a
+# positive test on its own.
+_ILLNESS_RX = re.compile(
+    r"\b(?:fever\w*|temperature|temp\b|chills|shiver\w*|sweats|night sweats|sweated through|"
+    r"flu\b|covid|infection|cough\w*|chesty|aching|aches|achy|body ache|vomit\w*|been sick|"
+    r"being sick|throwing up|threw up|thrown up|diarrh\w*|d&v|stomach bug|bug\b|norovirus|"
+    r"noro\b|gastro\w*|sore throat|ill\b|unwell|poorly|burning up|hot and cold|glands|cold\b|"
+    r"virus|viral|3[89](?:\.\d)?|10[0-4](?:\.\d)?)"
+)
+_HEAT_WORDS_RX = re.compile(
+    r"\b(?:heat\w*|hot|sun\w*|temperature|degrees|\d+ ?(?:c|f)\b|humid\w*|scorch\w*|"
+    r"swelter\w*|boiling|baking|roasting|summer|sweating|stopped sweating|warm\w*|"
+    r"[2-4]\d (?:out|outside|today|in the shade)\b)"
+)
+_PREGNANCY_WORDS_RX = re.compile(
+    r"\b(?:pregnan\w*|expecting|trimester|weeks? (?:gone|along)|positive|two lines|due "
+    r"(?:date|in)|midwife|scan|bump|morning sickness|missed (?:my |a )?period|late period|"
+    r"baby|birth|postnatal|post-natal|postpartum|breastfeeding|c-section|caesarean|carrying)"
+)
+# Someone else's medicine, or a drug that wasn't prescribed: none of the
+# lines about the rider's own medicine fit (round 2, L22).
+_NOT_OWN_MEDICINE_RX = re.compile(
+    r"\b(?:(?:mate|mates|friend|friends|brother|sister|dad|mum|mom|wife|husband|partner|"
+    r"flatmate|teammate|someone|somebody|a guy|a lad|bloke)(?:'s| gave me| had| let me)|"
+    r"(?:his|her|their) (?:prescription|tablets|pills|meds|medication|medicine)|gave me "
+    r"(?:some|a few|two|one|his|her|their|a couple)|not prescribed|wasn't prescribed|weren't "
+    r"prescribed|not mine|not my own|borrowed|off the internet|bought (?:them |it |some )?"
+    r"online|recreational|cocaine|coke\b|speed\b|mdma|ecstasy|pre-?workout)"
+)
+# The words each injury red flag's card speaks to. Without them, the flag is
+# the ordinary injury, not dropped: something still hurts.
+_RED_FLAG_WORDS: dict[str, re.Pattern] = {
+    "fracture": re.compile(
+        r"\b(?:collar ?bone|clavicle|shoulder|wrist|arm|elbow|hand|finger|thumb|leg|shin|ankle|"
+        r"foot|hip|ribs?|bone|knee ?cap|jaw|nose|pelvis|joint|broken|broke|fractured|dislocat"
+        r"\w*|popped out|socket)"),
+    "dvt": re.compile(r"\b(?:calf|calves|leg|legs|knee|shin|ankle)"),
+    "cauda_equina": re.compile(
+        r"\b(?:bladder|bowel\w*|pee|wee|urine|toilet|incontinen\w*|numb\w*|tingl\w*|bum|"
+        r"bottom|groin|genitals?|saddle|legs?|back)"),
+    "compartment": re.compile(r"\b(?:calf|calves|shin|shins|leg|thigh|forearm|arm|foot)"),
+}
+
+
+def _unsupported(kind: str, norm_text: str, severity: str | None = None) -> str | None:
+    """Why a flag the classifier adds doesn't fit the rider's words, or None
+    when it does. Heatstroke (heat at emergency severity) always stands: it
+    can come from hard effort on a mild day, and dropping it left a confused,
+    shivering rider with no card and no hold (round 2, L18)."""
+    if kind == "fever":
+        if not _ILLNESS_RX.search(norm_text.replace("morning sickness", " ")):
+            if _PREGNANCY_WORDS_RX.search(norm_text):
+                return "a pregnancy, not a fever"
+            return "no fever or illness in the message"
+    if kind == "heat" and severity != "emergency" and not _HEAT_WORDS_RX.search(norm_text):
+        return "no heat in the message"
+    if kind == "pregnancy" and not _PREGNANCY_WORDS_RX.search(norm_text):
+        return "no pregnancy in the message"
+    if kind == "medication" and _NOT_OWN_MEDICINE_RX.search(norm_text):
+        return "not the rider's own medicine"
+    return None
+
+
 def merge_detailed(regex_hits, result: ClassifierResult | None) -> MergeOutcome:
     """merge() with its reasons. See the module docstring for the rules."""
     hits = [_as_hit(h) for h in (regex_hits or [])]
@@ -1071,6 +1378,24 @@ def merge_detailed(regex_hits, result: ClassifierResult | None) -> MergeOutcome:
     for kind in sorted(live_severity, key=lambda k: (_RANK[live_severity[k]], k)):
         if kind in have:
             continue
+        why = _unsupported(kind, norm_text, live_severity[kind])
+        if why is not None:
+            # Its card and hold would contradict the rider's words: no card
+            # from the classifier, and the coach handles it.
+            out.ignored.append(f"{kind}: {why}")
+            continue
+        if kind in _RED_FLAG_WORDS and not _RED_FLAG_WORDS[kind].search(norm_text):
+            # An injury red flag whose card speaks to words the rider never
+            # used: the ordinary injury instead.
+            out.ignored.append(f"{kind}: the message doesn't fit its card, kept as injury")
+            if "injury" in have or "injury" in live_severity:
+                continue
+            quote = next(f.quote for f in live if f.kind == kind)
+            out.hits.append(Hit(kind="injury", matched=_matched(quote, norm_text),
+                                severity="urgent"))
+            out.added.append("injury")
+            have.add("injury")
+            continue
         if kind == "minor":
             age = result.stated_age
             if age is None or not 0 < age < 18:
@@ -1098,6 +1423,17 @@ def merge_detailed(regex_hits, result: ClassifierResult | None) -> MergeOutcome:
         # The classifier saw a head injury where the regex saw a knock about
         # the house: the injury stands, the knock goes (as in the regex).
         out.hits = [h for h in out.hits if h.kind != "head_knock"]
+
+    # Each red flag at the tier the rider's words set, exactly as the regex's
+    # own hits are (safety_screen.tier_hits): an injury with the signs of a
+    # break becomes a fracture, skipped beats on the sofa become ectopics,
+    # a fit after a blow to the head is an emergency.
+    from app.services.safety_screen import tier_hits
+
+    before = [(h.kind, h.severity) for h in out.hits]
+    out.hits = tier_hits(out.hits, result.text)
+    if [(h.kind, h.severity) for h in out.hits] != before:
+        out.tiered = True
 
     if out.added or out.dropped or out.downgraded or out.upgraded:
         logger.info(

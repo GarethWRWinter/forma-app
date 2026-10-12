@@ -292,7 +292,7 @@ export function rideModeAckParagraphs(emergencyNumber: string): string[] {
   return [
     "In ERG mode your trainer holds the power for you. You're always in charge: ease off, pause or stop whenever you need to.",
     "Power targets and Race Radio come from software and can lag or be wrong, so trust your body over the screen.",
-    `Stop at once if you feel chest pain, faintness, dizziness or unusual breathlessness, and call ${emergencyNumber} if it doesn't settle quickly.`,
+    `Stop at once if you feel chest pain, faintness, dizziness or unusual breathlessness. For chest pain or pressure, fainting, or a racing or irregular heartbeat, call ${emergencyNumber} now and don't wait to see if it settles.`,
     "Set the trainer up as its maker says, on a stable floor with a fan and a drink in reach.",
   ];
 }

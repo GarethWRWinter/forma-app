@@ -14,6 +14,7 @@ from app.models.user import User
 from app.schemas.chat import (
     ChatMessageRequest,
     ChatMessageResponse,
+    ChatSafetyCard,
     ChatSessionCreate,
     ChatSessionDetailResponse,
     ChatSessionResponse,
@@ -90,7 +91,7 @@ def list_chat_sessions(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List chat sessions — pinned first, archived hidden unless asked for."""
+    """List chat sessions: pinned first, archived hidden unless asked for."""
     sessions = get_sessions(db, current_user.id, include_archived=include_archived)
     return [
         ChatSessionResponse(
@@ -152,11 +153,50 @@ def delete_chat_session(
     return None
 
 
+def _stored_safety_cards(message) -> list[ChatSafetyCard] | None:
+    """The cards an assistant reply carried, from its context snapshot
+    ("safety_card": [{kind, text, card}], or one such card), in the order
+    they were shown. Read on every fetch, so a card attached after the
+    stream ended (written into the snapshot later) reaches the app on
+    reload. The same card twice shows once. None for a rider's message, a
+    reply without cards, or a snapshot that doesn't hold them in that
+    shape."""
+    if getattr(message.role, "value", message.role) != "assistant":
+        return None
+    snapshot = message.context_snapshot
+    if not isinstance(snapshot, dict):
+        return None
+    raw = snapshot.get("safety_card")
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return None
+    cards: list[ChatSafetyCard] = []
+    seen: set[tuple[str, str]] = set()
+    for c in raw:
+        if not (
+            isinstance(c, dict)
+            and isinstance(c.get("kind"), str)
+            and isinstance(c.get("text"), str)
+            and c["text"].strip()
+        ):
+            continue
+        if (c["kind"], c["text"]) in seen:
+            continue
+        seen.add((c["kind"], c["text"]))
+        cards.append(ChatSafetyCard(
+            kind=c["kind"],
+            text=c["text"],
+            card=c.get("card") if isinstance(c.get("card"), str) else None,
+        ))
+    return cards or None
+
+
 @router.get("/sessions/{session_id}", response_model=ChatSessionDetailResponse)
 def get_chat_session(
     session_id: str,
     limit: int = Query(60, ge=1, le=200),
-    before: str | None = Query(None, description="Message id — return messages older than this"),
+    before: str | None = Query(None, description="Message id: return messages older than this"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -193,6 +233,7 @@ def get_chat_session(
                 content=m.content,
                 tokens_used=m.tokens_used,
                 created_at=m.created_at,
+                safety_card=_stored_safety_cards(m),
             )
             for m in window
         ],

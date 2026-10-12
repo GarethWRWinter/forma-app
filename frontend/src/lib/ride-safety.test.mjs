@@ -347,8 +347,10 @@ test("the highest ERG target leaves out released sprints", () => {
 
 test("the ride-mode acknowledgement is recorded as shown", () => {
   const lines = rideModeAckParagraphs("999");
-  assert.ok(lines[2].includes("call 999 if it doesn't settle quickly"));
-  assert.ok(rideModeAckParagraphs("112")[2].includes("call 112"));
+  // Chest pain or fainting is a call now, never a wait to see if it settles.
+  assert.ok(lines[2].includes("call 999 now and don't wait to see if it settles"));
+  assert.ok(!lines[2].includes("if it doesn't settle quickly"));
+  assert.ok(rideModeAckParagraphs("112")[2].includes("call 112 now"));
   const record = rideModeAckRecord("999");
   assert.ok(record.startsWith(`${RIDE_MODE_ACK_TITLE}\n\n`));
   assert.ok(record.endsWith(`\n\n${RIDE_MODE_ACK_BUTTON}`));

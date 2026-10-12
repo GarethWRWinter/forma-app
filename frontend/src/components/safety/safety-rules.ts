@@ -256,6 +256,16 @@ export const HEAD_LIFT_TEXT =
   "A doctor has checked me since I hit my head, and I've had no symptoms for at least 24 hours.";
 export const HEAD_CHECKED_BY_OPTIONS = ["My GP", "Another doctor"];
 
+/**
+ * A fit after a head injury has its own declaration, never the head
+ * injury's routine check. Same words as safety_service.SEIZURE_LIFT_TEXT,
+ * which the server records. Only a doctor can make it, and nothing graded
+ * follows: how the rider builds back follows that doctor's advice.
+ */
+export const SEIZURE_LIFT_TEXT =
+  "A doctor has assessed the seizure after my head injury and cleared me to ride.";
+export const SEIZURE_NOTE = "How and when you build back up follows their advice.";
+
 /** The tick box, the question and the buttons for each clearance form. */
 export interface ClearanceCopy {
   tick: string;
@@ -268,8 +278,21 @@ export interface ClearanceCopy {
 }
 
 /** The clearance form's words for a hold's lift kind: a doctor's clearance
-    (the default) or a head injury's own check. */
-export function clearanceCopy(kind: "doctor" | "head_injury" = "doctor"): ClearanceCopy {
+    (the default), a head injury's own check, or a seizure's. */
+export function clearanceCopy(
+  kind: "doctor" | "head_injury" | "head_seizure" = "doctor"
+): ClearanceCopy {
+  if (kind === "head_seizure") {
+    return {
+      tick: SEIZURE_LIFT_TEXT,
+      unticked:
+        "Tick the box to confirm a doctor has assessed the seizure and cleared you to ride.",
+      byQuestion: "Which doctor assessed you?",
+      byOptions: HEAD_CHECKED_BY_OPTIONS,
+      note: SEIZURE_NOTE,
+      submit: "Confirm",
+    };
+  }
   if (kind === "head_injury") {
     return {
       tick: HEAD_LIFT_TEXT,
@@ -298,13 +321,17 @@ export function clearanceCopy(kind: "doctor" | "head_injury" = "doctor"): Cleara
  * clearance. "fever_self": the rider says the fever has gone, which leaves an
  * easy week. "head_injury": its own check (a doctor has seen them since, and
  * no symptoms for 24 hours), which leaves easy riding until two weeks after
- * the injury. "expires": ends by itself on expires_at. "layoff": the easy
- * start after a break. "admin_only": an under-18 account or a hold set by hand.
+ * the injury. "head_seizure": a fit after a head injury, lifted only by
+ * its own declaration that a doctor has assessed the seizure, with nothing
+ * graded after it. "expires": ends by itself on expires_at. "layoff": the
+ * easy start after a break. "admin_only": an under-18 account or a hold set
+ * by hand.
  */
 export type LiftKind =
   | "doctor"
   | "fever_self"
   | "head_injury"
+  | "head_seizure"
   | "expires"
   | "layoff"
   | "admin_only";
@@ -335,6 +362,8 @@ export type FullSafetyState = Omit<SafetyState, "hold" | "no_racing_or_group_unt
 export function liftKindOf(hold: Hold): LiftKind {
   if (hold.lift_kind) return hold.lift_kind;
   if (hold.red_flag === "minor" || hold.source === "admin") return "admin_only";
+  // A fit after a head injury, whoever opened it: its own way out.
+  if (hold.red_flag === "head_seizure" && !hold.expires_at) return "head_seizure";
   // A break ends by itself too, but stays a break the rider can call a mistake.
   if (hold.source === "layoff" || hold.red_flag === "layoff") return "layoff";
   if (hold.expires_at) return "expires";
@@ -368,9 +397,9 @@ export interface HoldView {
   text: string;
   /** "I've been cleared" makes sense: a doctor can lift this one. */
   canClear: boolean;
-  /** Which form "I've been cleared" opens: a doctor's clearance, or the
-      head injury's own check. */
-  clearKind: "doctor" | "head_injury";
+  /** Which form "I've been cleared" opens: a doctor's clearance, the head
+      injury's own check, or the seizure's. */
+  clearKind: "doctor" | "head_injury" | "head_seizure";
   /** "My fever has gone": the rider lifts it on their own word. */
   canSelfLift: boolean;
   /** "This was a mistake": the server refuses it for screening, admin,
@@ -389,7 +418,7 @@ export function holdView(
   const n = emergencyNumber(country);
   const none = {
     canClear: false,
-    clearKind: "doctor" as const,
+    clearKind: "doctor" as HoldView["clearKind"],
     canSelfLift: false,
     canMistake: false,
     fromAnswers: false,
@@ -411,7 +440,11 @@ export function holdView(
   const fromAnswers = hold.source === "screening";
   const canMistake =
     !fromAnswers &&
-    (kind === "doctor" || kind === "fever_self" || kind === "head_injury" || kind === "layoff");
+    (kind === "doctor" ||
+      kind === "fever_self" ||
+      kind === "head_injury" ||
+      kind === "head_seizure" ||
+      kind === "layoff");
   if (kind === "expires") {
     const until = hold.expires_at ? dayMonth(hold.expires_at) : "";
     let text = `Hard sessions are on hold until ${until}. Easy riding is fine if you feel well.`;
@@ -427,6 +460,16 @@ export function holdView(
         .join(" ");
     }
     return { ...none, title: "Easy riding only", text };
+  }
+  if (kind === "head_seizure") {
+    return {
+      ...none,
+      title: "Riding on hold",
+      text: `No riding of any kind, the trainer included, until a doctor has assessed the seizure after your head injury and cleared you to ride. ${SEIZURE_NOTE} If you have another fit or any symptom gets worse, call ${n}.`,
+      canClear: true,
+      clearKind: "head_seizure",
+      canMistake,
+    };
   }
   if (kind === "head_injury") {
     return {
@@ -485,14 +528,14 @@ export function holdView(
 
 /**
  * Which way out to offer outside the banner (Settings, then Health): a
- * doctor's clearance, the head injury's own check, the fever form, or
- * nothing. Nothing at all while the account is held as under 18: the server
+ * doctor's clearance, the head injury's own check, the seizure's, the fever
+ * form, or nothing. Nothing at all while the account is held as under 18: the server
  * refuses all of them.
  */
 export function clearanceOffer(
   state: FullSafetyState | SafetyState | null | undefined,
   country?: string | null
-): "doctor" | "head_injury" | "fever_self" | null {
+): "doctor" | "head_injury" | "head_seizure" | "fever_self" | null {
   if (!state) return null;
   const hold = (state.hold ?? null) as Hold | null;
   if (hold) {
@@ -600,6 +643,7 @@ export function ftpGate(
   const needsDoctor =
     kind === "doctor" ||
     kind === "head_injury" ||
+    kind === "head_seizure" ||
     kind === "admin_only" ||
     (!hold && state.allowed === "none") ||
     (!!screen && screen.tier !== "none" && !screen.clearance_confirmed);

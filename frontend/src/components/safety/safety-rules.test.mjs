@@ -40,6 +40,7 @@ import {
   HEALTH_UNTICKED,
   HEAD_LIFT_TEXT,
   HEAD_CHECKED_BY_OPTIONS,
+  SEIZURE_LIFT_TEXT,
   clearanceCopy,
   noRacingLine,
 } from "./safety-rules.ts";
@@ -517,4 +518,70 @@ test("a mistake on a re-mention says the easy days run on", () => {
   }
   const banner = readFileSync(new URL("./HoldBanner.tsx", import.meta.url), "utf8");
   assert.match(banner, /setDone\(mistakeLiftedMessage\(next\)\)/);
+});
+
+// === A fit after a head injury: its own declaration (round 3, L7) ===
+
+const seizureHold = (over) =>
+  hold({ level: "hold_all", source: "detector", red_flag: "head_seizure", lift_kind: "head_seizure", ...over });
+
+test("a seizure hold opens its own doctor-only form, never the head injury's check", () => {
+  const view = holdView(seizureHold({}), "GB", null);
+  assert.equal(view.title, "Riding on hold");
+  assert.equal(view.canClear, true);
+  assert.equal(view.clearKind, "head_seizure");
+  assert.equal(view.canSelfLift, false);
+  assert.equal(view.canMistake, true);
+  assert.equal(
+    view.text,
+    "No riding of any kind, the trainer included, until a doctor has assessed the seizure after your head injury and cleared you to ride. How and when you build back up follows their advice. If you have another fit or any symptom gets worse, call 999."
+  );
+  assert.doesNotMatch(view.text, /24 hours|two weeks|day 21/);
+  // Worked out from the fields when lift_kind isn't sent.
+  assert.equal(liftKindOf({ ...seizureHold({}), lift_kind: undefined }), "head_seizure");
+  assert.equal(clearanceOffer(state({ allowed: "none", hold: seizureHold({}) })), "head_seizure");
+  assert.equal(ftpGate(state({ allowed: "none", hold: seizureHold({}) })), "doctor");
+
+  const copy = clearanceCopy("head_seizure");
+  assert.equal(copy.tick, SEIZURE_LIFT_TEXT);
+  assert.equal(
+    copy.tick,
+    "A doctor has assessed the seizure after my head injury and cleared me to ride."
+  );
+  assert.deepEqual(copy.byOptions, ["My GP", "Another doctor"]);
+  assert.ok(!copy.byOptions.some((o) => /physio|midwife/i.test(o)));
+  assert.equal(copy.note, "How and when you build back up follows their advice.");
+  assert.doesNotMatch(copy.note, /day 21|two weeks/);
+
+  // The tick-box words are the ones the server records.
+  const server = readFileSync(
+    new URL("../../../../app/services/safety_service.py", import.meta.url),
+    "utf8"
+  );
+  assert.ok(server.includes(`"${SEIZURE_LIFT_TEXT}"`), "SEIZURE_LIFT_TEXT differs from the server's");
+  const api = readFileSync(new URL("../../lib/api.ts", import.meta.url), "utf8");
+  assert.match(api, /"\/users\/me\/safety\/seizure-lift"/);
+  assert.match(api, /\| "head_seizure"/);
+});
+
+test("the seizure form posts to its own endpoint from the banner and settings", () => {
+  const form = readFileSync(new URL("./ClearanceForm.tsx", import.meta.url), "utf8");
+  assert.match(form, /safety\.liftHeadSeizure\(lift\.holdId, by, avoid\)/);
+  const banner = readFileSync(new URL("./HoldBanner.tsx", import.meta.url), "utf8");
+  assert.match(banner, /view\.clearKind === "head_seizure"/);
+  assert.match(banner, /kind="head_seizure"/);
+  const settings = readFileSync(new URL("./HealthSettings.tsx", import.meta.url), "utf8");
+  assert.match(settings, /offer === "head_seizure"/);
+  assert.match(settings, /kind="head_seizure"/);
+});
+
+test("no dashes or exclamation marks in the seizure copy", () => {
+  const c = clearanceCopy("head_seizure");
+  const v = holdView(seizureHold({}), "FR", null);
+  for (const s of [SEIZURE_LIFT_TEXT, c.tick, c.unticked, c.byQuestion, c.note, c.submit, v.title, v.text]) {
+    assert.doesNotMatch(s, /[\u2013\u2014!]/);
+    assert.doesNotMatch(s, / - /);
+    assert.doesNotMatch(s, /kicker/i);
+  }
+  assert.match(v.text, /call 112\.$/);
 });
