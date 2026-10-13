@@ -9,7 +9,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { EmptyState } from "@/components/ui/empty-state";
 import { buttonVariants } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth-context";
-import { INKSCAPES } from "@/lib/dailyInkscape";
+import { PASSES, loadPass, drawCover } from "@/lib/dailyPass";
 import { FoundingBadge } from "@/components/palmares/founding-badge";
 
 /**
@@ -40,21 +40,12 @@ async function downloadShareCard(goal: PalmaresGoal, riderName: string) {
   canvas.height = H;
   const ctx = canvas.getContext("2d")!;
 
-  // Inkscape ground — pick by goal id so each card keeps its own pass.
+  // Pass photograph as the ground: picked by goal id so each card keeps its
+  // own climb, cropped around the road.
   let h = 0;
   for (const c of goal.id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  const ink = INKSCAPES[h % INKSCAPES.length];
-  const img = new Image();
-  img.src = ink.src;
-  await new Promise((res, rej) => {
-    img.onload = res;
-    img.onerror = rej;
-  });
-  // cover-fit
-  const scale = Math.max(W / img.width, H / img.height);
-  const iw = img.width * scale;
-  const ih = img.height * scale;
-  ctx.drawImage(img, (W - iw) / 2, (H - ih) / 2, iw, ih);
+  const pass = PASSES[h % PASSES.length];
+  drawCover(ctx, await loadPass(pass), W, H, pass.focus);
 
   // scrim
   const grad = ctx.createLinearGradient(0, H, 0, 0);
