@@ -128,16 +128,24 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
 3. [x] Founding price DECIDED (11 Aug 2026): £14.99/mo locked for as long as
        they stay; £19.99 list. Stripe: create the £14.99 recurring price and
        point STRIPE_PRICE_ID at it for the founding cohort.
-4. [~] **Company, bank, Stripe.** FORMA CYCLING LTD is registered at Companies
+4. [x] **Company, bank, Stripe.** FORMA CYCLING LTD is registered at Companies
        House (formed via 1st Formations Privacy package, with registered office and
        director's service address, Sep 2026). Starling Business account open and
-       the £100 share capital paid in (Oct 2026). Stripe sandbox wired and
-       VERIFIED 1 Oct 2026 end to end on a test rider: checkout session, customer
-       link, test-card subscription, webhook 200, account active with renewal date,
-       billing portal, cancellation recorded. Remaining: Gareth's own click-through
-       with the 4242 test card; then live mode (account verification, live product
-       and £14.99 price, live webhook to the same URL, live customer portal saved,
-       live keys on Railway). REQUIRE_SUBSCRIPTION=true only on the day doors open.
+       the £100 share capital paid in (Oct 2026). **Stripe LIVE 13 Oct 2026**, proven
+       with a real card: £14.99 charged (statement RIDEWITHFORMA.COM, fee 42p),
+       webhook 200, account active, portal cancellation recorded, full refund.
+       Live price price_1ULnnHQ23IT5B7Ec0G5SwWwW; webhook "Forma backend" (4 events,
+       API 2026-08-26.dahlia); portal saved (cancel at period end with reasons,
+       name and address only); key "Forma backend" is full access except sensitive
+       operations (rotated once on 13 Oct after it showed on screen). Sandbox
+       customer links cleared from all accounts.
+       Ships with the next backend deploy: migration b8t9g0h1u2z3 (pending
+       cancellation date, because the portal now cancels via cancel_at), then
+       run scripts/backfill_subscription_cancel_at.py (dry run, then --commit).
+       Before doors open: portal privacy and terms links once the pages are live;
+       check Stripe customer emails (successful payments, refunds) are on.
+       To refund a rider: cancel the subscription Immediately with a refund of the
+       last payment, in one step. REQUIRE_SUBSCRIPTION=true only on the day doors open.
 5. [~] Legal pages (privacy incl. "founder reviews conversations", "coach emails you";
        terms) + ICO registration. Monitoring is done (Sentry + UptimeRobot).
        DRAFTED 4 Oct 2026: prd/legal/privacy-policy.md and terms.md, with CONFIRM
