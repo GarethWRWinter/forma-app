@@ -19,7 +19,7 @@ import { zoneFromIF, zoneFromPct } from "@/lib/zones";
 import type { WorkoutStep } from "@/lib/api";
 import { RideShape } from "@/components/ui/ride-shape";
 import { ZONES } from "@/lib/palette";
-import { dailyInkscape, WORKOUT_ZONE } from "@/lib/dailyInkscape";
+import { dailyPass, WORKOUT_ZONE } from "@/lib/dailyPass";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Card, CardBody } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
@@ -306,8 +306,8 @@ export default function DashboardPage() {
 
   const firstName = user?.full_name?.split(" ")[0] || "Rider";
 
-  // Today's pass: the hero inkscape rotates daily with the quote.
-  const ink = dailyInkscape(daily?.date);
+  // Today's pass: the hero photograph rotates daily with the quote.
+  const pass = dailyPass(daily?.date);
 
   // Week X of Y from the active plan
   const activePlan = plans?.plans.find((p) => p.status === "active");
@@ -348,13 +348,16 @@ export default function DashboardPage() {
       {/* ============ HERO — today's pass + the daily line ============ */}
       <section className="f-rise relative -mx-4 -mt-4 overflow-hidden md:-mx-8 md:-mt-8">
         <img
-          src={ink.src}
-          alt={`Ink road art, ${ink.label}`}
+          src={pass.src}
+          srcSet={pass.srcSet}
+          sizes="(min-width: 1280px) 1200px, 100vw"
+          alt={pass.alt}
+          style={{ objectPosition: pass.focus }}
           className="h-[380px] w-full object-cover sm:h-[420px] md:h-[460px]"
         />
         {/* scrim for legibility, heavier at the base where the words sit */}
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-black/5" />
-        {/* No lockup here — the nav already carries the brand. The ink and
+        {/* No lockup here — the nav already carries the brand. The pass and
             the day's line get the whole canvas. */}
         {daily && (
           <blockquote className="absolute inset-x-0 bottom-0 p-5 md:p-8">

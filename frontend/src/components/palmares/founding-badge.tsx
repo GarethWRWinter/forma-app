@@ -5,7 +5,7 @@ import { useAuth } from "@/lib/auth-context";
 import { users } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "@/components/ui/section-header";
-import { INKSCAPES } from "@/lib/dailyInkscape";
+import { PASSES, drawCover } from "@/lib/dailyPass";
 
 /**
  * The founding badge — rider number as a badge of honour, designed by the
@@ -45,15 +45,14 @@ async function drawBadge(
   canvas.height = H;
   const ctx = canvas.getContext("2d")!;
 
-  // Ground: the rider's photo, or their number's own inkscape.
-  let ground = opts.photo;
-  if (!ground) {
-    ground = await loadImage(INKSCAPES[(opts.number - 1) % INKSCAPES.length].src);
+  // Ground: the rider's photo, or their number's own pass photograph,
+  // cropped around the road.
+  if (opts.photo) {
+    drawCover(ctx, opts.photo, W, H);
+  } else {
+    const pass = PASSES[(opts.number - 1) % PASSES.length];
+    drawCover(ctx, await loadImage(pass.large), W, H, pass.focus);
   }
-  const scale = Math.max(W / ground.width, H / ground.height);
-  const iw = ground.width * scale;
-  const ih = ground.height * scale;
-  ctx.drawImage(ground, (W - iw) / 2, (H - ih) / 2, iw, ih);
 
   // Scrim: heavy at the foot where the type lives, light above.
   const grad = ctx.createLinearGradient(0, H, 0, 0);
@@ -183,7 +182,7 @@ export function FoundingBadge() {
         <div className="max-w-md space-y-4 self-end">
           <p className="text-sm leading-relaxed text-vb-text-dim">
             One of the hundred, numbered for as long as Forma exists. Put
-            your own photo behind it, or ride under the ink. Then wear it
+            your own photo behind it, or keep the mountain. Then wear it
             where the club can see it.
           </p>
           <div className="flex flex-wrap items-center gap-3">
@@ -204,7 +203,7 @@ export function FoundingBadge() {
                 className="text-sm text-vb-text-muted underline-offset-4 hover:underline"
                 onClick={() => void onClearPhoto()}
               >
-                Back to the ink
+                Back to the mountain
               </button>
             )}
             <Button variant="flamme" size="sm" onClick={onDownload}>
