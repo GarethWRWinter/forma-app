@@ -7,6 +7,8 @@ import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kicker } from "@/components/ui/kicker";
+import { formatDate } from "@/lib/utils";
+import { membershipEndsAt } from "@/lib/membershipEnding";
 import {
   BILLING_BUTTON,
   BILLING_FAILED,
@@ -61,7 +63,15 @@ export function AccountExits({
     queryKey: ["billing-status"],
     queryFn: () => billing.getStatus(),
   });
-  const showBilling = offerBilling(status, { loadFailed: statusFailed, minorHeld });
+  // A membership already cancelled: say when it ends rather than offer to
+  // cancel it. Not for an account held as under 18, which the adults-only
+  // words already say is being closed and refunded.
+  const endsAt = minorHeld ? null : membershipEndsAt(status);
+  const showBilling = offerBilling(status, {
+    loadFailed: statusFailed,
+    minorHeld,
+    ending: endsAt !== null,
+  });
 
   const [opening, setOpening] = useState(false);
   const [billingError, setBillingError] = useState("");
@@ -114,7 +124,9 @@ export function AccountExits({
       <Kicker className="mb-2">
         <span id="account-exits-title">{EXITS_KICKER}</span>
       </Kicker>
-      <p className="text-sm leading-relaxed text-vb-text-dim">{exitsLead(mode, showBilling)}</p>
+      <p className="text-sm leading-relaxed text-vb-text-dim">
+        {exitsLead(mode, showBilling, endsAt ? formatDate(endsAt) : null)}
+      </p>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         {showBilling && (

@@ -37,6 +37,13 @@ def billing_status(current_user: User = Depends(get_current_user)):
             if current_user.subscription_period_end
             else None
         ),
+        # Set when the rider has cancelled and the membership runs to this
+        # date with no further payment; the status stays active until then.
+        "ends_at": (
+            current_user.subscription_cancel_at.isoformat()
+            if current_user.subscription_cancel_at
+            else None
+        ),
         "has_access": billing_service.has_access(current_user),
     }
 

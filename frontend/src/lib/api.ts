@@ -1708,6 +1708,9 @@ export interface BillingStatus {
   required: boolean;
   status: string; // "none" | "active" | "trialing" | "past_due" | "canceled"
   period_end: string | null;
+  /** Set when the rider has cancelled: the membership runs to this date and
+      won't renew. The status stays "active" until then. */
+  ends_at: string | null;
   has_access: boolean;
 }
 

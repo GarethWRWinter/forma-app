@@ -81,17 +81,27 @@ const MEMBER_STATUSES = new Set(["active", "trialing", "past_due"]);
  * Whether the modal offers Manage billing, Stripe's portal, where the rider
  * can cancel. Yes for a membership Stripe could still renew, and yes when the
  * status didn't load: a button that explains itself beats a rider with no way
- * to cancel. Not while the status is still loading, not when nobody pays, and
- * never for an account held as under 18, which the portal refuses
- * (billing.MINOR_BILLING_REFUSAL): Forma ends that membership itself.
+ * to cancel. Not while the status is still loading, not when nobody pays, not
+ * for a membership already cancelled (`ending`, from membershipEndsAt in
+ * membershipEnding.ts; the sentence above the buttons says when it ends
+ * instead), and never for an account held as under 18, which the portal
+ * refuses (billing.MINOR_BILLING_REFUSAL): Forma ends that membership itself.
  */
 export function offerBilling(
   status: Pick<BillingStatus, "configured" | "status"> | null | undefined,
-  opts: { loadFailed: boolean; minorHeld: boolean }
+  opts: { loadFailed: boolean; minorHeld: boolean; ending?: boolean }
 ): boolean {
   if (opts.minorHeld) return false;
   if (!status) return opts.loadFailed;
+  if (opts.ending) return false;
   return status.configured && MEMBER_STATUSES.has(status.status);
+}
+
+/** Added to the sentence above the buttons in the modal, for a membership
+    already cancelled. `on` is the date as the screen shows it (formatDate),
+    passed in so this file keeps no runtime imports. */
+export function endingNote(on: string): string {
+  return `Your membership is already cancelled. It ends on ${on} and won't renew.`;
 }
 
 // === What the ways out say ===
@@ -102,20 +112,22 @@ export type ExitsMode = "agree" | "answer" | "closed" | "held";
 
 export const EXITS_KICKER = "Your account";
 
-/** The sentence above the buttons. */
-export function exitsLead(mode: ExitsMode, billing: boolean): string {
+/** The sentence above the buttons, then, for a membership already
+    cancelled, when it ends (`endsOn`, as the screen shows the date). */
+export function exitsLead(mode: ExitsMode, billing: boolean, endsOn?: string | null): string {
   const things = billing
     ? "cancel your membership in Manage billing, download your data or delete your account"
     : "download your data or delete your account";
+  const ending = endsOn ? ` ${endingNote(endsOn)}` : "";
   switch (mode) {
     case "closed":
-      return `Until Forma opens where you live, you can still ${things} here.`;
+      return `Until Forma opens where you live, you can still ${things} here.${ending}`;
     case "held":
-      return `You can still ${things} here.`;
+      return `You can still ${things} here.${ending}`;
     case "agree":
-      return `If you'd rather not agree, you can still ${things} here.`;
+      return `If you'd rather not agree, you can still ${things} here.${ending}`;
     case "answer":
-      return `If you'd rather not answer, you can still ${things} here.`;
+      return `If you'd rather not answer, you can still ${things} here.${ending}`;
   }
 }
 

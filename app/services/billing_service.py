@@ -134,6 +134,92 @@ def _period_end_ts(sub) -> int | None:
     return sub.get("current_period_end")
 
 
+# Statuses that can still take a payment at the next renewal.
+_RENEWING = ("active", "trialing", "past_due", "unpaid")
+
+
+def _cancel_at_ts(sub) -> int | None:
+    """Stripe's cancel_at as a timestamp, or None when there is none."""
+    cancel_at = sub.get("cancel_at")
+    if not cancel_at:
+        return None
+    try:
+        return int(cancel_at)
+    except (TypeError, ValueError):
+        # Not a timestamp (the request-only words such as "max_period_end"):
+        # the period end is the best reading of it.
+        return _period_end_ts(sub)
+
+
+def _cancel_pending(sub) -> bool:
+    """The subscription ends by the close of the period already paid for and
+    takes no further payment, in either of the two shapes Stripe uses.
+
+    Older payloads, and Forma's own stop_renewal_for_review, set
+    cancel_at_period_end. From the dahlia API versions (2026) a rider who
+    cancels in the customer portal gets cancel_at, a timestamp equal to the
+    period end, while cancel_at_period_end stays false and the status stays
+    active until that date (found live on 13 Oct 2026).
+
+    A cancel_at after the period end is not this: Stripe renews at the
+    period end and charges for the part of the next period up to cancel_at
+    (a custom cancel date set in the dashboard or the API). That one still
+    renews, once. With no period end to compare against, cancel_at is taken
+    at its word."""
+    if sub.get("cancel_at_period_end"):
+        return True
+    cancel_at = _cancel_at_ts(sub)
+    if cancel_at is None:
+        return False
+    period_end = _period_end_ts(sub)
+    return period_end is None or cancel_at <= period_end
+
+
+def _ends_at_ts(sub) -> int | None:
+    """When a subscription with a pending cancellation ends: cancel_at when
+    Stripe set one, else the period end for cancel_at_period_end, whichever
+    comes first if it carries both. None while it renews, including a
+    cancel_at in a later period (see _later_cancel_at_ts)."""
+    if not _cancel_pending(sub):
+        return None
+    period_end = _period_end_ts(sub)
+    ends = [
+        t
+        for t in (_cancel_at_ts(sub), period_end if sub.get("cancel_at_period_end") else None)
+        if t
+    ]
+    return min(ends) if ends else period_end
+
+
+def _later_cancel_at_ts(sub) -> int | None:
+    """A cancel_at after the current period ends: Stripe renews once more,
+    with a charge for the days up to it, then ends the subscription on that
+    date. None otherwise."""
+    if _cancel_pending(sub):
+        return None
+    return _cancel_at_ts(sub)
+
+
+def _renews(sub) -> bool:
+    """Will Stripe try to take another payment when this period ends?"""
+    return sub.get("status") in _RENEWING and not _cancel_pending(sub)
+
+
+def _renewal_back_on(sub) -> dict:
+    """The Subscription.modify arguments that take a pending cancellation off,
+    for whichever shape it is in. One shape per call, since Stripe can refuse
+    both together: cancel_at_period_end false should also clear a cancel_at
+    Stripe mirrored from it (resume_renewal_after_review checks Stripe's
+    answer in case it didn't), and an empty cancel_at is how Stripe clears a
+    cancellation date (stripe-python's SubscriptionModifyParams.cancel_at
+    takes ""). Empty when it renews."""
+    if sub.get("cancel_at_period_end"):
+        return {"cancel_at_period_end": False}
+    if sub.get("cancel_at"):
+        return {"cancel_at": ""}
+    return {}
+
+
 def _current_state(sub: dict) -> dict:
     """The subscription as Stripe holds it now, not as the event saw it.
 
@@ -173,8 +259,10 @@ def cancel_all_subscriptions(user: User) -> int:
 # cancellation and undo only what Forma did.
 MINOR_REVIEW_FLAG = "forma_renewal_stopped"
 MINOR_REVIEW_VALUE = "under_18_review"
-# Statuses that can still take a payment at the next renewal.
-_RENEWING = ("active", "trialing", "past_due", "unpaid")
+# A cancel date the subscription already had in a later period, which the
+# renewal stop brought forward to the period end. The review puts it back for
+# an adult, so the rider's own end date survives the hold.
+MINOR_REVIEW_PRIOR_CANCEL_AT = "forma_prior_cancel_at"
 
 
 def _as_dict(obj) -> dict:
@@ -206,7 +294,14 @@ def stop_renewal_for_review(user) -> int:
 
     Best effort: never raises, logs what it did. Returns how many were set.
     Takes anything with .id and .stripe_customer_id, so a caller on another
-    thread can pass a snapshot rather than a live database row."""
+    thread can pass a snapshot rather than a live database row.
+
+    A subscription the rider already cancelled, in either shape, is left
+    alone: it won't renew anyway, and flagging it would let the review turn
+    renewal back on for a rider who asked for it off. One with a cancel date
+    in a later period would still take one more payment, so that date is
+    brought forward to the period end and kept on the subscription for the
+    review to put back."""
     customer_id = getattr(user, "stripe_customer_id", None)
     user_id = getattr(user, "id", None)
     if not (is_configured() and customer_id):
@@ -215,13 +310,18 @@ def stop_renewal_for_review(user) -> int:
     try:
         _client()
         for sub in _subscriptions(customer_id):
-            if sub.get("status") not in _RENEWING or sub.get("cancel_at_period_end"):
+            if not _renews(sub):
                 continue
-            stripe.Subscription.modify(
-                sub["id"],
-                cancel_at_period_end=True,
-                metadata={MINOR_REVIEW_FLAG: MINOR_REVIEW_VALUE},
-            )
+            metadata = {MINOR_REVIEW_FLAG: MINOR_REVIEW_VALUE}
+            later = _later_cancel_at_ts(sub)
+            if later is None:
+                stop = {"cancel_at_period_end": True}
+            else:
+                # Moved in the field it is already set in, so Stripe is never
+                # asked to hold both shapes at once.
+                stop = {"cancel_at": _period_end_ts(sub)}
+                metadata[MINOR_REVIEW_PRIOR_CANCEL_AT] = str(later)
+            stripe.Subscription.modify(sub["id"], **stop, metadata=metadata)
             stopped += 1
     except Exception:
         logger.exception(
@@ -241,24 +341,59 @@ def resume_renewal_after_review(user) -> int:
     """Undo stop_renewal_for_review after the review found an adult: renewal
     comes back on, but only for subscriptions Forma stopped (never one the
     rider cancelled themselves). Raises if Stripe can't be reached, so the
-    review tool can say so. Returns how many were resumed."""
+    review tool can say so. Returns how many were resumed.
+
+    Forma stops renewal with cancel_at_period_end, but Stripe may hold it as
+    cancel_at under a newer API version, so the cancellation is cleared in
+    whichever shape the subscription carries, and Stripe's answer is checked
+    for the other shape too. A later cancel date the stop brought forward
+    (MINOR_REVIEW_PRIOR_CANCEL_AT) goes back instead of being cleared: the
+    subscription renews once more and ends on the rider's own date."""
     customer_id = getattr(user, "stripe_customer_id", None)
     if not (is_configured() and customer_id):
         return 0
     _client()
     resumed = 0
     for sub in _subscriptions(customer_id):
-        flagged = (sub.get("metadata") or {}).get(MINOR_REVIEW_FLAG) == MINOR_REVIEW_VALUE
+        meta = sub.get("metadata") or {}
+        flagged = meta.get(MINOR_REVIEW_FLAG) == MINOR_REVIEW_VALUE
         if not flagged or sub.get("status") not in _RENEWING:
             continue
-        stripe.Subscription.modify(
-            sub["id"],
-            cancel_at_period_end=False,
-            # An empty value deletes the key in Stripe.
-            metadata={MINOR_REVIEW_FLAG: ""},
-        )
+        # An empty value deletes the key in Stripe.
+        clear = {MINOR_REVIEW_FLAG: ""}
+        if MINOR_REVIEW_PRIOR_CANCEL_AT in meta:
+            clear[MINOR_REVIEW_PRIOR_CANCEL_AT] = ""
+        prior = _prior_cancel_at(meta)
+        if prior is not None and not sub.get("cancel_at_period_end"):
+            # The usual case: the stop moved cancel_at, so move it back.
+            first = {"cancel_at": prior}
+        else:
+            first = _renewal_back_on(sub)
+        updated = stripe.Subscription.modify(sub["id"], **first, metadata=clear)
+        after = _as_dict(updated) if updated is not None else {}
+        if not isinstance(after, dict):
+            after = {}
+        if prior is None:
+            rest = _renewal_back_on(after)
+            if rest and rest != first:
+                stripe.Subscription.modify(sub["id"], **rest)
+        else:
+            if after.get("cancel_at_period_end"):
+                after = _as_dict(
+                    stripe.Subscription.modify(sub["id"], cancel_at_period_end=False) or {}
+                )
+            if _cancel_at_ts(after) != prior:
+                stripe.Subscription.modify(sub["id"], cancel_at=prior)
         resumed += 1
     return resumed
+
+
+def _prior_cancel_at(meta: dict) -> int | None:
+    """The later cancel date stop_renewal_for_review kept, or None."""
+    try:
+        return int(meta.get(MINOR_REVIEW_PRIOR_CANCEL_AT) or 0) or None
+    except (TypeError, ValueError):
+        return None
 
 
 def _when(ts) -> str | None:
@@ -269,8 +404,12 @@ def _when(ts) -> str | None:
 
 def subscription_summaries(user) -> list[dict]:
     """Every subscription on the rider's Stripe customer, for the review
-    tool's dry run: id, status, whether it ends at the period end, and when
-    the period ends. Read only. Raises if Stripe can't be reached."""
+    tool's dry run: id, status, whether it renews, whether it is set to end
+    and when (ends_at), a cancel date after one more renewal (ends_later),
+    and when the period ends. cancel_at_period_end is true for a
+    cancellation in either of Stripe's shapes (cancel_at or
+    cancel_at_period_end), so older callers still read it right. Read only.
+    Raises if Stripe can't be reached."""
     customer_id = getattr(user, "stripe_customer_id", None)
     if not (is_configured() and customer_id):
         return []
@@ -280,7 +419,10 @@ def subscription_summaries(user) -> list[dict]:
         out.append({
             "id": sub.get("id"),
             "status": sub.get("status"),
-            "cancel_at_period_end": bool(sub.get("cancel_at_period_end")),
+            "renews": _renews(sub),
+            "cancel_at_period_end": _cancel_pending(sub),
+            "ends_at": _when(_ends_at_ts(sub)),
+            "ends_later": _when(_later_cancel_at_ts(sub)),
             "period_end": _when(_period_end_ts(sub)),
         })
     return out
@@ -333,6 +475,18 @@ def _apply_subscription(sub: dict) -> None:
     if ts:
         period_end = datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
 
+    # A cancellation that hasn't taken effect yet: Stripe keeps the status
+    # active to the end of what was paid for, so this is the only record that
+    # the membership won't renew. Set only when no further payment is due
+    # before it ends (_cancel_pending), since Settings tells the rider so:
+    # a cancel date in a later period renews once more first, and stays None
+    # until that renewal makes it the current one. None once it renews again
+    # or has ended.
+    cancel_at = None
+    ends = _ends_at_ts(sub) if status in _RENEWING else None
+    if ends:
+        cancel_at = datetime.fromtimestamp(ends, tz=timezone.utc).replace(tzinfo=None)
+
     db = SessionLocal()
     try:
         user = (
@@ -348,11 +502,13 @@ def _apply_subscription(sub: dict) -> None:
             return
         user.subscription_status = status
         user.subscription_period_end = period_end
+        user.subscription_cancel_at = cancel_at
         if not user.stripe_customer_id:
             user.stripe_customer_id = customer_id
         db.commit()
         logger.info(
-            "Subscription %s for user %s (period end %s)", status, user.id, period_end
+            "Subscription %s for user %s (period end %s, ends %s)",
+            status, user.id, period_end, cancel_at,
         )
     finally:
         db.close()

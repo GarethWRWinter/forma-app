@@ -39,12 +39,14 @@ import {
   adultsOnlyRefusal,
   countryClosedText,
   deleteArmed,
+  endingNote,
   exitsLead,
   exportFilename,
   isMinorHeld,
   offerBilling,
   serverSentence,
 } from "./accountExits.ts";
+import { membershipEndsAt } from "./membershipEnding.ts";
 import { refreshesOn401 } from "./api.ts";
 import { PROFILE_ELSEWHERE, profileErrorField } from "./profileConsent.ts";
 import { countryBlockFor } from "./safetyPrompts.ts";
@@ -215,6 +217,40 @@ test("the sentence above the buttons names only what is on offer", () => {
   }
 });
 
+// === A cancelled membership that hasn't ended yet ===
+// From Stripe's dahlia API versions a rider who cancels in the portal keeps
+// status "active" until the paid month ends, with the date in cancel_at, and
+// the server now sends it as ends_at (found live on 13 Oct 2026). Before, the
+// modal offered to cancel what was already cancelled. When it ends, and what
+// Settings says, are membershipEnding.ts's (membership-ending.test.mjs).
+
+const ENDS = "2026-11-13T12:00:00";
+
+test("the modal doesn't offer to cancel a membership already cancelled", () => {
+  const ok = { loadFailed: false, minorHeld: false };
+  const ending = { ...ok, ending: true };
+  assert.equal(offerBilling({ configured: true, status: "active" }, ending), false);
+  assert.equal(offerBilling({ configured: true, status: "active" }, { ...ok, ending: false }), true);
+  // What the modal passes: ending is membershipEndsAt's answer.
+  const status = { configured: true, status: "active", ends_at: ENDS, period_end: ENDS };
+  assert.equal(offerBilling(status, { ...ok, ending: membershipEndsAt(status) !== null }), false);
+  // Status didn't load: Manage billing still explains itself.
+  assert.equal(offerBilling(undefined, { loadFailed: true, minorHeld: false, ending: false }), true);
+  // It says when it ends instead, after whatever else is on offer.
+  assert.equal(
+    exitsLead("agree", false, "13 Nov 2026"),
+    "If you'd rather not agree, you can still download your data or delete your account here. Your membership is already cancelled. It ends on 13 Nov 2026 and won't renew."
+  );
+  assert.equal(
+    exitsLead("closed", false, "13 Nov 2026"),
+    "Until Forma opens where you live, you can still download your data or delete your account here. Your membership is already cancelled. It ends on 13 Nov 2026 and won't renew."
+  );
+  for (const mode of ["agree", "answer", "closed", "held"]) {
+    assert.equal(exitsLead(mode, false, null), exitsLead(mode, false), mode);
+    assert.ok(exitsLead(mode, false, "13 Nov 2026").endsWith(endingNote("13 Nov 2026")), mode);
+  }
+});
+
 test("somewhere Forma isn't open says so and points to the ways out", () => {
   assert.equal(
     countryClosedText("us_ca"),
@@ -306,7 +342,10 @@ test("the modal carries the ways out, on the form and on the adults-only panel",
   has(exits, /disabled=\{!deleteArmed\(typedEmail, user\?\.email\) \|\| deleting\}/, "armed by the email");
   has(exits, /logout\(\); \/\/ clears the tokens/, "deletion logs out");
   has(exits, /onClick=\{logout\}/, "Log out");
-  has(exits, /offerBilling\(status, \{ loadFailed: statusFailed, minorHeld \}\)/, "billing only when it can help");
+  has(exits, /offerBilling\(status, \{\s+loadFailed: statusFailed,\s+minorHeld,\s+ending: endsAt !== null,\s+\}\)/, "billing only when it can help");
+  has(exits, /const endsAt = minorHeld \? null : membershipEndsAt\(status\);/, "a cancelled membership's end date");
+  has(exits, /import \{ membershipEndsAt \} from "@\/lib\/membershipEnding";/, "read where Settings reads it");
+  has(exits, /exitsLead\(mode, showBilling, endsAt \? formatDate\(endsAt\) : null\)/, "said above the buttons");
 
   has(api, /saveMyData: async \(filename: string\): Promise<void> =>/, "api.saveMyData");
   has(api, /request<Record<string, unknown>>\("\/users\/me\/export"\);\s+const blob/, "saves the GDPR export");
@@ -414,7 +453,12 @@ test("the new words follow the house rules", () => {
     LOGOUT_BUTTON,
     countryClosedText("us_ca"),
     countryClosedText("elsewhere"),
-    ...["agree", "answer", "closed", "held"].flatMap((m) => [exitsLead(m, true), exitsLead(m, false)]),
+    ...["agree", "answer", "closed", "held"].flatMap((m) => [
+      exitsLead(m, true),
+      exitsLead(m, false),
+      exitsLead(m, false, "13 Nov 2026"),
+    ]),
+    endingNote("13 Nov 2026"),
   ];
   const dash = new RegExp(`[${String.fromCharCode(0x2013, 0x2014)}]`);
   for (const line of lines) {
@@ -432,6 +476,7 @@ test("the new words follow the house rules", () => {
     "../components/safety/ReacceptTermsModal.tsx",
     "../app/dashboard/layout.tsx",
     "./account-exits-render.test.mjs",
+    "../components/settings/membership-card.tsx",
   ]) {
     assert.ok(!dash.test(read(file)), `${file} has a dash`);
   }

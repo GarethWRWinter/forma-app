@@ -110,7 +110,18 @@ const { createElement: h } = await import("react");
 const { renderToString } = await import("react-dom/server");
 const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
 const { ReacceptTermsModal } = await import("@/components/safety/ReacceptTermsModal");
+const { MembershipCard } = await import("@/components/settings/membership-card");
 const exits = await import("@/lib/accountExits");
+const ends = await import("@/lib/membershipEnding");
+const { formatDate } = await import("@/lib/utils");
+
+/** The server's HTML with the entities and React's text markers undone. */
+const clean = (html) =>
+  html
+    .replace(/<!-- -->/g, "")
+    .replace(/&#x27;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&");
 
 function render({ user, billing, safety, countryClosed }) {
   globalThis.__FORMA_TEST_AUTH__ = { user, refreshUser: async () => {}, logout: () => {} };
@@ -120,11 +131,7 @@ function render({ user, billing, safety, countryClosed }) {
   if (safety !== undefined) client.setQueryData(["safety-state"], safety);
   client.setQueryData(["auth-config"], { allowed_countries: ["GB"] });
   try {
-    return renderToString(h(QueryClientProvider, { client }, h(ReacceptTermsModal)))
-      .replace(/<!-- -->/g, "")
-      .replace(/&#x27;/g, "'")
-      .replace(/&quot;/g, '"')
-      .replace(/&amp;/g, "&");
+    return clean(renderToString(h(QueryClientProvider, { client }, h(ReacceptTermsModal))));
   } finally {
     globalThis.__FORMA_TEST_COUNTRY_CLOSED__ = undefined;
   }
@@ -146,8 +153,11 @@ const beta = {
   health_consent_current: false,
   needs_profile_consent: true,
 };
-const member = { configured: true, required: true, status: "active", period_end: null, has_access: true };
-const unpaid = { configured: true, required: true, status: "none", period_end: null, has_access: false };
+const member = { configured: true, required: true, status: "active", period_end: null, ends_at: null, has_access: true };
+const unpaid = { configured: true, required: true, status: "none", period_end: null, ends_at: null, has_access: false };
+// Cancelled in Stripe's portal, paid to 13 November: Stripe still says active.
+const ENDS = "2026-11-13T12:00:00";
+const ending = { ...member, period_end: ENDS, ends_at: ENDS };
 const noHold = { hold: null };
 const minorHold = { hold: { red_flag: "minor" } };
 const allFour = [
@@ -227,14 +237,69 @@ test("somewhere Forma isn't open: why, then the ways out, and nothing to agree t
   }
 });
 
+test("a member who has cancelled is told when it ends, not offered to cancel it", () => {
+  const html = render({ user: beta, billing: ending, safety: noHold });
+  const on = formatDate(ENDS);
+  shows(html, [exits.exitsLead("agree", false, on), exits.EXPORT_BUTTON, exits.DELETE_BUTTON, exits.LOGOUT_BUTTON], "ending");
+  hides(html, [exits.BILLING_BUTTON, "cancel your membership in Manage billing"], "ending");
+  // Held as under 18: the hold's own words say what happens, not this.
+  const held = render({ user: beta, billing: ending, safety: minorHold });
+  shows(held, [exits.exitsLead("held", false), exits.ADULTS_ONLY_HELD], "ending, held");
+  hides(held, [exits.endingNote(on)], "ending, held");
+});
+
+test("a cancel date after the paid month still offers Manage billing", () => {
+  // Stripe renews once more first. The server doesn't send this as ends_at;
+  // if it ever did, the modal keeps to what it knows: it renews.
+  const later = { ...member, period_end: ENDS, ends_at: "2026-12-13T12:00:00" };
+  const modal = render({ user: beta, billing: later, safety: noHold });
+  shows(modal, [exits.BILLING_BUTTON], "later, modal");
+  hides(modal, ["already cancelled"], "later, modal");
+});
+
+// === The Settings card, held as under 18 ===
+// Every other state of the card is in
+// src/components/settings/membership-card-render.test.mjs, which ships with
+// or without the safety system. These need the safety-state cache.
+
+function renderCard({ billing, safety }) {
+  const client = new QueryClient();
+  client.setQueryData(["billing-status"], billing);
+  if (safety !== undefined) client.setQueryData(["safety-state"], safety);
+  return clean(renderToString(h(QueryClientProvider, { client }, h(MembershipCard))));
+}
+
+test("Settings: held as under 18, the cancelled membership says what the hold says", () => {
+  const html = renderCard({ billing: ending, safety: minorHold });
+  const on = formatDate(ENDS);
+  // Its coach is stopped and the portal refuses it: the hold's own words
+  // in place of how to keep it.
+  shows(html, [ends.endingLines(on, { pastDue: false })[0], exits.ADULTS_ONLY_HELD], "held");
+  hides(html, [ends.ENDING_KEEP, "press Renew", "as normal"], "held");
+});
+
 test("what the modal shows has no dashes and no exclamation marks", () => {
   const dash = new RegExp(`[${String.fromCharCode(0x2013, 0x2014)}]`);
   for (const args of [
+    { user: beta, billing: ending, safety: noHold },
     { user: beta, billing: member, safety: noHold },
     { user: beta, billing: member, safety: minorHold },
     { user: beta, billing: member, safety: noHold, countryClosed: "elsewhere" },
   ]) {
     const t = words(render(args));
+    assert.ok(!dash.test(t), t.match(new RegExp(`.{0,30}${dash.source}.{0,30}`))?.[0]);
+    assert.ok(!t.includes("!"), t);
+  }
+});
+
+test("what the Settings card shows has no dashes and no exclamation marks", () => {
+  const dash = new RegExp(`[${String.fromCharCode(0x2013, 0x2014)}]`);
+  for (const args of [
+    { billing: ending, safety: noHold },
+    { billing: { ...ending, status: "past_due" }, safety: noHold },
+    { billing: ending, safety: minorHold },
+  ]) {
+    const t = words(renderCard(args));
     assert.ok(!dash.test(t), t.match(new RegExp(`.{0,30}${dash.source}.{0,30}`))?.[0]);
     assert.ok(!t.includes("!"), t);
   }

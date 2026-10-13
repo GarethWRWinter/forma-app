@@ -47,6 +47,15 @@ class User(TimestampMixin, Base):
     subscription_period_end: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True
     )
+    # When a membership the rider has cancelled ends (naive UTC, like
+    # subscription_period_end), with no further payment before then. Stripe
+    # keeps the status active until that date, so this is how Settings knows
+    # to say it won't renew. None while the membership renews (including a
+    # cancel date in a later period, which renews once more first), and once
+    # it has ended.
+    subscription_cancel_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
 
     # Which invite code opened the door (beta cohort tracking).
     invited_with: Mapped[str | None] = mapped_column(String(24), nullable=True)

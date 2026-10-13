@@ -340,6 +340,157 @@ def test_renewal_stops_only_on_renewing_subscriptions_and_resumes_only_what_form
     assert stripe_fake.sub("sub_own_cancel")["cancel_at_period_end"] is True
 
 
+def test_a_portal_cancellation_with_cancel_at_is_the_riders_own_and_never_touched(stripe_fake):
+    """From the dahlia API versions a rider who cancels in the portal gets
+    cancel_at, with cancel_at_period_end still false and the status still
+    active (found live on 13 Oct 2026). That subscription won't renew: the
+    renewal stop leaves it alone, so the review can never turn it back on."""
+    stripe_fake.add_sub("sub_active")
+    own = stripe_fake.add_sub("sub_portal_cancel", cancel_at=1_900_000_000)
+    assert own["cancel_at_period_end"] is False and own["status"] == "active"
+    rider = SimpleNamespace(id="u1", stripe_customer_id="cus_1")
+
+    assert billing_service.stop_renewal_for_review(rider) == 1
+    assert [w[1] for w in stripe_fake.writes] == ["sub_active"]
+    assert own["metadata"] == {}
+
+    assert billing_service.resume_renewal_after_review(rider) == 1
+    assert {w[1] for w in stripe_fake.writes} == {"sub_active"}
+    assert own["cancel_at"] == 1_900_000_000
+    assert own["cancel_at_period_end"] is False
+
+
+def test_the_resume_arguments_match_the_shape_the_cancellation_is_in():
+    def sub(**kw):
+        return {"status": "active", "cancel_at": None, "cancel_at_period_end": False,
+                "current_period_end": 1_900_000_000, **kw}
+
+    assert billing_service._renewal_back_on(sub()) == {}
+    assert billing_service._renewal_back_on(sub(cancel_at=1_900_000_000)) == {"cancel_at": ""}
+    assert billing_service._renewal_back_on(sub(cancel_at_period_end=True)) == {
+        "cancel_at_period_end": False
+    }
+    both = sub(cancel_at=1_900_000_000, cancel_at_period_end=True)
+    assert billing_service._renewal_back_on(both) == {"cancel_at_period_end": False}
+
+
+def test_resuming_turns_renewal_back_on_in_whichever_shape_stripe_holds_it(stripe_fake):
+    """Forma stops renewal with cancel_at_period_end, but a newer API version
+    may hand it back as cancel_at alone, or as both. Resuming clears the shape
+    the subscription carries, then the other one if Stripe's answer still has
+    it, and only ever on subscriptions Forma flagged."""
+    flag = {billing_service.MINOR_REVIEW_FLAG: billing_service.MINOR_REVIEW_VALUE}
+    as_cancel_at = stripe_fake.add_sub("sub_cancel_at")
+    as_cancel_at.update(cancel_at=1_900_000_000, metadata=dict(flag))
+    as_both = stripe_fake.add_sub("sub_both")
+    as_both.update(cancel_at=1_900_000_000, cancel_at_period_end=True, metadata=dict(flag))
+    as_legacy = stripe_fake.add_sub("sub_legacy")
+    as_legacy.update(cancel_at_period_end=True, metadata=dict(flag))
+    own = stripe_fake.add_sub("sub_own", cancel_at=1_900_000_000)  # the rider's, unflagged
+    rider = SimpleNamespace(id="u1", stripe_customer_id="cus_1")
+
+    assert billing_service.resume_renewal_after_review(rider) == 3
+    for sub in (as_cancel_at, as_both, as_legacy):
+        assert billing_service._renews(sub), sub["id"]
+        assert not sub.get("cancel_at") and sub["cancel_at_period_end"] is False, sub["id"]
+        assert sub["metadata"] == {}, sub["id"]
+    writes = [(w[1], {k: v for k, v in w[2].items() if k != "metadata"}) for w in stripe_fake.writes]
+    assert ("sub_cancel_at", {"cancel_at": ""}) in writes
+    assert ("sub_legacy", {"cancel_at_period_end": False}) in writes
+    # The fake doesn't mirror one shape into the other, so Stripe's answer
+    # still shows cancel_at and a second call clears it.
+    assert [w for w in writes if w[0] == "sub_both"] == [
+        ("sub_both", {"cancel_at_period_end": False}),
+        ("sub_both", {"cancel_at": ""}),
+    ]
+    assert not any(w[0] == "sub_own" for w in writes)
+    assert own["cancel_at"] == 1_900_000_000
+
+
+LATER = 1_900_000_000 + 86_400 * 30  # a cancel date a month after the period end
+
+
+def test_a_cancel_date_in_a_later_period_is_brought_forward_then_put_back(stripe_fake):
+    """A custom cancel date after the period end (dashboard or API) still
+    takes one more payment, so the renewal stop can't leave it alone. It moves
+    the date to the period end, in the same field, and keeps the rider's own
+    date for the review, which puts it back for an adult."""
+    sub = stripe_fake.add_sub("sub_later", cancel_at=LATER)
+    assert billing_service._renews(sub)
+    rider = SimpleNamespace(id="u1", stripe_customer_id="cus_1")
+
+    assert billing_service.stop_renewal_for_review(rider) == 1
+    assert stripe_fake.writes == [("modify", "sub_later", {
+        "cancel_at": 1_900_000_000,
+        "metadata": {
+            billing_service.MINOR_REVIEW_FLAG: billing_service.MINOR_REVIEW_VALUE,
+            billing_service.MINOR_REVIEW_PRIOR_CANCEL_AT: str(LATER),
+        },
+    })]
+    assert not billing_service._renews(sub)
+    assert billing_service._ends_at_ts(sub) == 1_900_000_000
+
+    stripe_fake.writes.clear()
+    assert billing_service.resume_renewal_after_review(rider) == 1
+    # One call: the date goes back and both keys come off.
+    assert [(w[1], {k: v for k, v in w[2].items() if k != "metadata"}) for w in stripe_fake.writes] == [
+        ("sub_later", {"cancel_at": LATER}),
+    ]
+    assert sub["cancel_at"] == LATER and sub["cancel_at_period_end"] is False
+    assert sub["metadata"] == {}
+    assert billing_service._later_cancel_at_ts(sub) == LATER
+
+
+def test_putting_a_later_cancel_date_back_when_stripe_mirrored_the_period_end(stripe_fake):
+    """If Stripe hands the brought-forward date back as cancel_at_period_end
+    as well, that comes off first, then the rider's date goes back."""
+    sub = stripe_fake.add_sub("sub_later", cancel_at=LATER)
+    rider = SimpleNamespace(id="u1", stripe_customer_id="cus_1")
+    billing_service.stop_renewal_for_review(rider)
+    sub["cancel_at_period_end"] = True
+    stripe_fake.writes.clear()
+
+    assert billing_service.resume_renewal_after_review(rider) == 1
+    assert [(w[1], {k: v for k, v in w[2].items() if k != "metadata"}) for w in stripe_fake.writes] == [
+        ("sub_later", {"cancel_at_period_end": False}),
+        ("sub_later", {"cancel_at": LATER}),
+    ]
+    assert sub["cancel_at"] == LATER and sub["cancel_at_period_end"] is False
+    assert sub["metadata"] == {}
+
+
+def test_the_subscription_listing_says_whether_each_renews_and_when_it_ends(stripe_fake):
+    stripe_fake.add_sub("sub_renews")
+    stripe_fake.add_sub("sub_portal", cancel_at=1_890_000_000)
+    legacy = stripe_fake.add_sub("sub_legacy")
+    legacy["cancel_at_period_end"] = True
+    rider = SimpleNamespace(id="u1", stripe_customer_id="cus_1")
+
+    rows = {s["id"]: s for s in billing_service.subscription_summaries(rider)}
+    assert rows["sub_renews"]["renews"] is True
+    assert rows["sub_renews"]["cancel_at_period_end"] is False
+    assert rows["sub_renews"]["ends_at"] is None
+    # Either shape reads as set to end, so older callers keep working.
+    assert rows["sub_portal"]["renews"] is False
+    assert rows["sub_portal"]["cancel_at_period_end"] is True
+    assert rows["sub_portal"]["ends_at"] == billing_service._when(1_890_000_000)
+    assert rows["sub_legacy"]["renews"] is False
+    assert rows["sub_legacy"]["cancel_at_period_end"] is True
+    assert rows["sub_legacy"]["ends_at"] == billing_service._when(1_900_000_000)
+    assert all(rows[k]["ends_later"] is None for k in ("sub_renews", "sub_portal", "sub_legacy"))
+
+
+def test_the_listing_says_a_later_cancel_date_renews_once_more(stripe_fake):
+    stripe_fake.add_sub("sub_later", cancel_at=LATER)
+    rider = SimpleNamespace(id="u1", stripe_customer_id="cus_1")
+
+    [row] = billing_service.subscription_summaries(rider)
+    assert row["renews"] is True
+    assert row["cancel_at_period_end"] is False
+    assert row["ends_at"] is None
+    assert row["ends_later"] == billing_service._when(LATER)
+
+
 def test_stopping_renewal_never_raises(stripe_fake):
     stripe_fake.add_sub("sub_active")
     stripe_fake.fail = {"modify"}
@@ -528,6 +679,35 @@ def test_closing_an_under_18_account_dry_run_changes_nothing(db_session, stripe_
     user = db_session.get(User, user.id)
     assert user.is_active and user.deleted_at is None
     assert db_session.query(SafetyEvent).filter(SafetyEvent.reviewed_at.is_(None)).count() == 2
+
+
+def test_the_dry_run_says_when_a_cancelled_subscription_ends(db_session, stripe_fake):
+    """A portal cancellation (cancel_at, status still active) is listed as
+    live, since Stripe can still hold the money, and as set to end."""
+    _child_with_payments(db_session, stripe_fake)
+    stripe_fake.sub("sub_live")["cancel_at"] = 1_890_000_000
+    code, lines = _tool(db_session, "--close-minor", "kid@example.com")
+    text = "\n".join(lines)
+    assert code == 0
+    ends = billing_service._when(1_890_000_000)
+    assert f"sub_live  active  (set to end {ends}, won't renew)" in text
+    _no_dashes_or_bangs(text)
+    assert stripe_fake.writes == []
+
+
+def test_the_dry_run_says_a_later_cancel_date_renews_once_more(db_session, stripe_fake):
+    _child_with_payments(db_session, stripe_fake)
+    stripe_fake.sub("sub_live")["cancel_at"] = LATER
+    code, lines = _tool(db_session, "--close-minor", "kid@example.com")
+    text = "\n".join(lines)
+    assert code == 0
+    assert (
+        f"sub_live  active  (renews once more, then set to end {billing_service._when(LATER)})"
+        in text
+    )
+    assert "won't renew" not in text
+    _no_dashes_or_bangs(text)
+    assert stripe_fake.writes == []
 
 
 def test_closing_an_under_18_account_cancels_deletes_reviews_and_prints_the_refund_steps(

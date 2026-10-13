@@ -353,7 +353,12 @@ def close_minor(
         out.append(f"Live Stripe subscriptions found: {len(live)}")
         out += [
             f"  {s['id']}  {s['status']}"
-            + ("  (set to end at the period end)" if s["cancel_at_period_end"] else "")
+            + (
+                f"  (set to end {s['ends_at'] or 'at the period end'}, won't renew)"
+                if s["cancel_at_period_end"]
+                else f"  (renews once more, then set to end {s['ends_later']})"
+                if s.get("ends_later") else ""
+            )
             + (f"  period ends {s['period_end']}" if s["period_end"] else "")
             for s in live
         ]

@@ -4,7 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { X } from "lucide-react";
 import { billing } from "@/lib/api";
+import { ADULTS_ONLY_HELD, isMinorHeld } from "@/lib/accountExits";
+import { ENDING_KEEP, endingBadge, endingLines, membershipEndsAt } from "@/lib/membershipEnding";
 import { formatDate } from "@/lib/utils";
+import { useSafetyState } from "@/components/safety/useSafetyState";
 import { Badge } from "@/components/ui/badge";
 import { Button, Arrow } from "@/components/ui/button";
 import { Kicker } from "@/components/ui/kicker";
@@ -55,6 +58,10 @@ export function MembershipCard() {
         : false;
     },
   });
+  // The same cache entry as Settings: an account held as under 18 is told
+  // what the hold says, not that everything carries on (its coach is
+  // stopped, and the portal refuses it, so there is no Renew to press).
+  const { data: safetyState } = useSafetyState();
 
   // Invisible until Stripe is configured server-side: never advertise a
   // door that isn't fitted.
@@ -71,6 +78,16 @@ export function MembershipCard() {
   };
 
   const isMember = ["active", "trialing", "past_due"].includes(status.status);
+  // Cancelled in Stripe's portal but paid up to this date: still a member,
+  // and the card says plainly that it ends and won't renew.
+  const endsAt = membershipEndsAt(status);
+  // Held as under 18, the hold's own words take the place of how to keep it.
+  const held = isMinorHeld(safetyState);
+  const ending = endsAt
+    ? endingLines(formatDate(endsAt), { pastDue: status.status === "past_due" }).map((line) =>
+        held && line === ENDING_KEEP ? ADULTS_ONLY_HELD : line
+      )
+    : [];
 
   const confirmed = ["active", "trialing"].includes(status.status);
 
@@ -114,8 +131,10 @@ export function MembershipCard() {
       )}
       <div className="flex items-center justify-between gap-3">
         <h2 className="f-display text-2xl text-vb-text">Membership</h2>
-        <Badge variant={isMember ? "ink" : "outline"}>
-          {STATUS_LABELS[status.status] ?? status.status}
+        <Badge variant={isMember && !endsAt ? "ink" : "outline"}>
+          {endsAt
+            ? endingBadge(formatDate(endsAt))
+            : (STATUS_LABELS[status.status] ?? status.status)}
         </Badge>
       </div>
 
@@ -130,10 +149,20 @@ export function MembershipCard() {
               </p>
             </div>
           )}
-          {status.period_end && (
-            <p className="f-data text-xs text-vb-text-muted">
-              Current month runs to {formatDate(status.period_end)}
-            </p>
+          {ending.length ? (
+            <div className="space-y-2 border border-vb-border-subtle bg-vb-sunken p-4">
+              {ending.map((line) => (
+                <p key={line} className="text-sm leading-relaxed text-vb-text-dim">
+                  {line}
+                </p>
+              ))}
+            </div>
+          ) : (
+            status.period_end && (
+              <p className="f-data text-xs text-vb-text-muted">
+                Current month runs to {formatDate(status.period_end)}
+              </p>
+            )
           )}
           <Button size="sm" onClick={() => goto(billing.portal)}>
             Manage billing
