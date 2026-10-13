@@ -37,26 +37,29 @@ const STATUS_OPTIONS: { value: Status; label: string; hint: string; icon: typeof
   { value: "dns", label: "DNS", hint: "Didn't start", icon: Ban },
 ];
 
+/* The options are worded so that none of them is a verdict on the rider.
+   "The head said no" is a thing that happens to everyone who races; "gave
+   up" is a label people attach to themselves and then live down to. */
 const DNF_REASONS = [
-  { value: "mechanical", label: "Mechanical" },
+  { value: "mechanical", label: "The bike let me down" },
   { value: "crash", label: "A crash" },
-  { value: "illness", label: "Felt ill on the day" },
+  { value: "illness", label: "Wasn't well on the day" },
   { value: "fuelling", label: "Cramps, fuelling or the stomach" },
   { value: "body", label: "The body said no" },
   { value: "head", label: "The head said no" },
-  { value: "time_cut", label: "Missed a time cut" },
+  { value: "time_cut", label: "The time cut got me" },
   { value: "weather", label: "Weather or the course" },
   { value: "other", label: "Something else" },
 ];
 
 const DNS_REASONS = [
-  { value: "illness", label: "Ill" },
-  { value: "injury", label: "Injured" },
-  { value: "life", label: "Life got in the way" },
-  { value: "motivation", label: "Didn't want to, when it came to it" },
+  { value: "illness", label: "I was ill" },
+  { value: "injury", label: "I was injured" },
+  { value: "life", label: "Life needed me elsewhere" },
+  { value: "motivation", label: "When it came to it, I didn't want to" },
   { value: "logistics", label: "Travel, entry or logistics" },
-  { value: "weather", label: "Weather or the event was cancelled" },
-  { value: "wrong_goal", label: "Decided it wasn't the right goal" },
+  { value: "weather", label: "Weather, or the event was cancelled" },
+  { value: "wrong_goal", label: "I realised it wasn't the right goal" },
   { value: "other", label: "Something else" },
 ];
 
@@ -64,7 +67,7 @@ const DNS_NEXT = [
   { value: "same_event", label: "Same event, next time" },
   { value: "different_goal", label: "A different goal" },
   { value: "let_go", label: "Let this one go" },
-  { value: "unsure", label: "Not sure yet" },
+  { value: "unsure", label: "Not sure yet, and that's fine" },
 ];
 
 const selectClasses =
@@ -180,6 +183,8 @@ export default function AssessPage() {
   const [dnsFeeling, setDnsFeeling] = useState<number>(5);
   const [dnsStory, setDnsStory] = useState("");
   const [dnsPastSelf, setDnsPastSelf] = useState("");
+  // One gentle check-in a few days on, only if the rider wants it.
+  const [checkIn, setCheckIn] = useState(true);
 
   const { data: goal, isLoading } = useQuery({
     queryKey: ["goal", goalId],
@@ -243,6 +248,7 @@ export default function AssessPage() {
       if (dnfWhere.trim()) assessmentData.dnf_where = dnfWhere.trim();
       assessmentData.dnf_right_call = dnfRightCall;
       assessmentData.legs_rating = legsRating;
+      assessmentData.check_in = checkIn;
       if (dnfStory.trim()) assessmentData.went_well = dnfStory.trim();
       if (toImprove.trim()) assessmentData.to_improve = toImprove.trim();
       submitMutation.mutate({
@@ -263,6 +269,7 @@ export default function AssessPage() {
     // DNS: no ride, no effort, no file.
     assessmentData.dns_reason = dnsReason;
     assessmentData.dns_next = dnsNext;
+    assessmentData.check_in = checkIn;
     if (dnsStory.trim()) assessmentData.dns_story = dnsStory.trim();
     if (dnsPastSelf.trim()) assessmentData.to_improve = dnsPastSelf.trim();
     submitMutation.mutate({
@@ -300,24 +307,28 @@ export default function AssessPage() {
         sub: "Pick your next target and the season rebuilds around it, or start a fresh block and keep the fitness you just banked.",
       },
       dnf: {
-        kicker: "Logged, and that took something",
-        body: `Stopping is a decision, and most riders never make it well. I've got what happened at ${goal.event_name} on the record. When you're ready, let's work out what it was actually telling us.`,
-        cta: "Talk it through",
-        heading: "The fitness didn't go anywhere",
-        sub: "A DNF costs you the day, not the block. Pick the next target, or keep building while it decides.",
+        kicker: "Logged, and thank you for logging it",
+        body: `Stopping mid-ride is a decision made under pressure, and you made it. That's a skill, not a failing. ${goal.event_name} is on the record as a start, because it was one. There's nothing to do today. When you feel like it, I'd like to hear how it went up to that point.`,
+        cta: "When you're ready",
+        heading: "Nothing to prove this week",
+        sub: "The block you built is still in your legs. The best next step after a DNF is small: one easy ride, no numbers, just to remind yourself you like it.",
       },
       dns: {
-        kicker: "Logged. No ride, no judgement.",
+        kicker: "Logged. No judgement here.",
         body:
           dnsNext === "let_go"
-            ? `${goal.event_name} is off the list, and the training you did for it is still in your legs. When you're ready, tell me what you'd rather aim at.`
-            : `Thanks for telling me straight. The work you put in for ${goal.event_name} is still yours, and the next start line is the one that counts. When you're ready, let's choose it.`,
-        cta: "Talk it through",
-        heading: dnsNext === "same_event" ? "Same event, next time" : "The fitness is still yours",
+            ? `Letting a goal go is a decision too, and often the right one. ${goal.event_name} is off the list. The riding you did for it isn't wasted: it's fitness you carry into whatever comes next, whenever that is.`
+            : dnsReason === "illness" || dnsReason === "injury"
+              ? `You didn't start because your body needed you not to, and listening to that is exactly what I'd have asked of you. ${goal.event_name} is logged as a start you chose not to make. First things first: how are you now?`
+              : `Most riders who miss a start never tell anyone. You just did, and that's the thing that gets people back on the bike. ${goal.event_name} is logged, and the training you did for it is still yours.`,
+        cta: "When you're ready",
+        heading: dnsNext === "let_go" ? "No next target needed yet" : "One easy ride, when you feel like it",
         sub:
-          dnsNext === "same_event"
-            ? "Put the next edition in as the goal and the season builds backwards from it, with what we've learned."
-            : "Nothing you trained for has been lost. Name the next target when you're ready, or keep the block ticking over.",
+          dnsNext === "let_go"
+            ? "There's no rush to replace it. If you ride this week, make it one you'd choose for its own sake."
+            : dnsNext === "same_event"
+              ? "The next edition can go in as the goal whenever you like. Before that, one easy ride with no numbers is the only thing worth planning."
+              : "No new goal today. The thing that brings riders back after a missed start is one easy ride in the next few days, not a new plan.",
       },
     }[status];
 
@@ -345,32 +356,54 @@ export default function AssessPage() {
           <h2 className="f-display text-xl text-vb-text">{filed.heading}</h2>
           <p className="mt-1 text-xs text-vb-text-dim">{filed.sub}</p>
           <div className="f-stagger mt-4 grid gap-2 sm:grid-cols-2">
-            <Link
-              href="/dashboard/goals?new=1"
-              className="f-lift flex items-center gap-3 border border-vb-border-subtle bg-vb-surface p-3"
-            >
-              <Target className="h-5 w-5 shrink-0 text-vb-red" />
-              <div>
-                <p className="text-sm font-medium text-vb-text">
-                  {status === "dns" && dnsNext === "same_event" ? "Enter the next edition" : "Name the next race"}
-                </p>
-                <p className="text-[11px] text-vb-text-muted">
-                  The season builds backwards from it
-                </p>
-              </div>
-            </Link>
-            <Link
-              href="/dashboard/training"
-              className="f-lift flex items-center gap-3 border border-vb-border-subtle bg-vb-surface p-3"
-            >
-              <Calendar className="h-5 w-5 shrink-0 text-vb-text" />
-              <div>
-                <p className="text-sm font-medium text-vb-text">New training block</p>
-                <p className="text-[11px] text-vb-text-muted">
-                  Keep building while it decides
-                </p>
-              </div>
-            </Link>
+            {status === "completed" ? (
+              <Link
+                href="/dashboard/goals?new=1"
+                className="f-lift flex items-center gap-3 border border-vb-border-subtle bg-vb-surface p-3"
+              >
+                <Target className="h-5 w-5 shrink-0 text-vb-red" />
+                <div>
+                  <p className="text-sm font-medium text-vb-text">Name the next race</p>
+                  <p className="text-[11px] text-vb-text-muted">The season builds backwards from it</p>
+                </div>
+              </Link>
+            ) : (
+              <Link
+                href={`/dashboard/coach?ask=${encodeURIComponent("Put one easy ride in my week, no numbers, no targets. Just a ride I'd enjoy.")}`}
+                className="f-lift flex items-center gap-3 border border-vb-border-subtle bg-vb-surface p-3"
+              >
+                <Calendar className="h-5 w-5 shrink-0 text-vb-red" />
+                <div>
+                  <p className="text-sm font-medium text-vb-text">One easy ride this week</p>
+                  <p className="text-[11px] text-vb-text-muted">No numbers. The coach puts it in the diary.</p>
+                </div>
+              </Link>
+            )}
+            {status === "completed" ? (
+              <Link
+                href="/dashboard/training"
+                className="f-lift flex items-center gap-3 border border-vb-border-subtle bg-vb-surface p-3"
+              >
+                <Calendar className="h-5 w-5 shrink-0 text-vb-text" />
+                <div>
+                  <p className="text-sm font-medium text-vb-text">New training block</p>
+                  <p className="text-[11px] text-vb-text-muted">Keep building while it decides</p>
+                </div>
+              </Link>
+            ) : (
+              <Link
+                href="/dashboard/goals?new=1"
+                className="f-lift flex items-center gap-3 border border-vb-border-subtle bg-vb-surface p-3"
+              >
+                <Target className="h-5 w-5 shrink-0 text-vb-text" />
+                <div>
+                  <p className="text-sm font-medium text-vb-text">
+                    {status === "dns" && dnsNext === "same_event" ? "Enter the next edition" : "A next goal, when you're ready"}
+                  </p>
+                  <p className="text-[11px] text-vb-text-muted">No hurry. It'll keep.</p>
+                </div>
+              </Link>
+            )}
           </div>
           <Link
             href={`/dashboard/goals/${goalId}`}
@@ -385,8 +418,17 @@ export default function AssessPage() {
 
   const heading = {
     completed: `How did ${goal.event_name} go?`,
-    dnf: `What happened at ${goal.event_name}?`,
-    dns: `${goal.event_name} didn't happen. What got in the way?`,
+    dnf: `${goal.event_name}: the day that stopped early`,
+    dns: `${goal.event_name}: the start you didn't make`,
+  }[status];
+
+  // Acknowledge first, ask second. A rider who has just said "I didn't
+  // start" is braced for a verdict; the note takes the verdict off the
+  // table before a single question is asked (Compassionate Curiosity).
+  const note = {
+    completed: null,
+    dnf: `A DNF means you started. Most riders stop for a reason that was right at the time, and it only looks like a failure from the sofa. I'm not here to grade it. I'd like to understand what happened, because that's the useful bit.`,
+    dns: `Most riders who miss a start quietly delete the goal and never mention it. You're here, which already puts you ahead of them. Nothing on this page is a judgement. I want to know what got in the way so the next plan fits your actual life, not the one we hoped for.`,
   }[status];
 
   const hasRides = !!candidateRidesData && candidateRidesData.rides.length > 0;
@@ -407,6 +449,12 @@ export default function AssessPage() {
           {formatDate(goal.event_date)} · {goal.event_type.replace(/_/g, " ")}
         </p>
       </div>
+
+      {note && (
+        <CoachNote kicker="Before anything else" coachName={coachName} className="f-rise">
+          {note}
+        </CoachNote>
+      )}
 
       {/* Section 1: Result */}
       <div className="border border-vb-border-subtle bg-vb-surface p-5">
@@ -503,6 +551,9 @@ export default function AssessPage() {
                 rows={2}
                 className={textareaClasses}
               />
+              <p className="mt-2 text-xs text-vb-text-muted">
+                The reason is for the plan, not for me to weigh. Riders are harder on themselves than any coach would be.
+              </p>
             </div>
           </div>
         )}
@@ -570,14 +621,15 @@ export default function AssessPage() {
           )}
           {status === "dnf" && (
             <>
-              <Slider label="How do you feel about stopping?" value={satisfaction} onChange={setSatisfaction} low="Gutted" high="At peace with it" />
+              <Slider label="How do you feel about stopping, right now?" value={satisfaction} onChange={setSatisfaction} low="Gutted" high="At peace with it" />
               <Slider label="How hard was it up to that point?" value={exertion} onChange={setExertion} low="Very easy" high="Maximal" />
               <Slider label="How were the legs before it went wrong?" value={legsRating} onChange={setLegsRating} low="Heavy" high="Flying" />
             </>
           )}
           {status === "dns" && (
             <>
-              <Slider label="How do you feel about missing it?" value={dnsFeeling} onChange={setDnsFeeling} low="Gutted" high="Relieved" />
+              <Slider label="How do you feel about it, right now?" value={dnsFeeling} onChange={setDnsFeeling} low="Gutted" high="Relieved" />
+              <p className="-mt-2 text-xs text-vb-text-muted">Any answer is allowed. Relieved is a common one, and it's information, not a confession.</p>
               <div>
                 <Kicker className="mb-2">Does the goal still stand?</Kicker>
                 <ChoiceGrid options={DNS_NEXT} value={dnsNext} onChange={setDnsNext} />
@@ -676,12 +728,27 @@ export default function AssessPage() {
           )}
           {status === "dns" && (
             <div>
-              <Kicker className="mb-2">What would you tell yourself three weeks ago?</Kicker>
-              <textarea value={dnsPastSelf} onChange={(e) => setDnsPastSelf(e.target.value)} placeholder="e.g. Rest the week you got the cold instead of training through it, or don't put a race the weekend after a work trip…" rows={2} className={textareaClasses} />
+              <Kicker className="mb-2">If a riding mate had the exact same few weeks, what would you say to them?</Kicker>
+              <textarea value={dnsPastSelf} onChange={(e) => setDnsPastSelf(e.target.value)} placeholder="e.g. You were ill, mate. Rest the week you got the cold next time, and don't put a race the weekend after a work trip…" rows={2} className={textareaClasses} />
+              <p className="mt-2 text-xs text-vb-text-muted">Whatever you'd say to them is true for you too.</p>
             </div>
           )}
         </div>
       </div>
+
+      {status !== "completed" && (
+        <label className="flex items-start gap-3 text-sm leading-relaxed text-vb-text-dim">
+          <input
+            type="checkbox"
+            checked={checkIn}
+            onChange={(e) => setCheckIn(e.target.checked)}
+            className="mt-1 h-4 w-4 flex-none accent-[var(--color-vb-red)]"
+          />
+          <span>
+            Check in on me in a few days. One short message from {coachName}, no plan attached, and only if I haven't ridden.
+          </span>
+        </label>
+      )}
 
       {/* Submit */}
       <div className="flex gap-3">

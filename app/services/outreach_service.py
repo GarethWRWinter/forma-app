@@ -14,7 +14,7 @@ said "next time we talk", and nothing in the product ever spoke first again.
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -142,6 +142,115 @@ def _already_sent(db: Session, user_id: str, stage: str, threshold: int) -> bool
     )
 
 
+SETBACK_STAGE = "setback"          # OutreachLog.stage for a post-DNF/DNS check-in
+SETBACK_AFTER_DAYS = 3             # days without a ride after logging it
+SETBACK_WINDOW_DAYS = 14           # after this, the moment has passed
+
+SETBACK_BRIEF = """You are {coach}, a cycling coach writing one short email to a rider who
+logged a DNF or a DNS a few days ago and asked you to check in. You are their
+coach, writing in the first person. Never sign as Gareth, the founder. If it
+comes up, say plainly that you are Forma's AI coach.
+
+This is not a nudge towards training and it is not marketing. It is a
+check-in from someone who noticed. Compassionate Curiosity, in this order:
+1. Acknowledge and validate first, with something specific from their own
+   words in the context. Stopping under pressure is a decision and a skill;
+   missing a start for illness, injury or life is listening to their life.
+   Never use "gave up", "quit", "failed", "excuse" or "should have".
+2. One gentle question they can answer in a line. If they were ill or
+   injured, the question is how they are now. Otherwise, how they feel about
+   it today, or what they would say to a riding mate who had the same weeks.
+3. No plan, no targets, no next goal, no numbers. At most, one line saying
+   that if they feel like a ride this week, an easy one they would choose for
+   its own sake is the only thing worth doing, and that nothing is lost if
+   they don't.
+
+Plain British English. Contractions are normal. No em dashes, no en dashes.
+No exclamation marks. No metaphors. Under 120 words. Read `safety` first:
+if allowed_intensity is anything other than "all", mention no riding at all.
+
+Reply as:
+Subject: <a short subject in their own terms, never "checking in">
+<the email>"""
+
+
+def _setback_due(db: Session, user: User, now: datetime):
+    """The goal a rider logged as a DNF or DNS, SETBACK_AFTER_DAYS or more ago
+    and inside the window, where they asked for a check-in and have not
+    ridden since. None when there is nothing to say."""
+    from app.models.onboarding import GoalEvent
+    from app.models.ride import Ride
+
+    since = now - timedelta(days=SETBACK_WINDOW_DAYS)
+    goals = (
+        db.query(GoalEvent)
+        .filter(
+            GoalEvent.user_id == user.id,
+            GoalEvent.status.in_(["dnf", "dns"]),
+            GoalEvent.assessment_completed_at.isnot(None),
+            GoalEvent.assessment_completed_at >= since,
+        )
+        .order_by(GoalEvent.assessment_completed_at.desc())
+        .all()
+    )
+    for goal in goals:
+        ad = goal.assessment_data if isinstance(goal.assessment_data, dict) else {}
+        if not ad.get("check_in"):
+            continue
+        logged = goal.assessment_completed_at
+        if (now - logged).days < SETBACK_AFTER_DAYS:
+            continue
+        ridden = (
+            db.query(Ride.id)
+            .filter(Ride.user_id == user.id, Ride.created_at > logged)
+            .first()
+        )
+        if ridden is not None:
+            continue
+        return goal
+    return None
+
+
+def _setback_brief(db: Session, user: User, goal) -> dict:
+    ad = goal.assessment_data if isinstance(goal.assessment_data, dict) else {}
+    brief = {
+        "rider_first_name": (user.full_name or user.email.split("@")[0]).split()[0],
+        "result": goal.status,
+        "event": goal.event_name,
+        "event_date": goal.event_date.isoformat() if goal.event_date else None,
+        "logged_days_ago": (datetime.utcnow() - goal.assessment_completed_at).days,
+        "their_reason": ad.get("dns_reason") or ad.get("dnf_reason"),
+        "their_words": ad.get("dns_story") or ad.get("went_well"),
+        "what_they_would_tell_a_mate": ad.get("to_improve"),
+        "does_the_goal_still_stand": ad.get("dns_next"),
+        "feeling_1_to_10": goal.overall_satisfaction,
+        "their_why_for_the_goal": goal.why,
+    }
+    try:
+        from app.services.safety_screen import coach_safety_context
+
+        safety = coach_safety_context(db, user)
+        for key in ("numbers", "triage_region", "country"):
+            safety.pop(key, None)
+        brief["safety"] = safety
+    except Exception:
+        brief["safety"] = {"allowed_intensity": "unknown"}
+    return brief
+
+
+def compose_setback(db: Session, user: User, goal) -> tuple[str, str]:
+    coach = getattr(user, "coach_name", None) or "Forma"
+    resp = forma_core.call(
+        user_id=user.id,
+        task="outreach_email",
+        surface="outreach",
+        system=SETBACK_BRIEF.format(coach=coach),
+        messages=[{"role": "user", "content": json.dumps(_setback_brief(db, user, goal), indent=2, default=str)}],
+    )
+    subject, body = _split(response_text(resp).strip(), fallback_subject=f"About {goal.event_name}")
+    return subject, body.rstrip() + "\n\n" + email_footer(coach)
+
+
 def due_riders(db: Session, now: datetime | None = None) -> list[tuple[User, dict, int]]:
     """Every active, verified rider who is stuck at a stage and has passed a
     threshold the coach has not yet written to them about."""
@@ -163,6 +272,22 @@ def due_riders(db: Session, now: datetime | None = None) -> list[tuple[User, dic
         # The coach writes to members. A rider who hasn't joined, or whose
         # membership has ended, would be urged towards sessions they can't open.
         if not has_access(user):
+            continue
+        # A rider who just logged a DNF or DNS and asked to be checked on
+        # gets that one message, and nothing about setup for the fortnight.
+        goal = _setback_due(db, user, now)
+        if goal is not None:
+            if not _already_sent(db, user.id, SETBACK_STAGE, SETBACK_AFTER_DAYS):
+                block = speak_first_block(db, user, training=False)
+                if block:
+                    logger.debug("Setback check-in held back for %s: %s", user.id, block)
+                    continue
+                state = {
+                    "stage": SETBACK_STAGE, "quiet_days": (now - goal.assessment_completed_at).days,
+                    "next_action": {"title": f"About {goal.event_name}", "instruction": "", "link": ""},
+                    "setback_goal": goal,
+                }
+                out.append((user, state, SETBACK_AFTER_DAYS))
             continue
         state = activation_state(db, user, now)
         if state["stage"] == "established" or not state["next_action"]:
@@ -276,7 +401,10 @@ async def send_due(db: Session, now: datetime | None = None, dry_run: bool = Fal
     report = []
     for user, state, threshold in due_riders(db, now):
         try:
-            subject, body = compose(db, user, state)
+            if state["stage"] == SETBACK_STAGE:
+                subject, body = compose_setback(db, user, state["setback_goal"])
+            else:
+                subject, body = compose(db, user, state)
         except forma_core.BudgetExceededError:
             logger.info("Outreach skipped for %s: over monthly Forma budget", user.id)
             continue
