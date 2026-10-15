@@ -3,10 +3,10 @@
  *
  * Same deterministic day-hash idea as the daily quote: every rider wakes to
  * the same road, and tomorrow brings another. Shot by Gareth Winter on his
- * Fujifilm in Mallorca's Serra de Tramuntana, all in one monochrome grade
- * (scripts/brand/build_passes.py), so the flamme accent stays the only
- * colour. No people on the road: the rider puts themselves there. Replaced
- * the ink road art on 13 Oct 2026.
+ * Fujifilm in Mallorca's Serra de Tramuntana, in his own colour grade
+ * (scripts/brand/build_passes.py). No people on the road: the rider puts
+ * themselves there. Replaced the ink road art on 13 Oct 2026; colour from
+ * 15 Oct 2026.
  */
 
 export interface Pass {

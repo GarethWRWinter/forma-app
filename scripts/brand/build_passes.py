@@ -4,13 +4,15 @@ Every photograph here was taken by Gareth Winter on his Fujifilm, so Forma
 owns them outright (the Adobe Stock set tried first on 13 Oct 2026 was
 licensed to Mindvalley and was never published).
 
-One grade for every photograph: monochrome, levels set per image, a gentle
-S curve and a hint of warmth in the whites, so the flamme accent stays the
-only colour on the page.
+They are published in Gareth's own colour grade, as shot: one camera and one
+eye already make them a consistent set, and the colour carries the light and
+warmth that make a rider want to be on that road (decided 15 Oct 2026, after
+a week in monochrome).
 
-    .venv/bin/python scripts/brand/build_passes.py [--as-shot]
+    .venv/bin/python scripts/brand/build_passes.py [--mono]
 
---as-shot keeps Gareth's own colour grade instead of the monochrome. Writes
+--mono builds the monochrome grade instead (levels set per image, a gentle S
+curve, a hint of warmth in the whites). Writes
 WebP at 1280 and 2000 px wide into the app (frontend/public/passes) and the
 landing site (~/forma-landing/img/passes), with metadata stripped.
 """
@@ -56,8 +58,8 @@ def grade_mono(rgb: np.ndarray) -> np.ndarray:
 
 
 def main() -> None:
-    as_shot = "--as-shot" in sys.argv
-    grade = (lambda a: a) if as_shot else grade_mono
+    mono = "--mono" in sys.argv
+    grade = grade_mono if mono else (lambda a: a)
     APP.mkdir(parents=True, exist_ok=True)
     LANDING.mkdir(parents=True, exist_ok=True)
     for name, slug in SOURCES.items():
