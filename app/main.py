@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.config import settings
+from app.core.log_hygiene import configure_log_hygiene
 
 # Error reporting, on only when a DSN is configured. Until today the first
 # report of any production failure came from a human: a dead Wahoo token sat
@@ -37,6 +38,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
+# After basicConfig, so the root handler it creates gets the redaction filter.
+configure_log_hygiene()
 
 
 @asynccontextmanager
