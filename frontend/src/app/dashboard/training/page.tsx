@@ -1043,7 +1043,7 @@ export default function TrainingPage() {
                         >
                           {z!.label}
                         </p>
-                        <p className="f-display mt-0.5 text-[15px] leading-[1.12]">
+                        <p className="f-display mt-0.5 line-clamp-4 text-[12px] leading-[1.12] hyphens-auto [overflow-wrap:break-word] lg:text-[13px] xl:text-[15px]">
                           {primary.title}
                         </p>
                       </div>

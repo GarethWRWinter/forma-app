@@ -106,7 +106,12 @@ export function useCoachStarters(recentText = ""): Starter[] {
     const text = recentText.toLowerCase();
     const starters: Starter[] = [];
     const list = data?.goals ?? [];
-    const upcoming = list.filter((g) => g.status === "upcoming");
+    // A race keeps "upcoming" until its report is filed, so the date decides:
+    // a goal that has passed (days_until is null) gets the debrief, never
+    // "its why" or a challenge.
+    const upcoming = list.filter(
+      (g) => g.status === "upcoming" && g.days_until != null
+    );
 
     const pending = list.find((g) => g.needs_assessment);
     if (pending) {

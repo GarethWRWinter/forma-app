@@ -50,7 +50,7 @@ export default function RootLayout({
 }) {
   return (
     <html
-      lang="en"
+      lang="en-GB"
       className={`${archivo.variable} ${interTight.variable} ${plexMono.variable} ${caveat.variable}`}
     >
       <body className="min-h-screen bg-vb-bg font-sans text-vb-text antialiased">
