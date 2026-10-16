@@ -32,12 +32,15 @@ class ChatAttachment(TimestampMixin, Base):
     # rider drags a file onto a blank chat, and the session is created with
     # the first message. attachment_service.bind_to_session fills it in when
     # the message carrying the file is sent; deleting that chat deletes it.
+    # An upload inside a chat that already exists names that chat at once.
     session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
 
-    # The compact ride summary the coach is handed in context.
+    # The compact ride summary the coach is handed in context. It also
+    # holds whose ride it is (owner) and, while the file is tied to the chat
+    # it was attached in but not yet sent, unsent (see attachment_service).
     summary: Mapped[dict] = mapped_column(SA_JSON, nullable=False)
     # Deep read of the file: power curve, climbs, fade, time in zone. Same
     # shape ride_analysis_service writes, so the coach's language about an

@@ -302,7 +302,15 @@ _FILES_NOTE = (
     "and find_ride and analyse_ride cannot open them. Never borrow numbers "
     "from a different ride to fill a gap in a file. Save a file into the "
     "rider's history only when they have explicitly asked for that, by "
-    "calling save_attachment_as_ride with its attachment_id."
+    "calling save_attachment_as_ride with its attachment_id.\n"
+    "owner says whose ride a file is: self (the rider rode it), someone_else "
+    "(another person rode it) or unknown (not said yet, or a route rather "
+    "than a ride). When the rider says whose a file is, or already has, for "
+    "example by calling it their PB, record it with set_attachment_owner and "
+    "do not ask again. Never record a guess from the file itself. A "
+    "someone_else file's numbers belong to whoever rode it: never describe "
+    "them as the rider's own, and never save that file into the rider's "
+    "history."
 )
 _OLDER_FILES_NOTE = (
     "older_files_named_only lists files shared earlier in this chat whose "
@@ -319,9 +327,10 @@ _FILES_FAILED_NOTE = (
 )
 
 # Left out of a file's summary: the raw filename (unbounded rider text, shown
-# cleaned instead), the kind (shown once) and the summary's cadence average,
-# which counts zeros and so disagrees with the analysis's.
-_SUMMARY_LEFT_OUT = ("name", "kind", "avg_cadence")
+# cleaned instead), the kind and the owner (each shown once), the summary's
+# cadence average, which counts zeros and so disagrees with the analysis's,
+# and the attached-but-unsent mark, which is bookkeeping.
+_SUMMARY_LEFT_OUT = ("name", "kind", "owner", "avg_cadence", "unsent")
 
 _FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9 ._()+'-]+")
 
@@ -399,10 +408,13 @@ def _file_entry(a, shared_at: dict) -> dict:
     else:
         shared = "earlier in this chat"
 
+    from app.services.attachment_service import file_owner
+
     entry = {
         "attachment_id": a.id,
         "file": _safe_filename(a.filename),
         "kind": a.kind,
+        "owner": file_owner(a),
         "shared": shared,
         "saved_as_ride": bool(a.imported_ride_id),
         "summary": summary,
@@ -453,6 +465,58 @@ def _files_block(
     # turn, so the block stays cached until a file is added.
     body = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return f"## Files shared in this chat\n{note}\n```json\n{body}\n```", names, held
+
+
+# Handed to the memory pass after a turn in a chat that holds a file not
+# known to be the rider's own. Files now stay for the whole chat, so many more
+# turns talk about them, and each is a chance to file a mate's numbers as the
+# rider's.
+_NOT_OWN_FILES_CAUTION = (
+    "This chat holds ride files that are not known to be the rider's own. "
+    "{listed}. Numbers from someone else's file describe that person's ride: "
+    "never record them as the rider's figures, efforts, personal bests or "
+    "fitness. Numbers from a file whose owner is not known count as the "
+    "rider's only where the rider's own words in the text claim them."
+)
+_FILES_UNCHECKED_CAUTION = (
+    "This chat holds ride files, and whose they are could not be checked. "
+    "Record a number from a ride file as the rider's own only where the "
+    "rider's own words in the text claim it."
+)
+
+
+def _memory_caution(
+    db: Session, user: User, session: ChatSession, held: int | None
+) -> str | None:
+    """The caution for the memory pass after a turn, or None when the chat
+    holds no files or only the rider's own. held is the count _files_block
+    gave (None when it could not read them). Read after the turn, so an owner
+    recorded during it counts."""
+    if held == 0:
+        return None
+    try:
+        from app.services.attachment_service import chat_files, file_owner
+
+        files = chat_files(db, user.id, session.id)
+    except Exception:
+        logger.exception("Chat files for the memory caution failed for user %s", user.id)
+        db.rollback()
+        return _FILES_UNCHECKED_CAUTION
+
+    not_own: dict[str, list[str]] = {"someone_else": [], "unknown": []}
+    for a in files.named_only + files.in_full:
+        owner = file_owner(a)
+        if owner != "self":
+            not_own[owner].append(_safe_filename(a.filename))
+    listed = [
+        f"{label}: {', '.join(names)}"
+        for label, names in (
+            ("Someone else's", not_own["someone_else"]),
+            ("Not known whose", not_own["unknown"]),
+        )
+        if names
+    ]
+    return _NOT_OWN_FILES_CAUTION.format(listed=". ".join(listed)) if listed else None
 
 
 def _build_rider_context(db: Session, user: User) -> str:
@@ -1101,7 +1165,7 @@ COACH_TOOLS = [
     },
     {
         "name": "save_attachment_as_ride",
-        "description": "Save a ride file the rider attached to this conversation into their permanent ride history. This changes their data: the ride joins their history, it counts towards their training load, and their fitness numbers are recalculated around it. Undoing it is a manual job, so treat it as close to irreversible. Only call this after the rider has explicitly said yes to saving this specific file. Never call it speculatively, never because it seems helpful, never bundled into answering something else. You can read, analyse and discuss any attachment without saving it, so when in doubt, discuss and ask.",
+        "description": "Save a ride file the rider attached to this conversation into their permanent ride history. This changes their data: the ride joins their history, it counts towards their training load, and their fitness numbers are recalculated around it. Undoing it is a manual job, so treat it as close to irreversible. Only call this after the rider has explicitly said yes to saving this specific file. Never call it speculatively, never because it seems helpful, never bundled into answering something else. You can read, analyse and discuss any attachment without saving it, so when in doubt, discuss and ask. A file recorded as someone else's ride cannot be saved.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1115,6 +1179,33 @@ COACH_TOOLS = [
                 },
             },
             "required": ["attachment_id", "confirmed"],
+        },
+    },
+    {
+        "name": "set_attachment_owner",
+        "description": (
+            "Record whose ride a file shared in this chat is, as soon as the rider has said: "
+            "self when they rode it themselves, someone_else when another person did (a mate, "
+            "a pro), unknown when it is not clear or the file is a route rather than a ride. "
+            "Record only what the rider has said, never a guess from the file. It changes "
+            "nothing in their history, plan or training load. The answer stays with the file, "
+            "so record it once and do not ask again. A file recorded as someone_else cannot be "
+            "saved into the rider's history, and its numbers are never the rider's own."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "attachment_id": {
+                    "type": "string",
+                    "description": "The attachment_id from the files shared in this chat",
+                },
+                "owner": {
+                    "type": "string",
+                    "enum": ["self", "someone_else", "unknown"],
+                    "description": "Whose ride the rider says it is.",
+                },
+            },
+            "required": ["attachment_id", "owner"],
         },
     },
     {
@@ -1199,6 +1290,7 @@ _TOOL_STATUS = {
     "skip_workout": "Marking it skipped",
     "find_ride": "Searching your rides",
     "save_attachment_as_ride": "Saving it to your rides",
+    "set_attachment_owner": "Noting whose ride it is",
     "propose_plan_change": "Rethinking your plan",
 }
 
@@ -1209,7 +1301,8 @@ _READ_ONLY_TOOLS = {"analyse_ride", "find_ride"}
 # Tools that leave the plan itself untouched. Proposing a change is a question
 # put to the rider, not an edit: the plan does not move until they approve, so
 # telling the app the plan changed here would be a lie the calendar exposes.
-_NO_PLAN_CHANGE_TOOLS = _READ_ONLY_TOOLS | {"propose_plan_change"}
+# Recording whose ride a file is writes only to the file.
+_NO_PLAN_CHANGE_TOOLS = _READ_ONLY_TOOLS | {"propose_plan_change", "set_attachment_owner"}
 
 # Ride lookups run at most twice per rider message, parallel calls counted,
 # and the code holds the line: a rule in a description alone did not. On 16
@@ -1983,6 +2076,15 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
                 "save it again."
             )
 
+        if attachment_service.file_owner(attachment) == "someone_else":
+            return (
+                "Error: nothing was saved. This file is recorded as someone "
+                "else's ride, and another person's ride never goes into this "
+                "rider's history or training load. Tell the rider that plainly. "
+                "If they say it is their own after all, record that with "
+                "set_attachment_owner first, then save it."
+            )
+
         try:
             ride = attachment_service.save_as_ride(db, user, attachment)
         except attachment_service.AttachmentError as e:
@@ -2005,6 +2107,44 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
             f"(ride_id: {ride.id}). Tell them it is in, and that their training "
             f"load now counts it. Call analyse_ride on this ride_id before "
             f"quoting anything from inside it."
+        )
+
+    elif tool_name == "set_attachment_owner":
+        from app.services import attachment_service
+
+        owner = tool_input.get("owner")
+        if owner not in attachment_service.OWNERS:
+            return (
+                "Error: nothing was recorded. owner must be self, someone_else "
+                "or unknown."
+            )
+        found = attachment_service.get_attachments(
+            db, user.id, [tool_input.get("attachment_id")]
+        )
+        if not found:
+            return "Error: Attachment not found."
+        attachment = found[0]
+        attachment_service.set_owner(db, attachment, owner)
+
+        name = _safe_filename(attachment.filename)
+        said = {
+            "self": f"{name} is the rider's own ride.",
+            "someone_else": (
+                f"{name} is someone else's ride. Never describe its numbers as "
+                f"the rider's own."
+            ),
+            "unknown": f"It is not known whose ride {name} is.",
+        }[owner]
+        if owner == "someone_else":
+            said += (
+                " It was saved into the rider's history before this, and "
+                "recording it does not take that ride out: tell the rider so."
+                if attachment.imported_ride_id
+                else " It cannot be saved into their history."
+            )
+        return (
+            f"Recorded. {said} Nothing in the rider's history, plan or "
+            f"training load changed."
         )
 
     elif tool_name == "propose_plan_change":
@@ -2607,6 +2747,7 @@ async def stream_response(
             f"Rider: {user_message}\n\nForma: {full_response}",
             source="chat",
             source_ref=session.id,
+            caution=_memory_caution(db, user, session, turn.files),
         )
     except Exception:
         import logging
@@ -2950,6 +3091,7 @@ async def stream_voice_response(
             db, user,
             f"Rider: {user_message}\n\nForma: {full_response}",
             source="chat", source_ref=session.id,
+            caution=_memory_caution(db, user, session, turn.files),
         )
     except Exception:
         import logging
@@ -2971,7 +3113,7 @@ def get_non_streaming_response(
     """
     add_user_message(db, session, user_message)
 
-    files_block, shared_names, _ = _files_block(db, user, session)
+    files_block, shared_names, held = _files_block(db, user, session)
     rider_context = _build_rider_context(db, user)
 
     system = _system_blocks(
@@ -3012,6 +3154,7 @@ def get_non_streaming_response(
             db, user,
             f"Rider: {user_message}\n\nForma: {content}",
             source="chat", source_ref=session.id,
+            caution=_memory_caution(db, user, session, held),
         )
     except Exception:
         import logging

@@ -63,8 +63,13 @@ def extract_memories(
     source: str,
     source_ref: str | None = None,
     observed_at: datetime | None = None,
+    caution: str | None = None,
 ) -> dict:
     """Extract entities + edges from text and upsert into the graph.
+
+    caution is a plain warning for the extractor, kept apart from the text:
+    for example, that the chat holds a ride file that may be someone else's.
+    Without one the extractor sees exactly what it always has.
 
     Returns {"created": int, "linked": int} for logging/telemetry.
     """
@@ -99,7 +104,9 @@ def extract_memories(
                     "content": (
                         f"KNOWN ENTITIES (dedup against these; you may create edges to them):\n"
                         f"{known_block}\n\n"
-                        f"SOURCE: {source}\n\nTEXT:\n{text[:6000]}"
+                        f"SOURCE: {source}\n\n"
+                        + (f"CAUTION: {caution}\n\n" if caution else "")
+                        + f"TEXT:\n{text[:6000]}"
                     ),
                 }
             ],

@@ -45,6 +45,15 @@ MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
 SUPPORTED_KINDS = ("fit", "gpx", "tcx")
 
+# In a file's summary while it is tied to the chat it was attached in but no
+# message has carried it yet (see ingest). Gone once it is sent.
+UNSENT = "unsent"
+
+# Whose ride a file is, in its summary as "owner": the rider's own, another
+# person's, or not yet said. A file read before owners were kept has none
+# and counts as unknown.
+OWNERS = ("self", "someone_else", "unknown")
+
 
 class AttachmentError(ValueError):
     """Something the rider can act on: wrong file, too big, unreadable."""
@@ -259,6 +268,12 @@ def ingest(
         filename, kind, records, session_summary, parsed.get("start_time")
     )
     analysis = _build_analysis(records, session_summary, user)
+    if session_id:
+        # Tied to the chat it was attached in from the start, so deleting
+        # that chat deletes it even if it is never sent. Until a message
+        # carries it the coach does not see it, and a send into another chat
+        # moves it there (bind_to_session).
+        summary[UNSENT] = True
 
     attachment = ChatAttachment(
         user_id=user.id,
@@ -298,6 +313,27 @@ def get_attachments(
 CHAT_FILES_IN_FULL = 6
 
 
+def file_owner(attachment: ChatAttachment) -> str:
+    """self, someone_else or unknown."""
+    owner = (attachment.summary or {}).get("owner")
+    return owner if owner in OWNERS else "unknown"
+
+
+def _with_summary(attachment: ChatAttachment, **changes) -> None:
+    """Change summary keys (None removes one). A new dict each time, because
+    the JSON column does not notice a dict changed in place."""
+    summary = {**(attachment.summary or {}), **changes}
+    attachment.summary = {k: v for k, v in summary.items() if v is not None}
+
+
+def set_owner(db: Session, attachment: ChatAttachment, owner: str) -> None:
+    """Record whose ride a file is. Touches nothing else."""
+    if owner not in OWNERS:
+        raise ValueError(f"owner must be one of {OWNERS}")
+    _with_summary(attachment, owner=owner)
+    db.commit()
+
+
 def bind_to_session(
     db: Session, user_id: str, session_id: str, attachment_ids: list[str] | None
 ) -> int:
@@ -306,8 +342,10 @@ def bind_to_session(
     Runs when the message carrying them is sent, because the client uploads
     before a new chat exists. The first chat a file is sent in keeps it. A
     later send of the same file into another chat still reaches the coach
-    there, through that message's record of what it carried. Only the
-    rider's own files, and only into the rider's own chat.
+    there, through that message's record of what it carried. A file tied by
+    its upload to a chat it was never sent in goes with its first send, so a
+    rider who attaches in one chat and sends in another has it where they
+    sent it. Only the rider's own files, and only into the rider's own chat.
     """
     ids = list(dict.fromkeys(i for i in attachment_ids or [] if i))
     if not ids:
@@ -319,15 +357,19 @@ def bind_to_session(
     )
     if not own_chat:
         return 0
-    tied = (
+    tied = 0
+    for attachment in (
         db.query(ChatAttachment)
-        .filter(
-            ChatAttachment.user_id == user_id,
-            ChatAttachment.id.in_(ids),
-            ChatAttachment.session_id.is_(None),
-        )
-        .update({ChatAttachment.session_id: session_id}, synchronize_session=False)
-    )
+        .options(defer(ChatAttachment.raw_file))
+        .filter(ChatAttachment.user_id == user_id, ChatAttachment.id.in_(ids))
+    ):
+        unsent = bool((attachment.summary or {}).get(UNSENT))
+        if attachment.session_id is not None and not unsent:
+            continue
+        attachment.session_id = session_id
+        if unsent:
+            _with_summary(attachment, **{UNSENT: None})
+        tied += 1
     db.commit()
     return tied
 
@@ -382,6 +424,9 @@ def chat_files(db: Session, user_id: str, session_id: str) -> ChatFiles:
         .order_by(ChatAttachment.created_at, ChatAttachment.id)
         .all()
     )
+
+    # Attached here but not sent yet: still in the composer, or taken off it.
+    rows = [a for a in rows if a.id in sent_with or not (a.summary or {}).get(UNSENT)]
 
     newest: dict[tuple, ChatAttachment] = {}
     for a in rows:  # oldest first, so a later copy replaces an earlier one
@@ -450,6 +495,7 @@ def save_as_ride(db: Session, user: User, attachment: ChatAttachment) -> Ride:
         )
         if duplicate:
             attachment.imported_ride_id = duplicate.id
+            _with_summary(attachment, owner="self")
             db.commit()
             return duplicate
 
@@ -457,6 +503,8 @@ def save_as_ride(db: Session, user: User, attachment: ChatAttachment) -> Ride:
         db, user, file_bytes, filename=attachment.filename, source="fit_upload"
     )
     attachment.imported_ride_id = ride.id
+    # Saved into the rider's own history, so it is the rider's own ride.
+    _with_summary(attachment, owner="self")
     db.commit()
 
     # A saved ride carries training load. Leaving the PMC unrebuilt would

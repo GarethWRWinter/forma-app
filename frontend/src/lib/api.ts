@@ -201,9 +201,16 @@ async function authedFetch(
   return response;
 }
 
-async function uploadFile<T>(path: string, file: File): Promise<T> {
+async function uploadFile<T>(
+  path: string,
+  file: File,
+  fields?: Record<string, string>
+): Promise<T> {
   const formData = new FormData();
   formData.append("file", file);
+  for (const [key, value] of Object.entries(fields ?? {})) {
+    formData.append(key, value);
+  }
   // Through authedFetch so an upload after half an hour idle refreshes the
   // token instead of failing; a long archive import used to mark every file
   // after the 30-minute mark as failed (launch audit, 4 Oct 2026).
@@ -1149,6 +1156,32 @@ export interface ChatAttachment {
   summary?: ChatAttachmentSummary | null;
 }
 
+/**
+ * The reply is complete at "done", but the server keeps the stream open while
+ * it files memories and names a new chat, which can take several seconds. The
+ * caller stops waiting there; the rest is read here without holding anyone
+ * up, and onClosed runs once the server has finished, when a new chat's name
+ * can be fetched. It is read to the end rather than cancelled, so nothing
+ * here can cut that work short.
+ */
+function readOnAfterDone(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onClosed?: () => void
+) {
+  void (async () => {
+    try {
+      for (;;) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+    } catch {
+      // The connection dropped after the reply was in: nothing is lost.
+    } finally {
+      onClosed?.();
+    }
+  })();
+}
+
 export const chat = {
   getSessions: (includeArchived?: boolean) =>
     request<ChatSession[]>(
@@ -1183,14 +1216,26 @@ export const chat = {
   /**
    * Hand a ride file to the coach. Multipart, so the Content-Type header is
    * left alone deliberately: the browser has to write its own boundary.
+   * Named with the chat it is attached in when that chat exists already, so
+   * the file belongs to it from the start; a new chat claims its files when
+   * the message carrying them is sent.
    */
-  uploadAttachment: (file: File) =>
-    uploadFile<ChatAttachment>("/chat/attachments", file),
+  uploadAttachment: (file: File, sessionId?: string | null) =>
+    uploadFile<ChatAttachment>(
+      "/chat/attachments",
+      file,
+      sessionId ? { session_id: sessionId } : undefined
+    ),
 
+  /**
+   * Send a message and stream the reply. Ends at "done"; onClosed runs once
+   * the server has finished its work after that (see readOnAfterDone).
+   */
   sendMessage: async function* (
     sessionId: string,
     content: string,
-    attachmentIds?: string[]
+    attachmentIds?: string[],
+    onClosed?: () => void
   ) {
     const response = await authedFetch(
       `/chat/sessions/${sessionId}/messages`,
@@ -1223,23 +1268,32 @@ export const chat = {
 
       for (const line of lines) {
         if (line.startsWith("data: ")) {
+          let data;
           try {
-            const data = JSON.parse(line.slice(6));
-            yield data;
-          } catch {}
+            data = JSON.parse(line.slice(6));
+          } catch {
+            continue;
+          }
+          yield data;
+          if (data.type === "done") {
+            readOnAfterDone(reader, onClosed);
+            return;
+          }
         }
       }
     }
   },
 
   /**
-   * Send a voice message — receives both text and audio chunks via SSE.
-   * Audio chunks are base64-encoded MP3 for each sentence.
+   * Send a voice message: receives both text and audio chunks via SSE.
+   * Audio chunks are base64-encoded MP3 for each sentence. Ends at "done",
+   * like sendMessage.
    */
   sendVoiceMessage: async function* (
     sessionId: string,
     content: string,
-    attachmentIds?: string[]
+    attachmentIds?: string[],
+    onClosed?: () => void
   ) {
     const response = await authedFetch(
       `/chat/sessions/${sessionId}/voice-message`,
@@ -1272,10 +1326,17 @@ export const chat = {
 
       for (const line of lines) {
         if (line.startsWith("data: ")) {
+          let data;
           try {
-            const data = JSON.parse(line.slice(6));
-            yield data; // yields {type: "text"|"audio"|"done", ...}
-          } catch {}
+            data = JSON.parse(line.slice(6));
+          } catch {
+            continue;
+          }
+          yield data; // yields {type: "text"|"audio"|"done", ...}
+          if (data.type === "done") {
+            readOnAfterDone(reader, onClosed);
+            return;
+          }
         }
       }
     }

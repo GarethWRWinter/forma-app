@@ -163,8 +163,10 @@ function CoachPageInner() {
         { key, filename: file.name, status: "uploading" },
       ]);
 
+      // An open chat claims the file from the start; a new one claims it
+      // when the message carrying it is sent.
       chat
-        .uploadAttachment(file)
+        .uploadAttachment(file, activeSessionId)
         .then((saved) => {
           setAttachments((prev) =>
             prev.map((a) =>
@@ -194,7 +196,7 @@ function CoachPageInner() {
           );
         });
     }
-  }, []);
+  }, [activeSessionId]);
 
   const removeAttachment = useCallback((key: string) => {
     setAttachments((prev) => prev.filter((a) => a.key !== key));
@@ -242,6 +244,13 @@ function CoachPageInner() {
     [queryClient]
   );
 
+  // The send button comes back when the reply is in. The server names a new
+  // chat a few seconds later, just before the stream closes, so the list is
+  // fetched again when it does.
+  const refreshChatList = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
+  }, [queryClient]);
+
   // Voice send handler (defined below, used by hook)
   const handleVoiceSend = useCallback(
     async (transcript: string) => {
@@ -285,7 +294,8 @@ function CoachPageInner() {
         for await (const chunk of chat.sendVoiceMessage(
           sessionId,
           transcript.trim(),
-          handedOver.ids
+          handedOver.ids,
+          refreshChatList
         )) {
           if (chunk.type === "status") {
             setStatus(chunk.content ?? null);
@@ -645,7 +655,8 @@ function CoachPageInner() {
       for await (const chunk of chat.sendMessage(
         sessionId,
         userMessage,
-        handedOver.ids
+        handedOver.ids,
+        refreshChatList
       )) {
         if (chunk.type === "status") {
           setStatus(chunk.content ?? null);
