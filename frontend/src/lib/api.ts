@@ -1111,6 +1111,8 @@ export interface ChatSession {
   message_count: number;
   created_at: string;
   updated_at?: string | null;
+  /** when the newest message landed; the list is ordered by it */
+  last_message_at?: string | null;
 }
 
 export interface ChatSessionUpdate {

@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 logger = logging.getLogger(__name__)
 
 import anthropic  # kept for anthropic.APIError handling; calls go via forma_core
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from collections import Counter
@@ -1529,15 +1530,37 @@ def create_session(db: Session, user_id: str, title: str | None = None) -> ChatS
 
 def get_sessions(
     db: Session, user_id: str, include_archived: bool = False
-) -> list[ChatSession]:
-    """Get chat sessions for a user. Pinned first, then newest."""
-    q = db.query(ChatSession).filter(ChatSession.user_id == user_id)
+) -> list[tuple[ChatSession, datetime, int]]:
+    """A rider's chats as (session, last_message_at, message_count) rows.
+
+    Pinned first, then the chat with the latest message, the way a messenger
+    orders its threads; an empty chat counts from when it was opened. Ordering
+    by creation left a rider's live conversation third, under a September
+    test chat (16 Oct 2026). The counts come from the same aggregate, so the
+    list never loads every message of every chat.
+    """
+    user_sessions = db.query(ChatSession.id).filter(ChatSession.user_id == user_id)
+    activity = (
+        db.query(
+            ChatMessage.session_id.label("session_id"),
+            func.max(ChatMessage.created_at).label("last_message_at"),
+            func.count(ChatMessage.id).label("message_count"),
+        )
+        .filter(ChatMessage.session_id.in_(user_sessions))
+        .group_by(ChatMessage.session_id)
+        .subquery()
+    )
+    last_active = func.coalesce(activity.c.last_message_at, ChatSession.created_at)
+    q = (
+        db.query(ChatSession, last_active, func.coalesce(activity.c.message_count, 0))
+        .outerjoin(activity, activity.c.session_id == ChatSession.id)
+        .filter(ChatSession.user_id == user_id)
+    )
     if not include_archived:
         q = q.filter(ChatSession.archived_at.is_(None))
-    return (
-        q.order_by(ChatSession.pinned.desc(), ChatSession.created_at.desc())
-        .all()
-    )
+    return q.order_by(
+        ChatSession.pinned.desc(), last_active.desc(), ChatSession.created_at.desc()
+    ).all()
 
 
 def update_session(
@@ -1588,6 +1611,8 @@ def add_user_message(db: Session, session: ChatSession, content: str) -> ChatMes
         content=content,
     )
     db.add(message)
+    # The thread moved: same clock as the message's own created_at.
+    session.updated_at = func.now()
     db.commit()
     db.refresh(message)
     return message
@@ -1606,6 +1631,7 @@ def add_assistant_message(
         tokens_used=tokens_used,
     )
     db.add(message)
+    session.updated_at = func.now()
     db.commit()
     db.refresh(message)
     return message
@@ -1827,9 +1853,27 @@ def _needs_round_break(so_far: str) -> bool:
     return bool(so_far) and not so_far.endswith(("\n", " "))
 
 
+# Markup a model sometimes wraps a label in: a heading, bold, code ticks.
+# 16 Oct 2026: a sidebar read "# Sa Calobra Sub-30 Preparati...".
+_TITLE_MARKUP_RE = re.compile(r"^\s*#{1,6}\s+|\*+|__|`")
+_TITLE_DOUBLE_QUOTES = "\"\u201c\u201d"
+_TITLE_SINGLE_QUOTES = "'\u2018\u2019"
+
+
+def _clean_title(text: str) -> str:
+    """A sidebar label in plain words: no markdown, no quotes, no dashes."""
+    text = humanize(_TITLE_MARKUP_RE.sub("", text or "")).strip()
+    text = text.strip(_TITLE_DOUBLE_QUOTES).strip()
+    # Single quotes only go when they wrap the whole label, so a quoted
+    # phrase inside it ("Sa Calobra 'sub 30'") keeps both of its marks.
+    if len(text) > 1 and text[0] in _TITLE_SINGLE_QUOTES and text[-1] in _TITLE_SINGLE_QUOTES:
+        text = text[1:-1].strip()
+    return re.sub(r"\s{2,}", " ", text.strip(" ,"))
+
+
 def _looks_like_title(text: str) -> bool:
     """A sidebar label, not a sentence: short, one line, no first person,
-    not ending like prose."""
+    no conversational opener, not ending like prose."""
     if not text or "\n" in text:
         return False
     words = text.split()
@@ -1837,6 +1881,15 @@ def _looks_like_title(text: str) -> bool:
         return False
     lowered = text.lower()
     if lowered.startswith(("i ", "i'", "i’", "sorry", "unfortunately")):
+        return False
+    # The model replying to the rider rather than naming the thread (16 Oct
+    # 2026: "That sounds brilliant, Gareth..."). Not a bare "great" or "yes":
+    # those would turn away "Great Dun Fell" and "Yesterday's ride".
+    if lowered.startswith((
+        "that sounds", "sounds ", "sure,", "absolutely", "of course", "happy to",
+        "thanks ", "thanks,", "thank you", "no problem", "great question",
+        "good question", "you ", "you'", "you\u2019",
+    )):
         return False
     return not text.rstrip().endswith((".", "!", "?", ":"))
 
@@ -1861,12 +1914,13 @@ def maybe_autotitle_session(db: Session, user: User, session: ChatSession) -> No
             system=(
                 "Name this cycling-coach conversation in 2-5 words for a sidebar. "
                 "Specific and plain, sentence case, no quotes, no trailing "
-                "punctuation, no emoji. Examples: Fuelling for the 312 · "
+                "punctuation, no emoji. Plain text only: no markdown, no hash "
+                "marks, no em or en dashes. Examples: Fuelling for the 312 · "
                 "Tuesday intervals rethink · Saddle pain fix"
             ),
             messages=[{"role": "user", "content": sample}],
         )
-        title = response_text(resp).strip().strip('"').strip()
+        title = _clean_title(response_text(resp))
         if _looks_like_title(title):
             session.title = title[:80]
             db.commit()

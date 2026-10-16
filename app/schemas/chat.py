@@ -52,6 +52,9 @@ class ChatSessionResponse(BaseModel):
     archived_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # When the latest message landed (or when the chat was opened, while it
+    # is empty). The list is ordered by it.
+    last_message_at: datetime | None = None
     message_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)

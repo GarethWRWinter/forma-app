@@ -26,6 +26,8 @@ class ChatSession(Base):
     starred: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     archived_at: Mapped[str | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime, server_default=func.now())
+    # Moves with every message (add_user_message and add_assistant_message set
+    # it) as well as every rename, pin, star or archive.
     updated_at: Mapped[str | None] = mapped_column(DateTime, onupdate=func.now(), nullable=True)
 
     user = relationship("User", back_populates="chat_sessions")

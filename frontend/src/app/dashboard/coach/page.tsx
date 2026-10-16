@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ApiError, chat, goals as goalsApi } from "@/lib/api";
+import { ApiError, chat, goals as goalsApi, type ChatSession } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { CoachDot, CoachGlyph } from "@/components/ui/coach-glyph";
 import { CadenceSpinner } from "@/components/ui/cadence-spinner";
@@ -50,6 +50,30 @@ function sendFailureMessage(error: unknown): string {
     return error.message;
   }
   return "I lost the connection there. Send that again.";
+}
+
+/** When a chat last moved: its newest message, or its opening while empty. */
+const lastActive = (s: ChatSession) =>
+  s.last_message_at || s.updated_at || s.created_at || "";
+
+/** A sidebar label in plain words. Titles named before the server cleaned
+    them can still carry a markdown heading or a dash (16 Oct 2026: "# Sa
+    Calobra Sub-30 Preparati..."), so the list cleans them on the way in. */
+function chatTitle(title: string | null | undefined, fallback = "Chat"): string {
+  const clean = (title || "")
+    .replace(/^\s*#{1,6}\s+/, "")
+    .replace(/\*+|__|`/g, "")
+    .replace(/(\d)\s*[\u2013\u2014]\s*(?=\d)/g, "$1-")
+    .replace(/\s*[\u2013\u2014]\s*/g, ", ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^[\s,]+|[\s,]+$/g, "");
+  return clean || fallback;
+}
+
+/** "1 message", "12 messages"; an empty chat says so. */
+function messageCount(n: number): string {
+  if (n === 0) return "No messages yet";
+  return n === 1 ? "1 message" : `${n} messages`;
 }
 
 function CoachPageInner() {
@@ -192,25 +216,53 @@ function CoachPageInner() {
     };
   }, []);
 
+  // The chat the rider just wrote in goes to the top at once, under any pins,
+  // the way a messenger moves a thread; the refetch after the reply settles
+  // the server's order. Moved by position rather than by timestamp: the
+  // server's times carry no zone, and the browser would read them as local.
+  const bumpSession = useCallback(
+    (id: string, fresh?: ChatSession) => {
+      queryClient.setQueriesData<ChatSession[]>(
+        { queryKey: ["chat-sessions"] },
+        (list) => {
+          if (!list) return list;
+          const found = list.find((s) => s.id === id) || fresh;
+          if (!found) return list;
+          const moved = {
+            ...found,
+            last_message_at: new Date().toISOString(),
+            message_count: found.message_count + 1,
+          };
+          const rest = list.filter((s) => s.id !== id);
+          const at = moved.pinned ? 0 : rest.filter((s) => s.pinned).length;
+          return [...rest.slice(0, at), moved, ...rest.slice(at)];
+        }
+      );
+    },
+    [queryClient]
+  );
+
   // Voice send handler (defined below, used by hook)
   const handleVoiceSend = useCallback(
     async (transcript: string) => {
       if (!transcript.trim() || streaming) return;
 
       let sessionId = activeSessionId;
+      let created: ChatSession | undefined;
 
       // Reset audio mute — new message, allow audio again
       audioMutedRef.current = false;
 
       // Create session if needed
       if (!sessionId) {
-        const session = await chat.createSession();
-        sessionId = session.id;
-        setActiveSessionId(session.id);
+        created = await chat.createSession();
+        sessionId = created.id;
+        setActiveSessionId(created.id);
         queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
       }
 
       const handedOver = takeAttachments();
+      bumpSession(sessionId, created);
 
       setMessages((prev) => [
         ...prev,
@@ -425,7 +477,8 @@ function CoachPageInner() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
-  // Load sessions list (pinned first from the API; archived on demand)
+  // Load sessions list (pinned first, then the latest message first, from
+  // the API; archived on demand)
   const { data: sessions } = useQuery({
     queryKey: ["chat-sessions", showArchived],
     queryFn: () => chat.getSessions(showArchived),
@@ -452,7 +505,7 @@ function CoachPageInner() {
 
   const startRename = (id: string, current: string | null) => {
     setRenamingId(id);
-    setRenameValue(current || "");
+    setRenameValue(current ? chatTitle(current) : "");
     setMenuFor(null);
   };
 
@@ -470,17 +523,18 @@ function CoachPageInner() {
     enabled: !!activeSessionId,
   });
 
-  // The conversation continues: opening COACH resumes the most recent
-  // thread instead of an empty page. "New chat" stays for deliberate splits.
+  // The conversation continues: opening COACH resumes the thread with the
+  // latest message instead of an empty page, the way a messenger opens. A
+  // pin does not win by default, and a leftover empty "New Chat" never takes
+  // over the page. "New chat" stays for deliberate splits.
   useEffect(() => {
     if (resumedRef.current || activeSessionId || goalId || isDebrief) return;
     if (!sessions || sessions.length === 0) return;
     const live = sessions.filter((s) => !s.archived_at);
     if (!live.length) return;
-    const latest = [...live].sort((a, b) =>
-      (b.updated_at || b.created_at || "").localeCompare(
-        a.updated_at || a.created_at || ""
-      )
+    const written = live.filter((s) => s.message_count > 0);
+    const latest = [...(written.length ? written : live)].sort((a, b) =>
+      lastActive(b).localeCompare(lastActive(a))
     )[0];
     resumedRef.current = true;
     setActiveSessionId(latest.id);
@@ -553,12 +607,13 @@ function CoachPageInner() {
     }
 
     let sessionId = activeSessionId;
+    let created: ChatSession | undefined;
 
     // Create session if none active
     if (!sessionId) {
-      const session = await chat.createSession();
-      sessionId = session.id;
-      setActiveSessionId(session.id);
+      created = await chat.createSession();
+      sessionId = created.id;
+      setActiveSessionId(created.id);
       queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
     }
 
@@ -568,6 +623,7 @@ function CoachPageInner() {
     const userMessage =
       input.trim() || (handedOver.ids.length ? ATTACHMENT_ASK : "");
     setInput("");
+    bumpSession(sessionId, created);
     setMessages((prev) => [
       ...prev,
       {
@@ -703,12 +759,12 @@ function CoachPageInner() {
                     {session.starred && (
                       <Star className="h-3 w-3 shrink-0 fill-current text-vb-text" />
                     )}
-                    <span className="truncate">{session.title || "Chat"}</span>
+                    <span className="truncate">{chatTitle(session.title)}</span>
                   </p>
                   <p className="text-[10px] text-vb-text-muted">
                     {session.archived_at
                       ? "Archived"
-                      : `${session.message_count} messages`}
+                      : messageCount(session.message_count)}
                   </p>
                 </button>
               )}
@@ -832,7 +888,10 @@ function CoachPageInner() {
             <MessageCircle className="h-5 w-5" />
           </button>
           <span className="text-sm font-medium text-vb-text-dim">
-            {sessions?.find((s) => s.id === activeSessionId)?.title || "Coach Forma"}
+            {chatTitle(
+              sessions?.find((s) => s.id === activeSessionId)?.title,
+              "Coach Forma"
+            )}
           </span>
         </div>
 

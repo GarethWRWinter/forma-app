@@ -142,6 +142,13 @@ def test_title_guard_rejects_prose_and_keeps_labels():
     assert not _looks_like_title("Saddle pain fix.")
     assert not _looks_like_title("Two\nlines")
     assert not _looks_like_title("")
+    # The model answering the rider rather than naming the thread (16 Oct 2026).
+    assert not _looks_like_title("That sounds brilliant, Gareth, let's go")
+    assert not _looks_like_title("Sure, let's build it")
+    assert not _looks_like_title("You've got this")
+    # Openers that look like replies must not turn away real places and rides.
+    assert _looks_like_title("Great Dun Fell pacing")
+    assert _looks_like_title("Yesterday's ride")
 
 
 def test_round_break_only_when_text_runs_on():

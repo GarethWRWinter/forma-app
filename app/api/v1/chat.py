@@ -10,6 +10,7 @@ from app.api.v1.deps import get_current_user, require_paid_access
 from app.core.exceptions import BadRequestException, NotFoundException
 from app.core.ratelimit import rate_limit
 from app.database import get_db
+from app.models.chat import ChatSession
 from app.models.user import User
 from app.schemas.chat import (
     ChatMessageRequest,
@@ -57,6 +58,11 @@ def _attachment_kwargs(stream_fn, attachment_ids: list[str]) -> dict:
     return {"attachment_ids": attachment_ids} if accepts else {}
 
 
+def _last_message_at(session: ChatSession):
+    """When the thread last moved: its newest message, or its opening while empty."""
+    return session.messages[-1].created_at if session.messages else session.created_at
+
+
 def _verify_attachments(db: Session, user: User, attachment_ids: list[str]) -> None:
     """Every id must be one of this rider's own files, or the send fails."""
     if not attachment_ids:
@@ -80,6 +86,7 @@ def create_chat_session(
         id=session.id,
         title=session.title,
         created_at=session.created_at,
+        last_message_at=session.created_at,
         message_count=0,
     )
 
@@ -90,8 +97,9 @@ def list_chat_sessions(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List chat sessions — pinned first, archived hidden unless asked for."""
-    sessions = get_sessions(db, current_user.id, include_archived=include_archived)
+    """List chat sessions: pinned first, then the latest message first.
+    Archived chats are hidden unless asked for."""
+    rows = get_sessions(db, current_user.id, include_archived=include_archived)
     return [
         ChatSessionResponse(
             id=s.id,
@@ -101,9 +109,10 @@ def list_chat_sessions(
             archived_at=s.archived_at,
             created_at=s.created_at,
             updated_at=s.updated_at,
-            message_count=len(s.messages) if s.messages else 0,
+            last_message_at=last_message_at,
+            message_count=message_count,
         )
-        for s in sessions
+        for s, last_message_at, message_count in rows
     ]
 
 
@@ -134,6 +143,7 @@ def update_chat_session(
         archived_at=session.archived_at,
         created_at=session.created_at,
         updated_at=session.updated_at,
+        last_message_at=_last_message_at(session),
         message_count=len(session.messages) if session.messages else 0,
     )
 
@@ -184,6 +194,7 @@ def get_chat_session(
         archived_at=session.archived_at,
         created_at=session.created_at,
         updated_at=session.updated_at,
+        last_message_at=_last_message_at(session),
         message_count=len(session.messages) if session.messages else 0,
         has_more=has_more,
         messages=[
