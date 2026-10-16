@@ -9,6 +9,7 @@ import base64
 import json
 import logging
 import re
+import time
 from datetime import date, datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
@@ -419,9 +420,10 @@ def _file_entry(a, shared_at: dict) -> dict:
 
 def _files_block(
     db: Session, user: User, session: ChatSession
-) -> tuple[str | None, dict[str, str]]:
-    """The files shared in this chat as their own system block, plus each
-    file's cleaned name for the note on the message that carried it.
+) -> tuple[str | None, dict[str, str], int | None]:
+    """The files shared in this chat as their own system block, each file's
+    cleaned name for the note on the message that carried it, and how many
+    files the chat holds (None when they could not be read).
 
     Until 16 Oct 2026 a file reached the coach only on the turn it was
     attached, so the next question about it found nothing, and the coach
@@ -435,11 +437,12 @@ def _files_block(
     except Exception:
         logger.exception("Chat files failed for user %s", user.id)
         db.rollback()
-        return _FILES_FAILED_NOTE, {}
+        return _FILES_FAILED_NOTE, {}, None
 
     names = {aid: _safe_filename(name) for aid, name in files.names.items()}
+    held = len(files.in_full) + len(files.named_only)
     if not files.in_full:
-        return None, names
+        return None, names, held
 
     payload: dict = {"files": [_file_entry(a, files.shared_at) for a in files.in_full]}
     note = _FILES_NOTE
@@ -449,7 +452,7 @@ def _files_block(
     # Sorted keys and no padding: the same files give the same bytes on every
     # turn, so the block stays cached until a file is added.
     body = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return f"## Files shared in this chat\n{note}\n```json\n{body}\n```", names
+    return f"## Files shared in this chat\n{note}\n```json\n{body}\n```", names, held
 
 
 def _build_rider_context(db: Session, user: User) -> str:
@@ -1056,13 +1059,13 @@ COACH_TOOLS = [
     },
     {
         "name": "analyse_ride",
-        "description": "Open a ride's actual data file and compute the real analysis: the power curve with every peak expressed against the rider's FTP, where each peak happened, the climbs with their gradients and the power held on them, honest time in zone, and whether the rider faded. Use this WHENEVER the rider asks about anything inside a ride (a specific effort, a climb, a segment, where power peaked, how they paced it) rather than describing it from ride-level averages. Ride-level numbers like IF and NP describe the whole ride and nothing smaller.",
+        "description": "Open one of the rider's saved rides and compute the real analysis from its data file: the power curve with every peak expressed against the rider's FTP, where each peak happened, the climbs with their gradients and the power held on them, honest time in zone, and whether the rider faded. Use it when the rider asks about something inside a saved ride (a specific effort, a climb, a segment, where power peaked, how they paced it), rather than describing it from ride-level numbers like IF and NP, which describe the whole ride and nothing smaller. It opens saved rides only, by ride_id, and cannot open a file shared in this chat. A shared file's analysis is already in the files shared in this chat: when the rider is talking about one of those, answer from it, and never open a saved ride to stand in for it. analyse_ride and find_ride together run at most twice per rider message.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "ride_id": {
                     "type": "string",
-                    "description": "The ride ID from the recent_rides context",
+                    "description": "The ride_id of a saved ride, from the recent_rides context or from find_ride",
                 },
             },
             "required": ["ride_id"],
@@ -1070,13 +1073,13 @@ COACH_TOOLS = [
     },
     {
         "name": "find_ride",
-        "description": "Search the rider's whole ride history and return matching rides. Use this the moment the rider refers to a ride that is not sitting in the recent_rides context: a personal best on a named climb, a ride in a particular place, a ride from an earlier season, the biggest week of last winter, their longest ever day. Search on words in the ride's title, location or story, on a date range, on distance, or on elevation. CRITICAL: ride titles are written by the system, not by the rider, so the words the rider uses will often appear NOWHERE in the data. A Sa Calobra personal best was stored as 'Sprint Training' in 'Escorca, Spain'. So if a name search comes back empty, do NOT conclude the ride is missing. Search again immediately on whatever else you were given: the date or month alone, or the shape of the ride (roughly its distance and elevation). Only say you cannot find it after a date search and a shape search have both failed. IMPORTANT: this returns ride level SUMMARIES ONLY. Those numbers describe each whole ride and nothing smaller, so they can never tell you what happened on a climb, in an interval, or in the last hour. Once you have found the ride you want, call analyse_ride with its ride_id to open the actual file and read the real numbers.",
+        "description": "Search the rider's saved rides, the ones in their ride history, and return matching rides. It searches saved rides only. A file shared in this chat is never in there: its analysis is already in the files shared in this chat, so never use this to look for one. Use it when the rider refers to a saved ride that is not in the recent_rides context: a personal best on a named climb, a ride in a particular place, a ride from an earlier season, their longest ever day. Search on words in the ride's title, location or story, on a date range, on distance, or on elevation. Ride titles are written by the system, not by the rider, so the rider's own words often appear nowhere in them. If a search on words comes back empty, make the next search on the date or on the shape of the ride (roughly its distance and elevation) rather than on other words. find_ride and analyse_ride together run at most twice per rider message, so spend them well; if the ride is still not found, say so plainly and ask the rider for a date. This returns ride level summaries only: each number describes a whole ride and nothing smaller, so it can never tell you what happened on a climb, in an interval, or in the last hour. To read inside a ride you have found, call analyse_ride with its ride_id.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Words to match against the ride title and the ride's location, case insensitive substring match (e.g. 'Sa Calobra', 'Ditchling', 'hill climb')",
+                    "description": "Words to match against the ride title and the ride's location, case insensitive substring match (e.g. 'Box Hill', 'Ditchling', 'hill climb')",
                 },
                 "date_from": {"type": "string", "description": "Earliest ride date, YYYY-MM-DD"},
                 "date_to": {"type": "string", "description": "Latest ride date, YYYY-MM-DD"},
@@ -1207,6 +1210,20 @@ _READ_ONLY_TOOLS = {"analyse_ride", "find_ride"}
 # put to the rider, not an edit: the plan does not move until they approve, so
 # telling the app the plan changed here would be a lie the calendar exposes.
 _NO_PLAN_CHANGE_TOOLS = _READ_ONLY_TOOLS | {"propose_plan_change"}
+
+# Ride lookups run at most twice per rider message, parallel calls counted,
+# and the code holds the line: a rule in a description alone did not. On 16
+# Oct 2026 turn 2 of Gareth's Sa Calobra chat spent all five rounds hunting
+# ride history for files shared in the chat, and never answered. The
+# find_ride and analyse_ride descriptions say "twice": change both together.
+_RIDE_LOOKUP_TOOLS = {"find_ride", "analyse_ride"}
+RIDE_LOOKUPS_PER_MESSAGE = 2
+_LOOKUP_LIMIT_REACHED = (
+    "Not run: this rider message has already had its two ride lookups "
+    "(find_ride and analyse_ride together), and no more will run before the "
+    "rider's next message. Answer now from what you already have. If "
+    "something the rider asked for is missing, say plainly what it is."
+)
 
 
 def _tool_status(db: Session, user: User, name: str, tool_input: dict) -> str | None:
@@ -2224,6 +2241,130 @@ def add_assistant_message(
 
 # === Claude API Integration ===
 
+# What the rider sees when a turn ends with no words at all, which can still
+# happen when the model's output allowance runs out mid-thought. It promises
+# nothing. The old line ("Send it again and I'll get straight to the point")
+# promised a better second try that nothing in Forma made happen.
+_NO_REPLY_FALLBACK = (
+    "Sorry, I could not finish an answer to that. Asking about one part at "
+    "a time gives me a better chance of answering it in full."
+)
+# The line before 16 Oct 2026, still sitting in older chats unmarked.
+_OLD_NO_REPLY_FALLBACK = (
+    "I got cut off before I could answer that properly. "
+    "Send it again and I'll get straight to the point."
+)
+# What the next turn's history shows in place of the fallback, so the coach
+# neither repeats the apology nor takes it for an answer it gave.
+_NO_REPLY_NOTE = (
+    "[No answer was given to the message above. The rider was shown a short "
+    "apology instead.]"
+)
+
+
+def _was_no_reply(msg: ChatMessage) -> bool:
+    """A stored coach message that is the fallback, not an answer."""
+    if msg.role != ChatRole.assistant:
+        return False
+    snapshot = msg.context_snapshot
+    if isinstance(snapshot, dict) and snapshot.get("fallback") is True:
+        return True
+    return (msg.content or "").strip() == _OLD_NO_REPLY_FALLBACK
+
+
+def _last_round_choice(round_no: int, max_iterations: int) -> dict | None:
+    """No tools on the final round, so the loop always ends in words."""
+    return {"type": "none"} if round_no == max_iterations - 1 else None
+
+
+# Beside the tool results the last round answers, so the model knows why the
+# tools have gone and writes the answer, not "let me look that up".
+_LAST_ROUND_NOTE = (
+    "[No more tools will run for this message. Answer the rider now from what "
+    "you already have, and if something they asked for is missing, say "
+    "plainly what it is.]"
+)
+
+
+def _note_last_round(messages: list) -> None:
+    """Add _LAST_ROUND_NOTE after the latest tool results, as a new message
+    so the one already sent is left as it was."""
+    last = messages[-1] if messages else None
+    if last and last.get("role") == "user" and isinstance(last.get("content"), list):
+        messages[-1] = {
+            **last,
+            "content": [*last["content"], {"type": "text", "text": _LAST_ROUND_NOTE}],
+        }
+
+
+# One line per coach turn: how many model rounds it took, what each round
+# produced, and where the time went. Counts, names and timings only, never
+# the rider's words, a tool's input or anything secret. On 16 Oct 2026 turn 2
+# of Gareth's Sa Calobra chat had to be pieced together from HTTP log lines
+# and response sizes.
+_turn_logger = logging.getLogger("forma.coach_turn")
+
+
+class _TurnLog:
+    """What one coach turn did, logged once at the end. Every time is in ms
+    from the start of the turn: prep_ms to the first model call, then the
+    first byte back from the model, then the first words sent to the rider."""
+
+    def __init__(self, session_id: str, surface: str):
+        self._t0 = time.monotonic()
+        self.session_id = session_id
+        self.surface = surface
+        self.files: int | None = None
+        self.rounds: list[dict] = []
+        self.lookups_refused = 0
+        self.prep_ms: int | None = None
+        self.first_byte_ms: int | None = None
+        self.first_text_ms: int | None = None
+
+    def _ms(self) -> int:
+        return round((time.monotonic() - self._t0) * 1000)
+
+    def calling(self) -> None:
+        if self.prep_ms is None:
+            self.prep_ms = self._ms()
+
+    def byte(self) -> None:
+        if self.first_byte_ms is None:
+            self.first_byte_ms = self._ms()
+
+    def text(self) -> None:
+        if self.first_text_ms is None:
+            self.first_text_ms = self._ms()
+
+    def round_done(self, final) -> None:
+        content = list(getattr(final, "content", None) or [])
+        self.rounds.append({
+            "stop": getattr(final, "stop_reason", None),
+            "blocks": [getattr(b, "type", None) for b in content],
+            "tools": [b.name for b in content if getattr(b, "type", None) == "tool_use"],
+        })
+
+    def emit(self, ended: str) -> None:
+        """ended: reply, fallback, quota or error."""
+        try:
+            _turn_logger.info("coach_turn %s", json.dumps({
+                "session": self.session_id,
+                "surface": self.surface,
+                "rounds": len(self.rounds),
+                "per_round": self.rounds,
+                "files": self.files,
+                "lookups_refused": self.lookups_refused,
+                "ended": ended,
+                "fallback": ended == "fallback",
+                "prep_ms": self.prep_ms,
+                "first_byte_ms": self.first_byte_ms,
+                "first_text_ms": self.first_text_ms,
+                "total_ms": self._ms(),
+            }, separators=(",", ":"), default=str))
+        except Exception:
+            logger.exception("coach_turn log failed for session %s", self.session_id)
+
+
 def _with_shared_note(msg: ChatMessage, shared_names: dict[str, str] | None) -> str:
     """A rider message that carried files, opening with their names."""
     snapshot = msg.context_snapshot
@@ -2250,6 +2391,9 @@ def _build_messages(
     (shared_names, from _files_block), so the coach can tell which message
     brought which file. The note leaves the window with its message; the
     files block does not.
+
+    A coach turn that ended in the fallback shows as a plain note that no
+    answer was given, never as the apology the rider saw.
     """
     messages = sorted(session.messages, key=lambda m: m.created_at)
 
@@ -2257,7 +2401,10 @@ def _build_messages(
     recent = messages[-max_messages:] if len(messages) > max_messages else messages
 
     return [
-        {"role": msg.role, "content": _with_shared_note(msg, shared_names)}
+        {
+            "role": msg.role,
+            "content": _NO_REPLY_NOTE if _was_no_reply(msg) else _with_shared_note(msg, shared_names),
+        }
         for msg in recent
     ]
 
@@ -2283,11 +2430,13 @@ async def stream_response(
         data: {"type": "plan_updated"}   -- signals frontend to refresh training data
         data: {"type": "done"}
     """
+    turn = _TurnLog(session.id, "chat")
+
     # Save user message, with the files it carried
     add_user_message(db, session, user_message, attachment_ids)
 
     # Build context
-    files_block, shared_names = _files_block(db, user, session)
+    files_block, shared_names, turn.files = _files_block(db, user, session)
     rider_context = _build_rider_context(db, user)
     dossier_block = _dossier_block(db, user)
 
@@ -2309,16 +2458,24 @@ async def stream_response(
     tokens_used = 0
     plan_was_updated = False
     scrub = StreamHumanizer()
+    ended = "reply"
+    lookups = 0
 
     try:
         # Agentic loop, keeps going while Claude wants to call tools
         max_iterations = 5
-        for _ in range(max_iterations):
+        for round_no in range(max_iterations):
             # After a tool round the model starts a fresh sentence. Without a
             # break it glues on: "waiting for time to appear.Filed." (2 Sep).
             if _needs_round_break(full_response):
                 full_response += "\n\n"
                 yield f'data: {json.dumps({"type": "text", "content": chr(10) * 2})}\n\n'
+            # The last round answers with what the tools found: a turn that
+            # ends on a tool call says nothing (16 Oct 2026).
+            tool_choice = _last_round_choice(round_no, max_iterations)
+            if tool_choice:
+                _note_last_round(messages)
+            turn.calling()
             with forma_core.stream(
                 user_id=user.id,
                 task="chat",
@@ -2326,12 +2483,15 @@ async def stream_response(
                 system=system,
                 messages=messages,
                 tools=COACH_TOOLS,
+                tool_choice=tool_choice,
             ) as stream:
                 for event in stream:
+                    turn.byte()
                     if event.type == "content_block_delta":
                         if hasattr(event.delta, "text"):
                             clean = scrub.feed(event.delta.text)
                             if clean:
+                                turn.text()
                                 full_response += clean
                                 yield f'data: {json.dumps({"type": "text", "content": clean})}\n\n'
 
@@ -2340,6 +2500,7 @@ async def stream_response(
                     final.usage.input_tokens + final.usage.output_tokens
                     if final.usage else 0
                 )
+            turn.round_done(final)
 
             # Check if Claude wants to use tools
             tool_use_blocks = [
@@ -2357,6 +2518,16 @@ async def stream_response(
 
             tool_results = []
             for tool_block in tool_use_blocks:
+                if tool_block.name in _RIDE_LOOKUP_TOOLS:
+                    lookups += 1
+                    if lookups > RIDE_LOOKUPS_PER_MESSAGE:
+                        turn.lookups_refused += 1
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_block.id,
+                            "content": _LOOKUP_LIMIT_REACHED,
+                        })
+                        continue
                 label = _tool_status(db, user, tool_block.name, tool_block.input)
                 if label:
                     yield f'data: {json.dumps({"type": "status", "content": label})}\n\n'
@@ -2385,16 +2556,19 @@ async def stream_response(
 
         tail = scrub.flush()
         if tail:
+            turn.text()
             full_response += tail
             yield f'data: {json.dumps({"type": "text", "content": tail})}\n\n'
 
     except forma_core.BudgetExceededError:
+        ended = "quota"
         full_response = forma_core.QUOTA_MESSAGE
         yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
     except Exception as e:
         # ANY failure, provider error, timeout, tool bug, must never leave
         # the rider staring at an empty bubble. Log the real cause; the rider
         # gets something honest and human.
+        ended = "error"
         logger.exception("Coach chat stream failed: %s", e)
         error_msg = "That one didn't reach me. Give it a second and send it again."
         # Don't double up if some text already streamed before the failure.
@@ -2402,18 +2576,19 @@ async def stream_response(
             full_response = error_msg
             yield f'data: {json.dumps({"type": "text", "content": error_msg})}\n\n'
 
-    # The model can spend its whole token budget before any prose reaches
-    # the rider (a truncated tool call streams zero text and raises nothing).
-    # A rider's message must NEVER sit unanswered in the history.
+    # The model can still spend its whole output allowance before any prose
+    # reaches the rider (a max_tokens cut-off streams zero text and raises
+    # nothing). A rider's message must NEVER sit unanswered in the history,
+    # and the next turn must know no answer was given (_build_messages).
+    context_snapshot = json.loads(rider_context) if rider_context else None
     if not full_response.strip():
-        full_response = (
-            "I got cut off before I could answer that properly. "
-            "Send it again and I'll get straight to the point."
-        )
+        ended = "fallback"
+        full_response = _NO_REPLY_FALLBACK
+        context_snapshot = {**(context_snapshot or {}), "fallback": True}
         yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
 
-    context_snapshot = json.loads(rider_context) if rider_context else None
     add_assistant_message(db, session, full_response, context_snapshot, tokens_used)
+    turn.emit(ended)
 
     # Final plan_updated signal if tools were used (in case frontend missed it)
     if plan_was_updated:
@@ -2573,11 +2748,13 @@ async def stream_voice_response(
     """
     from app.services.voice_service import is_voice_enabled, text_to_speech
 
+    turn = _TurnLog(session.id, "voice")
+
     # Save user message, with the files it carried
     add_user_message(db, session, user_message, attachment_ids)
 
     # Build context
-    files_block, shared_names = _files_block(db, user, session)
+    files_block, shared_names, turn.files = _files_block(db, user, session)
     rider_context = _build_rider_context(db, user)
     dossier_block = _dossier_block(db, user)
 
@@ -2603,11 +2780,18 @@ async def stream_voice_response(
     voice_enabled = is_voice_enabled()
     plan_was_updated = False
     scrub = StreamHumanizer()
+    ended = "reply"
+    lookups = 0
 
     try:
         # Agentic loop, keeps going while Claude wants to call tools
         max_iterations = 5
-        for _ in range(max_iterations):
+        for round_no in range(max_iterations):
+            # Same as typed chat: the last round answers in words.
+            tool_choice = _last_round_choice(round_no, max_iterations)
+            if tool_choice:
+                _note_last_round(messages)
+            turn.calling()
             with forma_core.stream(
                 user_id=user.id,
                 task="chat_voice",  # shorter max_tokens, conciseness matters
@@ -2615,13 +2799,16 @@ async def stream_voice_response(
                 system=system,
                 messages=messages,
                 tools=COACH_TOOLS,
+                tool_choice=tool_choice,
             ) as stream:
                 for event in stream:
+                    turn.byte()
                     if event.type == "content_block_delta":
                         if hasattr(event.delta, "text"):
                             text = scrub.feed(event.delta.text)
                             if not text:
                                 continue
+                            turn.text()
                             full_response += text
                             sentence_buffer += text
 
@@ -2654,6 +2841,7 @@ async def stream_voice_response(
                     final.usage.input_tokens + final.usage.output_tokens
                     if final.usage else 0
                 )
+            turn.round_done(final)
 
             # Check if Claude wants to use tools
             tool_use_blocks = [
@@ -2669,6 +2857,16 @@ async def stream_voice_response(
 
             tool_results = []
             for tool_block in tool_use_blocks:
+                if tool_block.name in _RIDE_LOOKUP_TOOLS:
+                    lookups += 1
+                    if lookups > RIDE_LOOKUPS_PER_MESSAGE:
+                        turn.lookups_refused += 1
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_block.id,
+                            "content": _LOOKUP_LIMIT_REACHED,
+                        })
+                        continue
                 label = _tool_status(db, user, tool_block.name, tool_block.input)
                 if label:
                     yield f'data: {json.dumps({"type": "status", "content": label})}\n\n'
@@ -2693,6 +2891,7 @@ async def stream_voice_response(
 
         tail = scrub.flush()
         if tail:
+            turn.text()
             full_response += tail
             sentence_buffer += tail
             yield f'data: {json.dumps({"type": "text", "content": tail})}\n\n'
@@ -2713,27 +2912,30 @@ async def stream_voice_response(
                 logger.warning("TTS failed (text continues): %s", tts_err)
 
     except forma_core.BudgetExceededError:
+        ended = "quota"
         full_response = forma_core.QUOTA_MESSAGE
         yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
     except Exception as e:
         # Never leave the rider with silence AND an empty bubble.
+        ended = "error"
         logger.exception("Coach voice stream failed: %s", e)
         error_msg = "That one didn't reach me. Give it a second and send it again."
         if not full_response.strip():
             full_response = error_msg
             yield f'data: {json.dumps({"type": "text", "content": error_msg})}\n\n'
 
-    # A rider's message must NEVER sit unanswered in the history (the
-    # truncated-tool-call case streams zero text and raises nothing).
+    # A rider's message must NEVER sit unanswered in the history (a
+    # max_tokens cut-off streams zero text and raises nothing), and the next
+    # turn must know no answer was given (_build_messages).
+    context_snapshot = json.loads(rider_context) if rider_context else None
     if not full_response.strip():
-        full_response = (
-            "I got cut off before I could answer that properly. "
-            "Send it again and I'll get straight to the point."
-        )
+        ended = "fallback"
+        full_response = _NO_REPLY_FALLBACK
+        context_snapshot = {**(context_snapshot or {}), "fallback": True}
         yield f'data: {json.dumps({"type": "text", "content": full_response})}\n\n'
 
-    context_snapshot = json.loads(rider_context) if rider_context else None
     add_assistant_message(db, session, full_response, context_snapshot, tokens_used)
+    turn.emit(ended)
 
     if plan_was_updated:
         yield f'data: {json.dumps({"type": "plan_updated"})}\n\n'
@@ -2769,7 +2971,7 @@ def get_non_streaming_response(
     """
     add_user_message(db, session, user_message)
 
-    files_block, shared_names = _files_block(db, user, session)
+    files_block, shared_names, _ = _files_block(db, user, session)
     rider_context = _build_rider_context(db, user)
 
     system = _system_blocks(
