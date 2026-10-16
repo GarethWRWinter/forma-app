@@ -10,7 +10,7 @@ from app.models.base import Base
 from app.models.ride import Ride, RideData, RideSource
 from app.models.training import Workout, WorkoutStep, WorkoutType, WorkoutStatus, StepType
 from app.models.user import User
-from app.services.export_service import ride_to_gpx, workout_to_zwo
+from app.services.export_service import ride_to_gpx, workout_to_erg, workout_to_mrc, workout_to_zwo
 
 
 def _make_test_db():
@@ -121,6 +121,39 @@ class TestZWOExport:
 
         cooldown = wo.find("Cooldown")
         assert cooldown is not None
+
+
+def _course(text: str) -> list[tuple[float, float]]:
+    """The (minute, value) points between COURSE DATA markers."""
+    body = text.split("[COURSE DATA]")[1].split("[END COURSE DATA]")[0]
+    return [tuple(float(x) for x in line.split("\t")) for line in body.strip().splitlines()]
+
+
+class TestTrainerFileOrder:
+    """3 x 10 min on, 5 min off is ridden on, off, on, off, on, off. The ERG and
+    MRC files repeated each step on its own: 30 minutes straight at threshold,
+    then a single recovery (found 16 Oct 2026)."""
+
+    def test_erg_alternates_work_and_recovery(self):
+        db = _make_test_db()
+        workout = _make_workout_with_steps(db, _make_test_user(db))
+
+        points = _course(workout_to_erg(workout, ftp=250))
+        # Each step is a pair of points: (start, watts), (end, watts).
+        watts = [points[i][1] for i in range(0, len(points), 2)]
+
+        assert watts[1:7] == [242, 138, 242, 138, 242, 138]
+        assert points[-1][0] == 60.0  # 10 + 3 x 15 + 5 minutes; the old file came to 50
+
+    def test_mrc_alternates_work_and_recovery(self):
+        db = _make_test_db()
+        workout = _make_workout_with_steps(db, _make_test_user(db))
+
+        points = _course(workout_to_mrc(workout, ftp=250))
+        pct = [points[i][1] for i in range(0, len(points), 2)]
+
+        assert pct[1:7] == [97, 55, 97, 55, 97, 55]
+        assert points[-1][0] == 60.0
 
 
 class TestGPXExport:

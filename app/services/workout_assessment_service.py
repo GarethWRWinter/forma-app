@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.models.ride import Ride
 from app.models.training import Workout, WorkoutStatus, WorkoutType
 from app.models.user import User
+from app.services.plan_service import visible_workouts
 from app.core.llm_utils import humanize, response_text
 from app.core.coach_skills import distilled_persona
 
@@ -250,9 +251,8 @@ def _get_upcoming_workouts(
     """Return the next `days` days of workouts after the given date."""
     end = after + timedelta(days=days)
     return (
-        db.query(Workout)
+        visible_workouts(db, user_id)
         .filter(
-            Workout.user_id == user_id,
             Workout.scheduled_date > after,
             Workout.scheduled_date <= end,
         )
@@ -417,10 +417,11 @@ def auto_link_ride_to_workout(db: Session, ride: Ride) -> Workout | None:
 
     ride_day = ride.ride_date.date() if hasattr(ride.ride_date, "date") else ride.ride_date
 
+    # Only a session on the rider's calendar: a cancelled plan's leftover on
+    # the same day must not swallow the ride.
     candidate = (
-        db.query(Workout)
+        visible_workouts(db, ride.user_id)
         .filter(
-            Workout.user_id == ride.user_id,
             Workout.scheduled_date == ride_day,
             Workout.actual_ride_id.is_(None),
             or_(

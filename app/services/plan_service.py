@@ -10,9 +10,12 @@ Generates truly personalised training plans based on:
 """
 
 from datetime import date, timedelta
-from math import ceil
+from math import ceil, sqrt
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
+
+from app.core.llm_utils import humanize
 
 from app.core.workout_templates import (
     PHASE_WORKOUT_MIX,
@@ -480,6 +483,17 @@ def generate_plan(
 
     # ── 4. Collect event dates + B-race mini-taper windows ──
     goal_event_dates = {g.event_date for g in all_goals}
+    # Sessions the rider booked with the coach (no phase) survive a rebuild,
+    # because they belong to no plan. Their days are left clear so the new
+    # plan never lays a second session, or the long ride, on top of one.
+    booked_dates = {
+        d for (d,) in db.query(Workout.scheduled_date).filter(
+            Workout.user_id == user.id,
+            Workout.phase_id.is_(None),
+            Workout.scheduled_date >= today,
+            Workout.status.in_([WorkoutStatus.planned, WorkoutStatus.modified]),
+        )
+    }
     # B-race mini-taper: reduce volume 3 days before
     b_race_taper_dates: set[date] = set()
     for g in all_goals:
@@ -563,6 +577,7 @@ def generate_plan(
             goal_emphasis=goal_emphasis,
             goal_event_dates=goal_event_dates,
             b_race_taper_dates=b_race_taper_dates,
+            booked_dates=booked_dates,
             cumulative_week=cumulative_week,
             long_ride_cap_s=long_ride_cap_s,
             experience=experience,
@@ -588,6 +603,7 @@ def _generate_adaptive_workouts(
     goal_event_dates: set,
     cumulative_week: int,
     b_race_taper_dates: set[date] | None = None,
+    booked_dates: set[date] | None = None,
     long_ride_cap_s: int | None = None,
     experience: str | None = None,
     event_name: str | None = None,
@@ -670,6 +686,8 @@ def _generate_adaptive_workouts(
             if dow in user_rest_days:
                 continue
             if goal_event_dates and day_date in goal_event_dates:
+                continue
+            if booked_dates and day_date in booked_dates:
                 continue
             if day_date > end:
                 continue
@@ -1030,6 +1048,214 @@ def _create_workout_steps(
             step_order += 1
 
 
+def replace_workout_steps(db: Session, workout: Workout, steps: list[dict]) -> None:
+    """Swap a session's steps for these (template format), in one flush."""
+    workout.steps.clear()
+    db.flush()
+    _create_workout_steps(db, workout, {"steps": steps})
+    db.flush()
+    db.expire(workout, ["steps"])
+
+
+# --- Steps the coach writes ---
+# Ride mode, the step chart and every export run on WorkoutStep rows. A
+# session booked in chat used to carry none, so "load it onto your head unit"
+# had nothing to load (16 Oct 2026). build_steps turns the coach's steps into
+# the template format, refusing anything Ride mode or an export would get
+# wrong, with an error the coach can act on.
+
+STEP_TYPES = (
+    "warmup", "steady_state", "interval_on", "interval_off", "cooldown", "free_ride", "ramp",
+)
+MAX_STEPS = 40
+MAX_SESSION_S = 8 * 3600
+_STEP_POWER_REQUIRED = {"steady_state", "interval_on", "interval_off"}
+_PCT_KEYS = ("power_pct", "power_low_pct", "power_high_pct")
+_WATT_KEYS = ("power_watts", "power_low_watts", "power_high_watts")
+
+
+def _number(value, label: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a number.")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be a number.") from None
+
+
+def _whole(value, label: str, low: int, high: int) -> int | None:
+    number = _number(value, label)
+    if number is None:
+        return None
+    if number != int(number) or not low <= number <= high:
+        raise ValueError(f"{label} must be a whole number from {low} to {high}.")
+    return int(number)
+
+
+def _step_power(raw: dict, n: int, ftp: int | None) -> tuple[float | None, ...]:
+    """(target, low, high) as fractions of FTP, from percentages or watts."""
+    given_pct = [k for k in _PCT_KEYS if raw.get(k) is not None]
+    given_w = [k for k in _WATT_KEYS if raw.get(k) is not None]
+    if given_pct and given_w:
+        raise ValueError(
+            f"Step {n}: give power as a percentage of FTP or in watts, not both."
+        )
+    if given_w and not ftp:
+        raise ValueError(
+            f"Step {n}: the rider has no FTP yet, so give power as a percentage "
+            f"of FTP (power_pct, 95 means 95%) instead of watts."
+        )
+    values = []
+    for pct_key, watt_key in zip(_PCT_KEYS, _WATT_KEYS):
+        if given_w:
+            watts = _number(raw.get(watt_key), f"Step {n}: {watt_key}")
+            values.append(None if watts is None else watts / ftp)
+            continue
+        pct = _number(raw.get(pct_key), f"Step {n}: {pct_key}")
+        if pct is not None and pct < 20:
+            raise ValueError(
+                f"Step {n}: {pct_key} is a percentage of FTP, so 95 means 95%. "
+                f"{pct:g} is too low to be one."
+            )
+        values.append(None if pct is None else pct / 100)
+    for value in values:
+        if value is not None and not 0.30 <= value <= 3.0:
+            raise ValueError(
+                f"Step {n}: {round(value * 100)}% of FTP is outside 30% to 300%."
+            )
+    target, low, high = values
+    if low is not None and high is not None:
+        if low > high:
+            raise ValueError(f"Step {n}: the low power is above the high power.")
+        if target is None:
+            target = (low + high) / 2
+    elif target is None and (low is not None or high is not None):
+        # One bound alone is a target, not a range.
+        target, low, high = (low if low is not None else high), None, None
+    return target, low, high
+
+
+def build_steps(raw_steps, ftp: int | None) -> list[dict]:
+    """Validate the coach's steps and return them in template format.
+
+    Power is stored as a fraction of FTP. A repeat_count on an interval_on
+    repeats it together with the interval_off directly after it, which is how
+    Ride mode, the step chart, ZWO and FIT all read a repeat. Raises
+    ValueError with a message written for the coach to fix and resend.
+    """
+    if not isinstance(raw_steps, list) or not 1 <= len(raw_steps) <= MAX_STEPS:
+        raise ValueError(f"steps must be a list of 1 to {MAX_STEPS} steps.")
+
+    built: list[dict] = []
+    for i, raw in enumerate(raw_steps):
+        n = i + 1
+        if not isinstance(raw, dict):
+            raise ValueError(f"Step {n} is not an object.")
+        step_type = str(raw.get("step_type") or "").strip().lower()
+        if step_type not in STEP_TYPES:
+            raise ValueError(f"Step {n}: step_type must be one of {', '.join(STEP_TYPES)}.")
+        duration = _whole(raw.get("duration_seconds"), f"Step {n}: duration_seconds", 10, 14400)
+        if duration is None:
+            raise ValueError(f"Step {n}: duration_seconds is required.")
+
+        target, low, high = _step_power(raw, n, ftp)
+        if step_type in _STEP_POWER_REQUIRED and target is None:
+            raise ValueError(f"Step {n}: a {step_type} step needs a power target.")
+        if step_type == "ramp" and (low is None or high is None):
+            raise ValueError(f"Step {n}: a ramp needs both a low and a high power.")
+
+        cadence = _whole(raw.get("cadence"), f"Step {n}: cadence", 50, 130)
+        repeat = _whole(raw.get("repeat_count"), f"Step {n}: repeat_count", 1, 30)
+        if repeat == 1:
+            repeat = None
+        if repeat is not None:
+            follower = raw_steps[i + 1] if i + 1 < len(raw_steps) else None
+            follows = isinstance(follower, dict) and str(
+                follower.get("step_type") or ""
+            ).strip().lower() == "interval_off"
+            if step_type != "interval_on" or not follows:
+                raise ValueError(
+                    f"Step {n}: repeat_count only goes on an interval_on step that "
+                    f"is followed directly by its interval_off. Write any other "
+                    f"repeated block out in full, step by step."
+                )
+
+        notes = humanize(str(raw.get("notes") or "").strip())[:200] or None
+        built.append({
+            "step_type": step_type,
+            "duration_seconds": duration,
+            "power_target_pct": round(target, 4) if target is not None else None,
+            "power_low_pct": round(low, 4) if low is not None else None,
+            "power_high_pct": round(high, 4) if high is not None else None,
+            "cadence_target": cadence,
+            "repeat_count": repeat,
+            "notes": notes,
+        })
+
+    total_s = steps_load(built)[0]
+    if total_s > MAX_SESSION_S:
+        raise ValueError(
+            f"Those steps add up to {round(total_s / 3600, 1)} hours, more than "
+            f"the 8 hour limit for one session."
+        )
+    return built
+
+
+def ride_order(steps: list) -> list:
+    """Steps in the order they are ridden, repeats unrolled.
+
+    Works on template dicts and WorkoutStep rows alike. An interval_on with a
+    repeat_count repeats together with the interval_off that follows it.
+    """
+    def get(step, key):
+        return step.get(key) if isinstance(step, dict) else getattr(step, key, None)
+
+    def kind(step):
+        value = get(step, "step_type")
+        return str(getattr(value, "value", value))
+
+    ridden = []
+    i = 0
+    while i < len(steps):
+        step = steps[i]
+        reps = get(step, "repeat_count") or 1
+        if kind(step) == "interval_on" and reps > 1:
+            off = steps[i + 1] if i + 1 < len(steps) and kind(steps[i + 1]) == "interval_off" else None
+            for _ in range(reps):
+                ridden.append(step)
+                if off is not None:
+                    ridden.append(off)
+            i += 2 if off is not None else 1
+            continue
+        ridden.append(step)
+        i += 1
+    return ridden
+
+
+def steps_load(steps: list[dict]) -> tuple[int, float, float]:
+    """(duration in seconds, TSS, IF) worked out from the steps themselves.
+
+    TSS is the sum over steps of hours x intensity squared x 100, the per step
+    form of estimate_tss. A step with no power target counts as easy riding.
+    """
+    seconds = 0
+    tss = 0.0
+    for step in ride_order(steps):
+        duration = step["duration_seconds"]
+        pct = step.get("power_target_pct")
+        if pct is None and step.get("power_low_pct") is not None and step.get("power_high_pct") is not None:
+            pct = (step["power_low_pct"] + step["power_high_pct"]) / 2
+        if pct is None:
+            pct = 0.5
+        seconds += duration
+        tss += duration / 3600 * pct ** 2 * 100
+    hours = seconds / 3600
+    intensity = sqrt(tss / (hours * 100)) if hours else 0.0
+    return seconds, round(tss, 1), round(intensity, 2)
+
+
 # --- Query functions ---
 
 def get_plans(db: Session, user_id: str) -> list[TrainingPlan]:
@@ -1077,23 +1303,33 @@ def get_plan_workouts(
     return query.order_by(Workout.scheduled_date, Workout.sort_order).all()
 
 
+def visible_workouts(db: Session, user_id: str):
+    """Every session the rider can see, as a query to narrow further.
+
+    One rule: a session is visible when it belongs to the active plan, or to
+    no plan at all. A session the coach books in chat has no phase, so it
+    outlives a rebuild. The calendar used to inner join through phases, and
+    every session the coach had ever booked was invisible (16 Oct 2026).
+    Sessions of a cancelled plan stay hidden.
+    """
+    return (
+        db.query(Workout)
+        .outerjoin(TrainingPhase, Workout.phase_id == TrainingPhase.id)
+        .outerjoin(TrainingPlan, TrainingPhase.plan_id == TrainingPlan.id)
+        .filter(
+            Workout.user_id == user_id,
+            or_(Workout.phase_id.is_(None), TrainingPlan.status == PlanStatus.active),
+        )
+    )
+
+
 def get_workouts_by_date(
     db: Session, user_id: str,
     target_date: date | None = None,
     week_start: date | None = None,
 ) -> list[Workout]:
-    """Get workouts for a specific date or week — only from active plans."""
-    # Join through phase → plan to filter by active status
-    query = (
-        db.query(Workout)
-        .join(TrainingPhase, Workout.phase_id == TrainingPhase.id)
-        .join(TrainingPlan, TrainingPhase.plan_id == TrainingPlan.id)
-        .options(joinedload(Workout.actual_ride))
-        .filter(
-            Workout.user_id == user_id,
-            TrainingPlan.status == PlanStatus.active,
-        )
-    )
+    """Get the visible workouts for a specific date or week."""
+    query = visible_workouts(db, user_id).options(joinedload(Workout.actual_ride))
 
     if target_date:
         query = query.filter(Workout.scheduled_date == target_date)

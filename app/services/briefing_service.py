@@ -25,6 +25,7 @@ from app.models.onboarding import GoalEvent, GoalStatus
 from app.models.ride import Ride, RideData
 from app.models.training import Workout
 from app.models.user import User
+from app.services.plan_service import visible_workouts
 
 logger = logging.getLogger(__name__)
 
@@ -184,9 +185,11 @@ async def get_or_create_briefing(db: Session, user: User) -> Briefing:
     # ---- Context ----
     rider_name = (user.full_name or user.email.split("@")[0]).split()[0]
 
+    # The sessions on the rider's calendar today, never a cancelled plan's.
     workouts_today = (
-        db.query(Workout)
-        .filter(Workout.user_id == user.id, Workout.scheduled_date == today)
+        visible_workouts(db, user.id)
+        .filter(Workout.scheduled_date == today)
+        .order_by(Workout.sort_order)
         .all()
     )
 

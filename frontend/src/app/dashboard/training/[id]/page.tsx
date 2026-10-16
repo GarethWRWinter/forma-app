@@ -159,8 +159,10 @@ export default function WorkoutDetailPage() {
 
           {/* Action buttons */}
           <div className="flex shrink-0 items-center gap-2">
-            {/* Start Session button */}
-            {workout.status === "planned" && workout.steps && workout.steps.length > 0 && (
+            {/* Start Session: planned, or modified (changed by the coach and still to ride) */}
+            {(workout.status === "planned" || workout.status === "modified") &&
+              workout.steps &&
+              workout.steps.length > 0 && (
               <Link
                 href={`/dashboard/training/${workoutId}/session`}
                 className={buttonVariants({ variant: "flamme" })}

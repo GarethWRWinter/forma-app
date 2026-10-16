@@ -20,9 +20,10 @@ from sqlalchemy.orm import Session
 
 from app.core import forma_core
 from app.models.ride import Ride
-from app.models.training import TrainingPlan, TrainingPhase, Workout, PlanStatus, WorkoutStatus
+from app.models.training import Workout, WorkoutStatus
 from app.models.user import User
 from app.services.metrics_service import get_current_fitness, get_weekly_training_load
+from app.services.plan_service import visible_workouts
 from app.core.llm_utils import humanize, response_text
 from app.core.coach_skills import distilled_persona
 
@@ -91,14 +92,9 @@ def _build_nudge_context(
 
     # Today's planned workout (if any)
     today_workout = (
-        db.query(Workout)
-        .join(TrainingPhase)
-        .join(TrainingPlan)
-        .filter(
-            Workout.user_id == user.id,
-            Workout.scheduled_date == today,
-            TrainingPlan.status == PlanStatus.active,
-        )
+        visible_workouts(db, user.id)
+        .filter(Workout.scheduled_date == today)
+        .order_by(Workout.sort_order)
         .first()
     )
 
@@ -120,14 +116,10 @@ def _build_nudge_context(
     # Compliance: completed vs total workouts this week
     week_start = today - timedelta(days=today.weekday())
     week_workouts = (
-        db.query(Workout)
-        .join(TrainingPhase)
-        .join(TrainingPlan)
+        visible_workouts(db, user.id)
         .filter(
-            Workout.user_id == user.id,
             Workout.scheduled_date >= week_start,
             Workout.scheduled_date <= today,
-            TrainingPlan.status == PlanStatus.active,
         )
         .all()
     )

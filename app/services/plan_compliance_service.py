@@ -88,11 +88,18 @@ def _active_plan(db: Session, user_id: str) -> TrainingPlan | None:
     )
 
 
-def _planned_on(db: Session, plan: TrainingPlan, day: date) -> list[Workout]:
+def _in_scope(plan: TrainingPlan | None):
+    """The sessions that count: the plan's, and any booked in chat (no
+    phase, so they belong to no plan and show whatever plan is active)."""
+    booked = Workout.phase_id.is_(None)
+    return booked if plan is None else or_(booked, TrainingPhase.plan_id == plan.id)
+
+
+def _planned_on(db: Session, user_id: str, plan: TrainingPlan | None, day: date) -> list[Workout]:
     return (
         db.query(Workout)
-        .join(TrainingPhase, Workout.phase_id == TrainingPhase.id)
-        .filter(TrainingPhase.plan_id == plan.id, Workout.scheduled_date == day)
+        .outerjoin(TrainingPhase, Workout.phase_id == TrainingPhase.id)
+        .filter(Workout.user_id == user_id, Workout.scheduled_date == day, _in_scope(plan))
         .order_by(Workout.sort_order)
         .all()
     )
@@ -101,22 +108,21 @@ def _planned_on(db: Session, plan: TrainingPlan, day: date) -> list[Workout]:
 def link_ride(db: Session, ride: Ride) -> Workout | None:
     """Attach a ride to the session it most plausibly was, and score it.
 
-    Same day, active plan only, not already satisfied. With more than one
-    candidate the type wins, then the closest intensity band. A recovery spin
-    and a VO2 session on the same day no longer get confused. The score is
-    the deterministic one (no model call), so this is safe to run on every
-    import, including a thousand-ride backfill.
+    Same day, not already satisfied: the active plan's sessions inside its
+    window, and a session booked in chat on any day, with or without a plan.
+    With more than one candidate the type wins, then the closest intensity
+    band. A recovery spin and a VO2 session on the same day no longer get
+    confused. The score is the deterministic one (no model call), so this is
+    safe to run on every import, including a thousand-ride backfill.
     """
     if not ride.ride_date or ride.workout_id:
         return None
     plan = _active_plan(db, ride.user_id)
-    if plan is None:
-        return None
     day = ride.ride_date.date() if hasattr(ride.ride_date, "date") else ride.ride_date
-    if not (plan.start_date <= day <= plan.end_date):
-        return None
+    if plan is not None and not (plan.start_date <= day <= plan.end_date):
+        plan = None  # outside the plan, only a booked session can match
     candidates = [
-        w for w in _planned_on(db, plan, day)
+        w for w in _planned_on(db, ride.user_id, plan, day)
         if w.actual_ride_id is None
         and w.status in (WorkoutStatus.planned, WorkoutStatus.modified)
         and w.workout_type != WorkoutType.rest.value
@@ -211,9 +217,10 @@ def compliance_summary(
 
     workouts = (
         db.query(Workout)
-        .join(TrainingPhase, Workout.phase_id == TrainingPhase.id)
+        .outerjoin(TrainingPhase, Workout.phase_id == TrainingPhase.id)
         .filter(
-            TrainingPhase.plan_id == plan.id,
+            Workout.user_id == user_id,
+            _in_scope(plan),
             Workout.scheduled_date >= start,
             Workout.scheduled_date <= end,
         )

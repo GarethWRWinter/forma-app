@@ -100,7 +100,9 @@ function MastheadStat({ label, value }: { label: string; value: string }) {
 function getWeekDates(offset: number): { start: Date; dates: Date[] } {
   const today = new Date();
   const start = new Date(today);
-  start.setDate(today.getDate() - today.getDay() + 1 + offset * 7); // Monday
+  // Monday of this week. getDay() is 0 on a Sunday, so the plain sum opened
+  // next week every Sunday, a day after the rider's Sunday session.
+  start.setDate(today.getDate() - ((today.getDay() + 6) % 7) + offset * 7);
 
   const dates = [];
   for (let i = 0; i < 7; i++) {
@@ -991,7 +993,8 @@ export default function TrainingPage() {
                     </p>
                   )}
 
-                  {primary.status === "planned" && (
+                  {(primary.status === "planned" ||
+                    primary.status === "modified") && (
                     <div className="mt-2.5 flex gap-1.5">
                       <button
                         onClick={() =>

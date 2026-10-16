@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.models.ride import RideData
 from app.models.training import Workout, WorkoutStep
+from app.services.plan_service import ride_order
 
 
 # === ZWO Export (Zwift Workout Format) ===
@@ -148,32 +149,33 @@ def workout_to_erg(workout: Workout, ftp: int = 200) -> str:
     ]
 
     current_time = 0.0  # minutes
-    steps = sorted(workout.steps, key=lambda s: s.step_order)
+    # In the order they are ridden: a 2x20 is on, off, on, off. Repeating
+    # each step on its own exported 40 minutes straight at threshold, then
+    # one recovery (found 16 Oct 2026).
+    steps = ride_order(sorted(workout.steps, key=lambda s: s.step_order))
 
     for step in steps:
-        repeats = step.repeat_count or 1
-        for _ in range(repeats):
-            duration_min = step.duration_seconds / 60.0
+        duration_min = step.duration_seconds / 60.0
 
-            if step.step_type in ("warmup", "cooldown", "ramp"):
-                low_pct = step.power_low_pct or 0.40
-                high_pct = step.power_high_pct or step.power_target_pct or 0.70
-                low_w = round(low_pct * ftp)
-                high_w = round(high_pct * ftp)
-                lines.append(f"{current_time:.2f}\t{low_w}")
-                current_time += duration_min
-                lines.append(f"{current_time:.2f}\t{high_w}")
-            elif step.step_type == "free_ride":
-                watts = round(0.50 * ftp)
-                lines.append(f"{current_time:.2f}\t{watts}")
-                current_time += duration_min
-                lines.append(f"{current_time:.2f}\t{watts}")
-            else:
-                pct = step.power_target_pct or 0.65
-                watts = round(pct * ftp)
-                lines.append(f"{current_time:.2f}\t{watts}")
-                current_time += duration_min
-                lines.append(f"{current_time:.2f}\t{watts}")
+        if step.step_type in ("warmup", "cooldown", "ramp"):
+            low_pct = step.power_low_pct or 0.40
+            high_pct = step.power_high_pct or step.power_target_pct or 0.70
+            low_w = round(low_pct * ftp)
+            high_w = round(high_pct * ftp)
+            lines.append(f"{current_time:.2f}\t{low_w}")
+            current_time += duration_min
+            lines.append(f"{current_time:.2f}\t{high_w}")
+        elif step.step_type == "free_ride":
+            watts = round(0.50 * ftp)
+            lines.append(f"{current_time:.2f}\t{watts}")
+            current_time += duration_min
+            lines.append(f"{current_time:.2f}\t{watts}")
+        else:
+            pct = step.power_target_pct or 0.65
+            watts = round(pct * ftp)
+            lines.append(f"{current_time:.2f}\t{watts}")
+            current_time += duration_min
+            lines.append(f"{current_time:.2f}\t{watts}")
 
     lines.append("[END COURSE DATA]")
 
@@ -183,7 +185,7 @@ def workout_to_erg(workout: Workout, ftp: int = 200) -> str:
     for step in steps:
         label = step.notes or step.step_type.replace("_", " ").title()
         lines.append(f"{elapsed}\t{label}\t10")
-        elapsed += step.duration_seconds * (step.repeat_count or 1)
+        elapsed += step.duration_seconds
     lines.append("[END COURSE TEXT]")
 
     return "\n".join(lines)
@@ -210,28 +212,26 @@ def workout_to_mrc(workout: Workout, ftp: int = 200) -> str:
     ]
 
     current_time = 0.0
-    steps = sorted(workout.steps, key=lambda s: s.step_order)
+    steps = ride_order(sorted(workout.steps, key=lambda s: s.step_order))
 
     for step in steps:
-        repeats = step.repeat_count or 1
-        for _ in range(repeats):
-            duration_min = step.duration_seconds / 60.0
+        duration_min = step.duration_seconds / 60.0
 
-            if step.step_type in ("warmup", "cooldown", "ramp"):
-                low_pct = (step.power_low_pct or 0.40) * 100
-                high_pct = (step.power_high_pct or step.power_target_pct or 0.70) * 100
-                lines.append(f"{current_time:.2f}\t{low_pct:.0f}")
-                current_time += duration_min
-                lines.append(f"{current_time:.2f}\t{high_pct:.0f}")
-            elif step.step_type == "free_ride":
-                lines.append(f"{current_time:.2f}\t50")
-                current_time += duration_min
-                lines.append(f"{current_time:.2f}\t50")
-            else:
-                pct = (step.power_target_pct or 0.65) * 100
-                lines.append(f"{current_time:.2f}\t{pct:.0f}")
-                current_time += duration_min
-                lines.append(f"{current_time:.2f}\t{pct:.0f}")
+        if step.step_type in ("warmup", "cooldown", "ramp"):
+            low_pct = (step.power_low_pct or 0.40) * 100
+            high_pct = (step.power_high_pct or step.power_target_pct or 0.70) * 100
+            lines.append(f"{current_time:.2f}\t{low_pct:.0f}")
+            current_time += duration_min
+            lines.append(f"{current_time:.2f}\t{high_pct:.0f}")
+        elif step.step_type == "free_ride":
+            lines.append(f"{current_time:.2f}\t50")
+            current_time += duration_min
+            lines.append(f"{current_time:.2f}\t50")
+        else:
+            pct = (step.power_target_pct or 0.65) * 100
+            lines.append(f"{current_time:.2f}\t{pct:.0f}")
+            current_time += duration_min
+            lines.append(f"{current_time:.2f}\t{pct:.0f}")
 
     lines.append("[END COURSE DATA]")
 
@@ -240,7 +240,7 @@ def workout_to_mrc(workout: Workout, ftp: int = 200) -> str:
     for step in steps:
         label = step.notes or step.step_type.replace("_", " ").title()
         lines.append(f"{elapsed}\t{label}\t10")
-        elapsed += step.duration_seconds * (step.repeat_count or 1)
+        elapsed += step.duration_seconds
     lines.append("[END COURSE TEXT]")
 
     return "\n".join(lines)

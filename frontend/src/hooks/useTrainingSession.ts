@@ -134,8 +134,13 @@ function calculateTargetPower(
   stepElapsed: number,
   ftp: number
 ): { watts: number; pct: number } {
-  // For ramp/warmup/cooldown: linearly interpolate
-  if (step.powerLowPct !== undefined && step.powerHighPct !== undefined) {
+  // Ramp, warmup and cooldown run from low to high. On a steady step the
+  // range is a band to sit in, so it holds its target.
+  const ramps =
+    step.stepType === "ramp" ||
+    step.stepType === "warmup" ||
+    step.stepType === "cooldown";
+  if (ramps && step.powerLowPct !== undefined && step.powerHighPct !== undefined) {
     const progress = Math.min(stepElapsed / step.durationSeconds, 1);
     const pct = step.powerLowPct + (step.powerHighPct - step.powerLowPct) * progress;
     return { watts: Math.round(pct * ftp), pct };

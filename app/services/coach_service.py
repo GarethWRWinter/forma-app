@@ -21,8 +21,10 @@ from collections import Counter
 
 from app.core import forma_core
 from app.core.formulas import rider_profile_scores, rider_type_profile, w_per_kg as calc_w_per_kg
+from app.core.session_naming import session_display_name, workout_type_label
+from app.core.workout_templates import estimate_tss, get_template
 from app.models.chat import ChatMessage, ChatRole, ChatSession
-from app.models.training import Workout, WorkoutStatus
+from app.models.training import Workout, WorkoutStatus, WorkoutType
 from app.models.user import User
 from app.services.metrics_service import (
     get_all_time_power_profile,
@@ -33,7 +35,15 @@ from app.services.metrics_service import (
 )
 from app.services.onboarding_service import get_goals, get_onboarding_response
 from app.services.activation_service import activation_state
-from app.services.plan_service import get_plans, get_workouts_by_date
+from app.services.plan_review_service import HORIZON_DAYS
+from app.services.plan_service import (
+    build_steps,
+    get_plans,
+    get_workouts_by_date,
+    replace_workout_steps,
+    steps_load,
+    visible_workouts,
+)
 from app.services.ride_service import get_rides
 from app.services.zone_service import get_zones
 from app.core.llm_utils import StreamHumanizer, humanize, response_text
@@ -61,9 +71,9 @@ When you see concerning patterns in the rider's data or conversation, proactivel
 
 You have tools to modify the rider's training plan directly. Use them when the conversation leads to agreed changes:
 
-- **update_workout**: Change a workout's title, description, type, date, duration, or TSS. Use the workout IDs from the `this_week` context.
+- **update_workout**: Change a workout's title, description, type, date, duration, TSS or steps. Use the workout IDs from the `this_week` context.
 - **swap_workout_date**: Swap the dates of two workouts to rearrange the week.
-- **add_workout**: Add a new session to the plan.
+- **add_workout**: Book a new session on the rider's calendar, with its steps whenever it has structure.
 - **skip_workout**: Mark a workout as skipped.
 - **propose_plan_change**: Put a reasoned proposal in front of the rider. This one changes NOTHING by itself. It is how you raise a change the rider has not asked for.
 
@@ -80,9 +90,15 @@ You have tools to modify the rider's training plan directly. Use them when the c
 **When NOT to use tools:**
 - General discussion about training philosophy or future plans
 - The rider is just asking questions, not requesting changes
-- Changes that affect weeks beyond the current week (explain you can only modify this week's plan)
+- Sessions more than 14 days out. Inside the dated fortnight you can add, change, move or skip. Anything later cannot be booked yet, so say so plainly and never say it is booked.
 
 **After using a tool**, briefly confirm what was changed and explain how it fits the overall training plan.
+
+**Nothing is booked until a tool says so.**
+- Never say a session is booked, added, moved or skipped until the tool result in this turn confirms it. "Done" comes after the result, never before the call.
+- Name the day exactly as the result gives it, for example "Monday 19 October". Never work out a weekday yourself.
+- If the result starts with Error, tell the rider plainly it did not go in and what you will do instead.
+- Offer Ride mode or a trainer or head-unit export only when the result says the session has structured steps.
 
 ## Post-Event Debrief
 
@@ -146,8 +162,8 @@ Rules:
   in plain words, with the exact navigation from `next_action.instruction`.
   Never end with "next time we talk" or "when you're ready". Say what to do.
 - At stage `plan`, tell them to build it now: Goal, then Build my season. You
-  cannot write a whole plan from the chat (your plan tools change the current
-  week only), so never offer to.
+  cannot write a whole plan from the chat (your plan tools change the next
+  fortnight only), so never offer to.
 - One step at a time. Never list the whole road.
 - If the rider asks how the product works, answer from the Product Knowledge
   section below. If it is not there, say plainly that you don't know and give
@@ -572,40 +588,39 @@ def _build_rider_context(
         return f"{round(lo * ftp)} to {round(hi * ftp)}W"
 
     # ── 11. This Week's Workouts ──
-    # From this Monday through the next seven days. The calendar week alone
-    # left the coach blind on a Sunday: a rider who joined that day and asked
-    # "what should I do this week?" heard "I'm only seeing today's session"
-    # (launch audit, 4 Oct 2026). And each session goes by the name the app
-    # shows, so the coach and the calendar never call it two things.
+    # From this Monday through the fortnight ahead, the same window the plan
+    # tools can book into. The calendar week alone left the coach blind on a
+    # Sunday: a rider who joined that day and asked "what should I do this
+    # week?" heard "I'm only seeing today's session" (launch audit, 4 Oct
+    # 2026). And each session goes by the name the app shows, so the coach and
+    # the calendar never call it two things.
     try:
-        from app.core.session_naming import session_display_name
-
         week_start = today - timedelta(days=today.weekday())  # Monday
+        horizon = today + timedelta(days=HORIZON_DAYS)
         workouts = [
             w
-            for start in (week_start, week_start + timedelta(days=7))
+            for start in (week_start + timedelta(days=7 * n) for n in range(3))
             for w in get_workouts_by_date(db, user.id, week_start=start)
-            if w.scheduled_date <= today + timedelta(days=7)
+            if w.scheduled_date <= horizon
         ]
         if workouts:
             context["this_week"] = [
                 {
                     "id": w.id,
                     "date": str(w.scheduled_date),
-                    "day": w.scheduled_date.strftime("%A"),
-                    "title": (
-                        session_display_name(getattr(w.workout_type, "value", w.workout_type), w.id)
-                        if getattr(w.workout_type, "value", w.workout_type) != "rest"
-                        else w.title
-                    ),
+                    "day": _say_day(w.scheduled_date),
+                    "title": _session_name(w),
                     "type": w.workout_type,
                     "description": w.description,
                     "status": w.status,
                     "planned_tss": w.planned_tss,
                     "planned_duration_min": round(w.planned_duration_seconds / 60) if w.planned_duration_seconds else None,
                     "main_set_watts": _main_set_watts(w),
+                    # Ride mode and the exports run on steps. Without them
+                    # the session is a note on the calendar.
+                    "structured": bool(w.steps),
                 }
-                for w in workouts[:14]
+                for w in workouts[:28]
             ]
     except Exception:
         pass
@@ -751,10 +766,45 @@ def _build_rider_context(
 
 # === Coach Tools (Claude tool_use) ===
 
+_WORKOUT_TYPES = ["endurance", "tempo", "sweet_spot", "threshold", "vo2max", "sprint", "recovery", "rest"]
+
+# What Ride mode runs and what the exports carry, in the shape the coach
+# writes it. plan_service.build_steps holds the rules and says when one breaks.
+_STEPS_SCHEMA = {
+    "type": "array",
+    "description": (
+        "The session's structure in riding order, which is what Ride mode runs and what the "
+        "exports carry. Give power as a percentage of FTP (power_pct 95 means 95%) or in watts, "
+        "one or the other in each step. repeat_count goes only on an interval_on that is "
+        "followed directly by its interval_off, and repeats that pair. A rep with structure "
+        "inside it (an opener, a hold, a finish) is written out step by step, with no repeat_count."
+    ),
+    "items": {
+        "type": "object",
+        "properties": {
+            "step_type": {
+                "type": "string",
+                "enum": ["warmup", "steady_state", "interval_on", "interval_off", "cooldown", "free_ride", "ramp"],
+            },
+            "duration_seconds": {"type": "integer", "description": "10 to 14400"},
+            "power_pct": {"type": "number", "description": "Target as a percentage of FTP, e.g. 95"},
+            "power_low_pct": {"type": "number", "description": "Bottom of the range, % of FTP"},
+            "power_high_pct": {"type": "number", "description": "Top of the range, % of FTP"},
+            "power_watts": {"type": "number", "description": "Target in watts"},
+            "power_low_watts": {"type": "number", "description": "Bottom of the range in watts"},
+            "power_high_watts": {"type": "number", "description": "Top of the range in watts"},
+            "cadence": {"type": "integer", "description": "Target rpm, 50 to 130"},
+            "repeat_count": {"type": "integer", "description": "2 to 30, on an interval_on only"},
+            "notes": {"type": "string", "description": "A short cue for the rider during the step"},
+        },
+        "required": ["step_type", "duration_seconds"],
+    },
+}
+
 COACH_TOOLS = [
     {
         "name": "update_workout",
-        "description": "Update an existing workout's title, description, type, date, duration, or TSS. Use this when the rider and coach agree to modify a planned workout, e.g. changing a threshold session to an endurance ride, adjusting duration, or rewriting the description.",
+        "description": "Update an existing session's title, description, type, date (today up to 14 days ahead), duration, TSS or steps. Use this when the rider and coach agree to modify a planned session, e.g. changing a threshold session to an endurance ride, adjusting duration, or rewriting it. Steps, when given, replace the old ones. A session the rider has already ridden cannot be changed. The result gives the session's name and the exact day it is on; quote those, never your own.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -766,19 +816,20 @@ COACH_TOOLS = [
                 "description": {"type": "string", "description": "New workout description explaining purpose and how to perform it"},
                 "workout_type": {
                     "type": "string",
-                    "enum": ["endurance", "tempo", "sweet_spot", "threshold", "vo2max", "sprint", "recovery", "rest"],
+                    "enum": _WORKOUT_TYPES,
                     "description": "New workout type",
                 },
-                "scheduled_date": {"type": "string", "description": "New date in YYYY-MM-DD format"},
+                "scheduled_date": {"type": "string", "description": "New date, YYYY-MM-DD, taken from the dated calendar"},
                 "planned_duration_seconds": {"type": "integer", "description": "New planned duration in seconds"},
                 "planned_tss": {"type": "number", "description": "New planned TSS"},
+                "steps": _STEPS_SCHEMA,
             },
             "required": ["workout_id"],
         },
     },
     {
         "name": "swap_workout_date",
-        "description": "Swap the scheduled dates of two workouts. Use when the rider wants to rearrange their week, e.g. moving Tuesday's intervals to Thursday.",
+        "description": "Swap the scheduled dates of two workouts. Use when the rider wants to rearrange their week, e.g. moving Tuesday's intervals to Thursday. The result gives the exact days; quote those, never your own.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -790,26 +841,27 @@ COACH_TOOLS = [
     },
     {
         "name": "add_workout",
-        "description": "Add a new workout to the rider's plan. Use when the coach prescribes an additional session, e.g. adding a recovery ride or an extra interval session.",
+        "description": "Book a session on the rider's calendar, from today up to 14 days ahead. Include steps whenever the session has structure (intervals, power targets, cadence): the steps are what Ride mode runs and what the exports carry to Zwift, a smart trainer or a head unit. Without steps it is a note on the calendar and nothing more. If it replaces a planned session, skip that one too. The result gives the exact day it landed on; quote that day, never your own.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "scheduled_date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
+                "scheduled_date": {"type": "string", "description": "YYYY-MM-DD, taken from the dated calendar, today up to 14 days ahead"},
                 "title": {"type": "string", "description": "Workout title"},
                 "description": {"type": "string", "description": "Description of purpose and how to perform the workout"},
                 "workout_type": {
                     "type": "string",
-                    "enum": ["endurance", "tempo", "sweet_spot", "threshold", "vo2max", "sprint", "recovery", "rest"],
+                    "enum": _WORKOUT_TYPES,
                 },
                 "planned_duration_seconds": {"type": "integer", "description": "Duration in seconds"},
                 "planned_tss": {"type": "number", "description": "Estimated TSS"},
+                "steps": _STEPS_SCHEMA,
             },
             "required": ["scheduled_date", "title", "workout_type"],
         },
     },
     {
         "name": "skip_workout",
-        "description": "Mark a workout as skipped. Use when the rider and coach agree to drop a session, due to fatigue, time constraints, or plan adjustment.",
+        "description": "Mark a workout as skipped. Use when the rider and coach agree to drop a session, due to fatigue, time constraints, or plan adjustment. The result gives the exact day; quote it, never your own.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1037,6 +1089,254 @@ def _tool_status(db: Session, user: User, name: str, tool_input: dict) -> str | 
     return _TOOL_STATUS.get(name)
 
 
+# ── Plan tool helpers ──
+# Every plan tool reads its change back through the calendar's own query
+# before it commits, and names the day in words. On 16 Oct 2026 the coach
+# said "Done. It's booked for Sunday the 19th": the session never reached the
+# calendar, and the 19th was a Monday.
+
+_NOT_SAVED = {
+    "booked": (
+        "Error: nothing was booked. The session would not have shown on the "
+        "rider's calendar, so it was not saved. Tell the rider plainly it did "
+        "not go in, and do not say it is booked."
+    ),
+    "changed": (
+        "Error: nothing was changed. The session would not have shown on the "
+        "rider's calendar after that change, so it was not saved. Tell the "
+        "rider plainly it did not go in, and do not say it is done."
+    ),
+}
+
+_TOOL_CRASHED = (
+    "Error: that change failed and nothing was saved. Tell the rider plainly "
+    "it did not go in, and do not describe it as done."
+)
+_LOOKUP_CRASHED = (
+    "Error: that lookup failed to run. Tell the rider plainly that you could "
+    "not get the answer, and do not answer from memory instead."
+)
+
+
+def _say_day(d: date) -> str:
+    """The day as a rider says it ("Monday 19 October"), on any platform."""
+    return f"{d:%A} {d.day} {d:%B}"
+
+
+def _calendar_block(today: date) -> str:
+    """Today and the fortnight ahead, each date with its weekday spelled out.
+
+    The prompt used to carry only "Today's date: 2026-10-16", so the model
+    worked the weekday out for itself and booked "Sunday the 19th" on a
+    Friday the 16th. It never has to work one out now.
+    """
+    lines = [
+        f"Today is {_say_day(today)} {today.year} ({today.isoformat()}).",
+        "The next 14 days. Read the weekday from here, never work it out yourself:",
+    ]
+    for offset in range(1, HORIZON_DAYS + 1):
+        d = today + timedelta(days=offset)
+        lines.append(f"- {d.isoformat()}: {_say_day(d)}")
+    return "\n".join(lines)
+
+
+def _booking_date(value, today: date) -> date | None:
+    """The date asked for, when it is a real one inside the bookable fortnight."""
+    try:
+        d = date.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return d if today <= d <= today + timedelta(days=HORIZON_DAYS) else None
+
+
+def _bad_date(today: date, verb: str) -> str:
+    last = today + timedelta(days=HORIZON_DAYS)
+    return (
+        f"Error: nothing was {verb}. scheduled_date must be YYYY-MM-DD from "
+        f"{today.isoformat()} to {last.isoformat()}. Take the date from the "
+        f"dated calendar and call again."
+    )
+
+
+def _workout_type(value) -> str | None:
+    try:
+        return WorkoutType(str(value or "").strip().lower()).value
+    except ValueError:
+        return None
+
+
+def _seconds(value) -> int | None:
+    try:
+        seconds = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return seconds if 0 < seconds <= 8 * 3600 else None
+
+
+def _tss(value) -> float | None:
+    try:
+        tss = round(float(value), 1)
+    except (TypeError, ValueError):
+        return None
+    return tss if 0 <= tss <= 500 else None
+
+
+def _type_value(w: Workout) -> str:
+    return str(getattr(w.workout_type, "value", w.workout_type))
+
+
+def _session_name(w: Workout) -> str:
+    """The name the app shows, so the coach and the calendar agree."""
+    wtype = _type_value(w)
+    return session_display_name(wtype, w.id) if wtype != "rest" else w.title
+
+
+def _session_facts(w: Workout) -> str:
+    """The session in brief ("threshold, 70 min, about 85 TSS")."""
+    parts = [workout_type_label(w.workout_type)]
+    if w.planned_duration_seconds:
+        parts.append(f"{round(w.planned_duration_seconds / 60)} min")
+    if w.planned_tss:
+        parts.append(f"about {round(w.planned_tss)} TSS")
+    return ", ".join(parts)
+
+
+def _say_length(seconds: int) -> str:
+    return f"{seconds} s" if seconds < 60 else f"{round(seconds / 60)} min"
+
+
+def _main_set(steps: list, ftp: int | None) -> str | None:
+    """The work in one phrase ("main set: 2 × 12 min at 295W")."""
+    def power(low: float, high: float) -> str:
+        if ftp:
+            lo, hi = round(low * ftp), round(high * ftp)
+            return f"{lo}W" if lo == hi else f"{lo} to {hi}W"
+        lo, hi = round(low * 100), round(high * 100)
+        return f"{lo}% of FTP" if lo == hi else f"{lo} to {hi}% of FTP"
+
+    def kind(st) -> str:
+        return str(getattr(st.step_type, "value", st.step_type))
+
+    reps = [
+        st for st in steps
+        if kind(st) == "interval_on" and (st.repeat_count or 1) > 1 and st.power_target_pct
+    ]
+    if reps:
+        st = max(reps, key=lambda x: x.duration_seconds * x.repeat_count)
+        return (
+            f"main set: {st.repeat_count} × {_say_length(st.duration_seconds)} "
+            f"at {power(st.power_target_pct, st.power_target_pct)}"
+        )
+    work = [
+        st for st in steps
+        if kind(st) in ("interval_on", "steady_state", "ramp")
+        and (st.power_target_pct or 0) >= 0.80
+    ]
+    if not work:
+        return None
+    targets = [st.power_target_pct for st in work]
+    total = sum(st.duration_seconds for st in work)
+    return f"main set: {_say_length(total)} of work at {power(min(targets), max(targets))}"
+
+
+def _structure_note(w: Workout, ftp: int | None) -> str:
+    """What the rider can do with the session, so the coach offers no more."""
+    if _type_value(w) == "rest":
+        return ""
+    steps = sorted(w.steps or [], key=lambda st: st.step_order)
+    if not steps:
+        return (
+            "It has no structured steps, so it cannot be started in Ride mode or "
+            "exported to a trainer or head unit. Do not say it can be. If the "
+            "session has targets, call update_workout with steps."
+        )
+    main = _main_set(steps, ftp)
+    shape = f"It has {len(steps)} structured steps{f' ({main})' if main else ''}"
+    if not ftp:
+        return (
+            f"{shape}. Ride mode and the exports need the rider's FTP, which is "
+            f"not set yet, so do not offer them until it is."
+        )
+    return (
+        f"{shape}, so the rider can start it in Ride mode or export it from the "
+        "session page: .ZWO for Zwift, .ERG for Wahoo or TrainerRoad, .MRC as % "
+        "of FTP, .FIT for Garmin or Hammerhead."
+    )
+
+
+def _on_calendar(db: Session, user: User, w: Workout) -> bool:
+    """Read the session back through the calendar's own query."""
+    return any(
+        v.id == w.id
+        for v in get_workouts_by_date(db, user.id, target_date=w.scheduled_date)
+    )
+
+
+def _when(w: Workout, today: date, already: list[Workout]) -> str:
+    """Where the rider will find it. Today shows one session a day, the
+    first, so a second session that day is only on the plan page."""
+    others = [o for o in already if o.status != WorkoutStatus.skipped]
+    if others:
+        first = _session_name(others[0])
+        return (
+            f"It is on the rider's plan page now, as a second session that day "
+            f"after {first}. Today shows only {first}, so point the rider to the "
+            f"plan page for this one."
+        )
+    if w.scheduled_date == today:
+        return "It is on the rider's plan page and on Today now."
+    return "It is on the rider's plan page now and will be on Today that morning."
+
+
+def _apply_steps_load(w: Workout, steps: list[dict]) -> None:
+    """Duration, TSS and IF from the steps. The coach's own duration stands
+    when it is within 10% of the steps' (riding to the climb, say)."""
+    seconds, tss, intensity = steps_load(steps)
+    planned = w.planned_duration_seconds
+    if not planned or abs(seconds - planned) > 0.1 * planned:
+        w.planned_duration_seconds = seconds
+    w.planned_tss = tss
+    w.planned_if = intensity
+
+
+def _estimate_load(w: Workout) -> None:
+    """A session with no steps still carries an intensity and a TSS, so
+    compliance can score the ride against it."""
+    wtype = _type_value(w)
+    if wtype == "rest":
+        w.planned_duration_seconds, w.planned_tss, w.planned_if = None, None, None
+        return
+    template = get_template(wtype, duration_hint=w.planned_duration_seconds)
+    w.planned_if = template.get("planned_if")
+    if w.planned_tss is None and w.planned_duration_seconds and w.planned_if:
+        w.planned_tss = round(w.planned_duration_seconds / 3600 * w.planned_if ** 2 * 100, 1)
+
+
+def _ridden(w: Workout, verb: str) -> str:
+    return (
+        f"Error: nothing was {verb}. {_session_name(w)} on "
+        f"{_say_day(w.scheduled_date)} has already been ridden, so it stays as it "
+        f"was. If the rider needs another session, book it with add_workout."
+    )
+
+
+def _run_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> str:
+    """_execute_tool, with a crash turned into an honest result.
+
+    A tool that raised used to end the turn with whatever had streamed, which
+    could be "I'll put it straight into your plan" and nothing after it.
+    """
+    try:
+        return _execute_tool(db, user, tool_name, tool_input)
+    except Exception:
+        logger.exception("Coach tool %s failed (user=%s)", tool_name, user.id)
+        try:
+            db.rollback()
+        except Exception:
+            logger.exception("Rollback after coach tool %s failed", tool_name)
+        return _LOOKUP_CRASHED if tool_name in _READ_ONLY_TOOLS else _TOOL_CRASHED
+
+
 def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> str:
     """
     Execute a coach tool and return a result string for Claude.
@@ -1045,77 +1345,205 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
     a confirmation message that Claude uses in its follow-up response.
     """
     if tool_name == "update_workout":
+        today = date.today()
         workout = (
             db.query(Workout)
-            .filter(Workout.id == tool_input["workout_id"], Workout.user_id == user.id)
+            .filter(Workout.id == tool_input.get("workout_id"), Workout.user_id == user.id)
             .first()
         )
         if not workout:
             return "Error: Workout not found."
+        if workout.status == WorkoutStatus.completed:
+            return _ridden(workout, "changed")
 
-        if "title" in tool_input:
-            workout.title = tool_input["title"]
+        new_date = None
+        if tool_input.get("scheduled_date") is not None:
+            new_date = _booking_date(tool_input["scheduled_date"], today)
+            if new_date is None:
+                return _bad_date(today, "changed")
+        new_type = None
+        if tool_input.get("workout_type") is not None:
+            new_type = _workout_type(tool_input["workout_type"])
+            if new_type is None:
+                return (
+                    "Error: nothing was changed. workout_type must be one of "
+                    f"{', '.join(_WORKOUT_TYPES)}."
+                )
+        steps = None
+        if tool_input.get("steps"):
+            try:
+                steps = build_steps(tool_input["steps"], user.ftp)
+            except ValueError as e:
+                return f"Error: nothing was changed. {e} Fix the steps and call again."
+
+        old_type = _type_value(workout)
+        if tool_input.get("title"):
+            workout.title = humanize(str(tool_input["title"]).strip())[:255] or workout.title
         if "description" in tool_input:
-            workout.description = tool_input["description"]
-        if "workout_type" in tool_input:
-            workout.workout_type = tool_input["workout_type"]
-        if "scheduled_date" in tool_input:
-            workout.scheduled_date = date.fromisoformat(tool_input["scheduled_date"])
+            workout.description = humanize(str(tool_input["description"] or "").strip()) or None
+        if new_type:
+            workout.workout_type = WorkoutType(new_type)
+        if new_date:
+            workout.scheduled_date = new_date
         if "planned_duration_seconds" in tool_input:
-            workout.planned_duration_seconds = tool_input["planned_duration_seconds"]
+            workout.planned_duration_seconds = _seconds(tool_input["planned_duration_seconds"])
         if "planned_tss" in tool_input:
-            workout.planned_tss = tool_input["planned_tss"]
+            workout.planned_tss = _tss(tool_input["planned_tss"])
+
+        restyled = False
+        if steps:
+            replace_workout_steps(db, workout, steps)
+            _apply_steps_load(workout, steps)
+        elif new_type and new_type != old_type:
+            # The old steps describe the old session. Ride mode would run the
+            # threshold reps on what is now an endurance day.
+            if new_type == "rest":
+                replace_workout_steps(db, workout, [])
+                _estimate_load(workout)
+            else:
+                template = get_template(new_type, duration_hint=workout.planned_duration_seconds)
+                replace_workout_steps(db, workout, template["steps"])
+                workout.planned_duration_seconds = template["duration_seconds"]
+                workout.planned_if = template.get("planned_if")
+                workout.planned_tss = round(estimate_tss(template, user.ftp or 200), 1)
+                restyled = True
+        elif new_type or "planned_duration_seconds" in tool_input:
+            if not workout.steps:
+                _estimate_load(workout)
 
         workout.status = WorkoutStatus.modified
+        db.flush()
+        if not _on_calendar(db, user, workout):
+            db.rollback()
+            logger.error("update_workout: %s would not be on the calendar", tool_input.get("workout_id"))
+            return _NOT_SAVED["changed"]
         db.commit()
-        return f"Updated workout '{workout.title}' on {workout.scheduled_date}."
+
+        name = _session_name(workout)
+        result = (
+            f"Updated. {name} ({_session_facts(workout)}) is on "
+            f"{_say_day(workout.scheduled_date)} ({workout.scheduled_date.isoformat()}, "
+            f"workout_id {workout.id})."
+        )
+        if restyled:
+            result += (
+                f" Its steps now follow the standard {workout_type_label(new_type)} "
+                f"session, so it runs {round(workout.planned_duration_seconds / 60)} min. "
+                f"If you meant a different shape, call update_workout with steps."
+            )
+        note = _structure_note(workout, user.ftp)
+        if note:
+            result += " " + note
+        return result + f" Call it {name} and give the day exactly as written here."
 
     elif tool_name == "swap_workout_date":
         wa = (
             db.query(Workout)
-            .filter(Workout.id == tool_input["workout_id_a"], Workout.user_id == user.id)
+            .filter(Workout.id == tool_input.get("workout_id_a"), Workout.user_id == user.id)
             .first()
         )
         wb = (
             db.query(Workout)
-            .filter(Workout.id == tool_input["workout_id_b"], Workout.user_id == user.id)
+            .filter(Workout.id == tool_input.get("workout_id_b"), Workout.user_id == user.id)
             .first()
         )
         if not wa or not wb:
             return "Error: One or both workouts not found."
+        for w in (wa, wb):
+            if w.status == WorkoutStatus.completed:
+                return _ridden(w, "changed")
 
         wa.scheduled_date, wb.scheduled_date = wb.scheduled_date, wa.scheduled_date
+        db.flush()
+        if not (_on_calendar(db, user, wa) and _on_calendar(db, user, wb)):
+            db.rollback()
+            return _NOT_SAVED["changed"]
         db.commit()
-        return f"Swapped dates: '{wa.title}' now on {wa.scheduled_date}, '{wb.title}' now on {wb.scheduled_date}."
+        return (
+            f"Swapped. {_session_name(wa)} is now on {_say_day(wa.scheduled_date)} "
+            f"({wa.scheduled_date.isoformat()}) and {_session_name(wb)} is now on "
+            f"{_say_day(wb.scheduled_date)} ({wb.scheduled_date.isoformat()}). Give "
+            f"the days exactly as written here."
+        )
 
     elif tool_name == "add_workout":
+        # Booked by hand, so it belongs to no plan (phase_id NULL). It shows
+        # on the calendar whatever plan is active and outlives a rebuild,
+        # where a session filed under the plan would go when the plan does.
+        today = date.today()
+        day = _booking_date(tool_input.get("scheduled_date"), today)
+        if day is None:
+            return _bad_date(today, "booked")
+        wtype = _workout_type(tool_input.get("workout_type"))
+        if wtype is None:
+            return (
+                "Error: nothing was booked. workout_type must be one of "
+                f"{', '.join(_WORKOUT_TYPES)}."
+            )
+        steps = None
+        if tool_input.get("steps"):
+            try:
+                steps = build_steps(tool_input["steps"], user.ftp)
+            except ValueError as e:
+                return f"Error: nothing was booked. {e} Fix the steps and call again."
+
+        same_day = get_workouts_by_date(db, user.id, target_date=day)
+        title = humanize(str(tool_input.get("title") or "").strip())[:255]
         workout = Workout(
             user_id=user.id,
-            scheduled_date=date.fromisoformat(tool_input["scheduled_date"]),
-            title=tool_input["title"],
-            description=tool_input.get("description"),
-            workout_type=tool_input["workout_type"],
-            planned_duration_seconds=tool_input.get("planned_duration_seconds"),
-            planned_tss=tool_input.get("planned_tss"),
+            phase_id=None,
+            scheduled_date=day,
+            title=title or workout_type_label(wtype).capitalize(),
+            description=humanize(str(tool_input.get("description") or "").strip()) or None,
+            workout_type=WorkoutType(wtype),
+            planned_duration_seconds=_seconds(tool_input.get("planned_duration_seconds")),
+            planned_tss=_tss(tool_input.get("planned_tss")),
             status=WorkoutStatus.planned,
+            sort_order=max((w.sort_order or 0 for w in same_day), default=-1) + 1,
         )
         db.add(workout)
+        db.flush()
+        if steps:
+            replace_workout_steps(db, workout, steps)
+            _apply_steps_load(workout, steps)
+        else:
+            _estimate_load(workout)
+        db.flush()
+
+        if not _on_calendar(db, user, workout):
+            db.rollback()
+            logger.error("add_workout: the session for %s would not be on the calendar", day)
+            return _NOT_SAVED["booked"]
         db.commit()
-        db.refresh(workout)
-        return f"Added workout '{workout.title}' on {workout.scheduled_date} (ID: {workout.id})."
+
+        name = _session_name(workout)
+        result = (
+            f"Booked. {name} ({_session_facts(workout)}) is on {_say_day(day)} "
+            f"({day.isoformat()}, workout_id {workout.id}). {_when(workout, today, same_day)}"
+        )
+        note = _structure_note(workout, user.ftp)
+        if note:
+            result += " " + note
+        return result + f" Call it {name} and give the day exactly as written here."
 
     elif tool_name == "skip_workout":
         workout = (
             db.query(Workout)
-            .filter(Workout.id == tool_input["workout_id"], Workout.user_id == user.id)
+            .filter(Workout.id == tool_input.get("workout_id"), Workout.user_id == user.id)
             .first()
         )
         if not workout:
             return "Error: Workout not found."
+        if workout.status == WorkoutStatus.completed:
+            return _ridden(workout, "skipped")
 
         workout.status = WorkoutStatus.skipped
         db.commit()
-        return f"Skipped workout '{workout.title}' on {workout.scheduled_date}."
+        return (
+            f"Skipped. {_session_name(workout)} on {_say_day(workout.scheduled_date)} "
+            f"({workout.scheduled_date.isoformat()}) is marked skipped and is off the "
+            f"rider's plan for that day."
+        )
 
     elif tool_name == "create_goal":
         from datetime import date as _date
@@ -1425,7 +1853,7 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
         # apply_proposal so a change is applied exactly once.
         from app.models.plan_proposal import PlanProposal
         from app.models.training import PlanStatus, TrainingPlan
-        from app.services.plan_review_service import HORIZON_DAYS, _validate_changes
+        from app.services.plan_review_service import _validate_changes
 
         observation = (tool_input.get("observation") or "").strip()
         rationale = (tool_input.get("rationale") or "").strip()
@@ -1443,11 +1871,12 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
         # the review validator rather than restating its rules is what stops the
         # two paths drifting into different ideas of a legal change.
         today = date.today()
+        # Only sessions the rider can see: a cancelled plan's sessions are
+        # not theirs to approve changes to.
         upcoming_ids = {
             w.id
-            for w in db.query(Workout)
+            for w in visible_workouts(db, user.id)
             .filter(
-                Workout.user_id == user.id,
                 Workout.scheduled_date >= today,
                 Workout.scheduled_date <= today + timedelta(days=HORIZON_DAYS),
             )
@@ -1683,7 +2112,7 @@ async def stream_response(
         user,
         f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
         f"{dossier_block}"
-        f"Today's date: {date.today().isoformat()}",
+        f"{_calendar_block(date.today())}",
         volatile=_relevant_memories(db, user, user_message),
     )
 
@@ -1746,7 +2175,7 @@ async def stream_response(
                 label = _tool_status(db, user, tool_block.name, tool_block.input)
                 if label:
                     yield f'data: {json.dumps({"type": "status", "content": label})}\n\n'
-                result_text = _execute_tool(
+                result_text = _run_tool(
                     db, user, tool_block.name, tool_block.input
                 )
                 tool_results.append({
@@ -1758,7 +2187,7 @@ async def stream_response(
                     # The plan has not moved, but something is now waiting on
                     # the rider, so the app can raise the card straight away.
                     yield f'data: {json.dumps({"type": "proposal_created"})}\n\n'
-                if tool_block.name not in _NO_PLAN_CHANGE_TOOLS:
+                if tool_block.name not in _NO_PLAN_CHANGE_TOOLS and not result_text.startswith("Error"):
                     plan_was_updated = True
 
             messages.append({"role": "user", "content": tool_results})
@@ -1972,7 +2401,7 @@ async def stream_voice_response(
         f"{VOICE_MODE_ADDENDUM}\n\n"
         f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
         f"{dossier_block}"
-        f"Today's date: {date.today().isoformat()}",
+        f"{_calendar_block(date.today())}",
         volatile=_relevant_memories(db, user, user_message),
     )
 
@@ -2056,7 +2485,7 @@ async def stream_voice_response(
                 label = _tool_status(db, user, tool_block.name, tool_block.input)
                 if label:
                     yield f'data: {json.dumps({"type": "status", "content": label})}\n\n'
-                result_text = _execute_tool(
+                result_text = _run_tool(
                     db, user, tool_block.name, tool_block.input
                 )
                 tool_results.append({
@@ -2068,7 +2497,7 @@ async def stream_voice_response(
                     # The plan has not moved, but something is now waiting on
                     # the rider, so the app can raise the card straight away.
                     yield f'data: {json.dumps({"type": "proposal_created"})}\n\n'
-                if tool_block.name not in _NO_PLAN_CHANGE_TOOLS:
+                if tool_block.name not in _NO_PLAN_CHANGE_TOOLS and not result_text.startswith("Error"):
                     plan_was_updated = True
 
             messages.append({"role": "user", "content": tool_results})
@@ -2158,7 +2587,7 @@ def get_non_streaming_response(
     system = _system_blocks(
         user,
         f"## Current Rider Context\n```json\n{rider_context}\n```\n\n"
-        f"Today's date: {date.today().isoformat()}"
+        f"{_calendar_block(date.today())}"
     )
 
     messages = _build_messages(session)

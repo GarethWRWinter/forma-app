@@ -44,6 +44,7 @@ from app.services.metrics_service import (
     get_recent_power_profile,
     get_weekly_training_load,
 )
+from app.services.plan_service import replace_workout_steps, visible_workouts
 
 logger = logging.getLogger(__name__)
 
@@ -137,19 +138,18 @@ def _current_phase(plan: TrainingPlan, today: date) -> TrainingPhase | None:
 
 
 def _phase_for_date(plan: TrainingPlan, day: date) -> TrainingPhase | None:
-    """Which phase a new session belongs to.
+    """The phase whose dates cover the day, or None.
 
-    A workout with no phase is invisible: the calendar query inner joins
-    through phases, so an unattached session would be silently lost.
+    No nearest phase as a fallback: a session filed under the last phase of
+    a plan that has already ended goes with that plan at the next rebuild. A
+    session on a day no phase covers is booked on its own (no phase), which
+    the calendar shows whatever plan is active.
     """
-    fallback = None
     for phase in plan.phases:
         start, end = _as_date(phase.start_date), _as_date(phase.end_date)
         if start and end and start <= day <= end:
             return phase
-        if start and start <= day:
-            fallback = phase
-    return fallback or (plan.phases[0] if plan.phases else None)
+    return None
 
 
 def _normalise_observation(text: str) -> str:
@@ -208,18 +208,17 @@ def build_review_context(db: Session, user: User) -> dict:
             } if phase else None,
         }
 
-        phase_ids = [p.id for p in plan.phases]
+        # Everything on the rider's calendar in the fortnight, sessions
+        # booked in chat included, so a proposal can edit any of them.
         prescribed = (
-            db.query(Workout)
+            visible_workouts(db, user.id)
             .filter(
-                Workout.user_id == user.id,
-                Workout.phase_id.in_(phase_ids),
                 Workout.scheduled_date >= today,
                 Workout.scheduled_date <= horizon,
             )
             .order_by(Workout.scheduled_date, Workout.sort_order)
             .all()
-        ) if phase_ids else []
+        )
         context["prescribed_next_14_days"] = [
             {
                 # The id is the handle the coach edits by. Without it a
@@ -294,9 +293,8 @@ def build_review_context(db: Session, user: User) -> dict:
     context["actual_rides_last_21_days"] = actual
 
     missed = (
-        db.query(Workout)
+        visible_workouts(db, user.id)
         .filter(
-            Workout.user_id == user.id,
             Workout.scheduled_date >= lookback_start,
             Workout.scheduled_date < today,
             Workout.status == WorkoutStatus.planned,
@@ -746,6 +744,17 @@ def _planned_if_for(workout_type: str, duration_seconds: int | None) -> float | 
         return None
 
 
+def _restep(db: Session, workout: Workout, workout_type: str) -> None:
+    """Give a session the standard steps for its new type (none for rest)."""
+    from app.core.workout_templates import get_template
+
+    if workout_type == WorkoutType.rest.value:
+        replace_workout_steps(db, workout, [])
+        return
+    template = get_template(workout_type, duration_hint=workout.planned_duration_seconds)
+    replace_workout_steps(db, workout, template["steps"])
+
+
 def apply_proposal(db: Session, user: User, proposal: PlanProposal) -> int:
     """Apply an accepted proposal to real workouts. Returns how many changed.
 
@@ -759,12 +768,10 @@ def apply_proposal(db: Session, user: User, proposal: PlanProposal) -> int:
         # state, and quietly re-applying edits would corrupt the plan.
         raise ValueError(f"Proposal is already {proposal.status}")
 
-    plan = (
-        db.query(TrainingPlan)
-        .filter(TrainingPlan.id == proposal.plan_id, TrainingPlan.user_id == user.id)
-        .first()
-        if proposal.plan_id else None
-    )
+    # The plan the rider has now, not the one the proposal was filed against:
+    # after a rebuild that one is cancelled, and a session added to it would
+    # be counted as a change and never seen.
+    plan = _active_plan(db, user)
 
     changed = 0
     for change in proposal.changes or []:
@@ -816,6 +823,9 @@ def apply_proposal(db: Session, user: User, proposal: PlanProposal) -> int:
                     workout.planned_if = _planned_if_for(
                         new_type.value, workout.planned_duration_seconds
                     )
+                    # The old steps describe the old session: Ride mode would
+                    # run threshold reps on what is now an endurance day.
+                    _restep(db, workout, new_type.value)
             # The rider changed this session on purpose, and the plan should
             # remember that it is no longer the generated prescription.
             if workout.status == WorkoutStatus.planned:
@@ -825,16 +835,12 @@ def apply_proposal(db: Session, user: User, proposal: PlanProposal) -> int:
         elif action == "add_workout":
             if scheduled is None or not change.get("workout_type"):
                 continue
+            # Inside the plan it joins the phase; on a day no phase covers it
+            # is booked on its own, and shows all the same.
             phase = _phase_for_date(plan, scheduled) if plan else None
-            if phase is None:
-                logger.warning(
-                    "Applying proposal %s: no phase for %s, the session would "
-                    "not appear on the calendar", proposal.id, scheduled,
-                )
-                continue
             duration = change.get("planned_duration_seconds")
             workout = Workout(
-                phase_id=phase.id,
+                phase_id=phase.id if phase else None,
                 user_id=user.id,
                 scheduled_date=scheduled,
                 title=change.get("title") or "Coach session",

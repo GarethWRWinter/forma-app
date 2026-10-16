@@ -307,8 +307,11 @@ function CoachPageInner() {
               playAudioChunk(chunk.content);
             }
           } else if (chunk.type === "plan_updated") {
-            // Coach modified the training plan — refresh calendar data
+            // The coach changed the plan: refresh the calendar and Today,
+            // which otherwise holds its session for five minutes.
             queryClient.invalidateQueries({ queryKey: ["workouts-week"] });
+            queryClient.invalidateQueries({ queryKey: ["today-workouts"] });
+            queryClient.invalidateQueries({ queryKey: ["today-workout-detail"] });
           }
         }
       } catch (error) {
@@ -658,8 +661,11 @@ function CoachPageInner() {
             return updated;
           });
         } else if (chunk.type === "plan_updated") {
-          // Coach modified the training plan — refresh calendar data
+          // The coach changed the plan: refresh the calendar and Today,
+          // which otherwise holds its session for five minutes.
           queryClient.invalidateQueries({ queryKey: ["workouts-week"] });
+          queryClient.invalidateQueries({ queryKey: ["today-workouts"] });
+          queryClient.invalidateQueries({ queryKey: ["today-workout-detail"] });
         }
       }
     } catch (error) {

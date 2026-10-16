@@ -43,8 +43,9 @@ from app.core.llm_utils import humanize, response_text
 from app.models.coach_initiative import CoachInitiative
 from app.models.memory import MemoryEdge, MemoryEntity
 from app.models.ride import Ride
-from app.models.training import PlanStatus, TrainingPhase, TrainingPlan, Workout, WorkoutStatus
+from app.models.training import Workout, WorkoutStatus
 from app.models.user import User
+from app.services.plan_service import visible_workouts
 
 logger = logging.getLogger(__name__)
 
@@ -654,14 +655,10 @@ def _weekly_checkin_context(db: Session, user: User) -> dict:
     ) / 3600
 
     planned = (
-        db.query(Workout)
-        .join(TrainingPhase, Workout.phase_id == TrainingPhase.id)
-        .join(TrainingPlan, TrainingPhase.plan_id == TrainingPlan.id)
+        visible_workouts(db, user.id)
         .filter(
-            Workout.user_id == user.id,
             Workout.scheduled_date >= week_start,
             Workout.scheduled_date <= today,
-            TrainingPlan.status == PlanStatus.active,
         )
         .all()
     )

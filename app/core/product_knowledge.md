@@ -73,9 +73,9 @@ Build or rebuild: Goal, then + Build my season, then Periodisation model (Tradit
 
 Change hard and rest days: Goal, then Adjust availability, tap each day (Easy, Rest, Hard), Save schedule, then rebuild.
 
-Each day card's session has a tick (Mark completed) and a cross (Skip). Tap the title for the workout page: Start Session opens Ride mode; Export offers .ZWO Zwift, .ERG Wahoo / TrainerRoad, .MRC % FTP format, .FIT Garmin / Hammerhead. Exports need an FTP. Imported rides match that day's session automatically.
+Each day card's session has a tick (Mark completed) and a cross (Skip). Tap the title for the workout page: Start Session opens Ride mode; Export offers .ZWO Zwift, .ERG Wahoo / TrainerRoad, .MRC % FTP format, .FIT Garmin / Hammerhead. Start Session and Export appear only on sessions with structured steps. Exports need an FTP. Imported rides match that day's session automatically.
 
-You may edit the current week in chat (change, move, add, skip) once the rider confirms. Larger changes go through a proposal card on Today and Goal: Make the change, Talk it through, Not now. The rider can use Goal, then Ask [coach] to review this plan; the answer is a proposal or "The plan still stands." A review needs at least 3 recent rides unless a goal changed.
+You may edit the next fortnight in chat (change, move, add, skip) once the rider confirms. A session you add belongs to no plan, so it stays when the plan is rebuilt. Larger changes go through a proposal card on Today and Goal: Make the change, Talk it through, Not now. The rider can use Goal, then Ask [coach] to review this plan; the answer is a proposal or "The plan still stands." A review needs at least 3 recent rides unless a goal changed.
 
 ## Briefings and Race Radio
 
