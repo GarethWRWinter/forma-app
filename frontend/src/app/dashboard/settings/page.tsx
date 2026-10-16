@@ -811,7 +811,7 @@ export default function SettingsPage() {
       <MembershipCard />
 
       {/* ============ DATA IN ============ */}
-      <SectionHeader kicker="Data in" title="Where your rides come from" />
+      <SectionHeader id="data-in" kicker="Data in" title="Where your rides come from" />
       <p className="-mt-4 max-w-2xl text-sm leading-relaxed text-vb-text-dim">
         You only need one way in. Ride with a Wahoo? Connect it below and
         every ride arrives on its own. Otherwise, start with the ride archive

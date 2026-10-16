@@ -24,7 +24,13 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ApiError, chat, goals as goalsApi, type ChatSession } from "@/lib/api";
+import {
+  ApiError,
+  chat,
+  goals as goalsApi,
+  type ChatAttachmentCard,
+  type ChatSession,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { CoachDot, CoachGlyph } from "@/components/ui/coach-glyph";
 import { CadenceSpinner } from "@/components/ui/cadence-spinner";
@@ -32,10 +38,13 @@ import { StarterChips, useCoachStarters } from "@/components/coach/coach-starter
 import {
   AttachButton,
   AttachmentChips,
-  ATTACHMENT_ASK,
+  attachmentOnlyMessage,
+  DATA_IN_HREF,
+  isZip,
   MAX_ATTACHMENTS,
   type ComposerAttachment,
 } from "@/components/coach/ride-attachments";
+import { FileCard, refreshRideData } from "@/components/coach/file-card";
 import { useVoiceChat } from "@/hooks/useVoiceChat";
 import { useAuth } from "@/lib/auth-context";
 import { VoiceButton } from "@/components/voice/VoiceButton";
@@ -118,6 +127,8 @@ function CoachPageInner() {
       created_at?: string;
       /** filenames handed over with this message, so the thread shows the swap */
       attachments?: string[];
+      /** the same files' ids, in the same order, so each card sits under it */
+      attachmentIds?: string[];
     }[]
   >([]);
   const [hasEarlier, setHasEarlier] = useState(false);
@@ -141,8 +152,12 @@ function CoachPageInner() {
   const audioMutedRef = useRef(false);
 
   // Ride files waiting on the composer, and whatever went wrong last time.
+  // dataIn adds the way to Settings, Data in, where a batch of rides belongs.
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  const [attachError, setAttachError] = useState<string | null>(null);
+  const [attachError, setAttachError] = useState<{
+    text: string;
+    dataIn?: boolean;
+  } | null>(null);
   const attachKeyRef = useRef(0);
   // The voice path fires from a callback the hook holds, so it reads the
   // chips through a ref rather than a closure that may be a turn behind.
@@ -156,20 +171,62 @@ function CoachPageInner() {
     (a) => a.status === "ready" && a.id
   );
 
-  const handleFiles = useCallback((picked: File[]) => {
+  // The file cards in the thread, by attachment id. Each one sits under the
+  // message that shared its file, and comes back with the session on reload.
+  const [cards, setCards] = useState<Record<string, ChatAttachmentCard>>({});
+  // When the rider last chose on each card. A read that left the server
+  // before that choice landed is behind it, and must not undo it on screen.
+  const choseAtRef = useRef<Record<string, number>>({});
+  const mergeCards = useCallback(
+    (incoming: ChatAttachmentCard[] | undefined, readAt: number) => {
+      if (!incoming?.length) return;
+      setCards((prev) => {
+        const next = { ...prev };
+        for (const card of incoming) {
+          if ((choseAtRef.current[card.id] ?? 0) > readAt) continue;
+          next[card.id] = card;
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  const handleFiles = useCallback((chosen: File[]) => {
     setAttachError(null);
+
+    // A zip, or more files than one message carries, is a batch, and a batch
+    // belongs in the ride archive import: it skips rides already in and
+    // rebuilds fitness once. The chat would do neither, so it takes none of
+    // them rather than half.
+    const zip = chosen.find(isZip);
+    const picked = chosen.filter((file) => !isZip(file));
+    if (picked.length > MAX_ATTACHMENTS) {
+      setAttachError({
+        text: "Three files is the limit for one message. For a batch, put the files in one zip and choose it in Settings, then Data in, then Ride archive: rides already in are skipped.",
+        dataIn: true,
+      });
+      return;
+    }
+    if (zip) {
+      setAttachError({
+        text: `${zip.name} is a zip of rides, and the chat takes single ride files. Choose it in Settings, then Data in, then Ride archive instead: rides already in are skipped.`,
+        dataIn: true,
+      });
+      if (!picked.length) return;
+    }
 
     const room = MAX_ATTACHMENTS - attachmentsRef.current.length;
     if (room <= 0) {
-      setAttachError(
-        "Three files is the limit for one message. Send these, then attach the rest."
-      );
+      setAttachError({
+        text: "Three files is the limit for one message. Send these, then attach the rest.",
+      });
       return;
     }
     if (picked.length > room) {
-      setAttachError(
-        `Only the first ${room === 1 ? "file" : `${room} files`} went on. Three is the limit for one message.`
-      );
+      setAttachError({
+        text: `Only the first ${room === 1 ? "file" : `${room} files`} went on. Three is the limit for one message, so send these, then attach the rest.`,
+      });
     }
 
     for (const file of picked.slice(0, room)) {
@@ -193,23 +250,23 @@ function CoachPageInner() {
                     id: saved.id,
                     filename: saved.filename || a.filename,
                     summary: saved.summary,
+                    card: saved.card ?? null,
                   }
                 : a
             )
           );
-          // The rider still holds the pen: this only fills an empty box, and
-          // it sits there to be edited or written over before they send.
-          setInput((prev) => (prev.trim() ? prev : ATTACHMENT_ASK));
         })
         .catch((error: unknown) => {
           // A file that would not parse is not attached at all: a chip that
           // cannot be sent is worse than no chip.
           setAttachments((prev) => prev.filter((a) => a.key !== key));
-          setAttachError(
-            error instanceof Error && error.message
-              ? `${file.name}: ${error.message}`
-              : `${file.name} could not be read. Try the original file from your head unit.`
-          );
+          const said = error instanceof Error ? error.message : "";
+          setAttachError({
+            text: said
+              ? `${file.name}: ${said}`
+              : `${file.name} could not be read. Try the original file from your head unit.`,
+            dataIn: said.includes("Data in"),
+          });
         });
     }
   }, [activeSessionId]);
@@ -220,19 +277,23 @@ function CoachPageInner() {
   }, []);
 
   // Both send paths hand over the same chips, so the take is shared: read the
-  // settled ids, clear the composer, and let the caller stamp the filenames
-  // onto the rider's message.
+  // settled ids, clear the composer, and let the caller stamp the files onto
+  // the rider's message. Their cards join the thread's as they go.
   const takeAttachments = useCallback(() => {
     const settled = attachmentsRef.current.filter(
       (a) => a.status === "ready" && a.id
     );
     setAttachments([]);
     setAttachError(null);
+    mergeCards(
+      settled.flatMap((a) => (a.card ? [a.card] : [])),
+      Date.now()
+    );
     return {
       ids: settled.map((a) => a.id as string),
       names: settled.map((a) => a.filename),
     };
-  }, []);
+  }, [mergeCards]);
 
   // The chat the rider just wrote in goes to the top at once, under any pins,
   // the way a messenger moves a thread; the refetch after the reply settles
@@ -295,6 +356,7 @@ function CoachPageInner() {
           role: "user" as const,
           content: transcript.trim(),
           attachments: handedOver.names.length ? handedOver.names : undefined,
+          attachmentIds: handedOver.ids.length ? handedOver.ids : undefined,
         },
       ]);
       setStreaming(true);
@@ -545,7 +607,7 @@ function CoachPageInner() {
   };
 
   // Load active session messages (latest window; older pages on demand)
-  const { data: sessionData } = useQuery({
+  const { data: sessionData, dataUpdatedAt: sessionReadAt } = useQuery({
     queryKey: ["chat-session", activeSessionId],
     queryFn: () => chat.getSession(activeSessionId!, { limit: 60 }),
     enabled: !!activeSessionId,
@@ -568,7 +630,8 @@ function CoachPageInner() {
     setActiveSessionId(latest.id);
   }, [sessions, activeSessionId, goalId, isDebrief]);
 
-  // When session data loads, set messages
+  // When session data loads, set messages, and the cards of the files they
+  // carried
   useEffect(() => {
     if (sessionData?.messages) {
       setMessages(
@@ -577,10 +640,14 @@ function CoachPageInner() {
           content: m.content,
           id: m.id,
           created_at: m.created_at,
+          attachmentIds: m.attachment_ids?.length ? m.attachment_ids : undefined,
         }))
       );
       setHasEarlier(!!sessionData.has_more);
+      mergeCards(sessionData.attachments, sessionReadAt);
     }
+    // sessionReadAt moves with sessionData; the data is what to react to.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionData]);
 
   // Page backwards through history as the rider scrolls up
@@ -590,6 +657,7 @@ function CoachPageInner() {
     if (!oldest?.id) return;
     setLoadingEarlier(true);
     try {
+      const askedAt = Date.now();
       const older = await chat.getSession(activeSessionId, {
         limit: 60,
         before: oldest.id,
@@ -600,10 +668,12 @@ function CoachPageInner() {
           content: m.content,
           id: m.id,
           created_at: m.created_at,
+          attachmentIds: m.attachment_ids?.length ? m.attachment_ids : undefined,
         })),
         ...prev,
       ]);
       setHasEarlier(!!older.has_more);
+      mergeCards(older.attachments, askedAt);
     } finally {
       setLoadingEarlier(false);
     }
@@ -613,6 +683,49 @@ function CoachPageInner() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // A choice on a card reaches every upload of the same file, so when this
+  // chat holds another copy its cards are read again. Only the cards: the
+  // thread on screen stays as it is, earlier pages and a streaming reply
+  // included. The cached session is marked behind either way, so the next
+  // time the chat opens it is read fresh.
+  const rereadCards = useCallback(async () => {
+    const sessionId = activeSessionId;
+    if (!sessionId) return;
+    const askedAt = Date.now();
+    try {
+      const fresh = await chat.getSession(sessionId, { limit: 200 });
+      mergeCards(fresh.attachments, askedAt);
+    } catch {
+      // The card that was chosen on is right already; the others catch up
+      // the next time the chat loads.
+    }
+  }, [activeSessionId, mergeCards]);
+
+  const onCardDecided = useCallback(
+    (next: ChatAttachmentCard, before: ChatAttachmentCard) => {
+      choseAtRef.current[next.id] = Date.now();
+      setCards((prev) => ({ ...prev, [next.id]: next }));
+      queryClient.invalidateQueries({
+        queryKey: ["chat-session", activeSessionId],
+        refetchType: "none",
+      });
+      // A save adds a ride and rebuilds fitness on the server, so Rides, the
+      // fitness chart and everything read from them are behind it.
+      if (next.view === "saved" && before.view !== "saved") {
+        refreshRideData(queryClient);
+      }
+      const copied = Object.values(cards).some(
+        (c) =>
+          c.id !== next.id &&
+          c.kind === next.kind &&
+          !!c.start_time &&
+          c.start_time === next.start_time
+      );
+      if (copied) void rereadCards();
+    },
+    [activeSessionId, cards, queryClient, rereadCards]
+  );
 
   // Create new session
   const createSession = useMutation({
@@ -630,7 +743,7 @@ function CoachPageInner() {
     // A file on its own is a fair question: "here, look at this".
     if (!input.trim() && readyAttachments.length === 0) return;
     if (uploading) {
-      setAttachError("One file is still being read. It will only be a moment.");
+      setAttachError({ text: "One file is still being read. It will only be a moment." });
       return;
     }
 
@@ -646,10 +759,11 @@ function CoachPageInner() {
     }
 
     const handedOver = takeAttachments();
-    // The coach cannot be handed a file and no question, so a rider who
-    // clears the box gets the plain version of what they meant by attaching.
+    // A file sent with no words goes with a line that asks nothing, so the
+    // coach asks what the rider wants from it (see attachmentOnlyMessage).
     const userMessage =
-      input.trim() || (handedOver.ids.length ? ATTACHMENT_ASK : "");
+      input.trim() ||
+      (handedOver.ids.length ? attachmentOnlyMessage(handedOver.ids.length) : "");
     setInput("");
     bumpSession(sessionId, created);
     setMessages((prev) => [
@@ -658,6 +772,7 @@ function CoachPageInner() {
         role: "user",
         content: userMessage,
         attachments: handedOver.names.length ? handedOver.names : undefined,
+        attachmentIds: handedOver.ids.length ? handedOver.ids : undefined,
       },
     ]);
     setStreaming(true);
@@ -987,6 +1102,57 @@ function CoachPageInner() {
               const day = msg.created_at?.slice(0, 10);
               const prevDay = messages[i - 1]?.created_at?.slice(0, 10);
               const showDivider = day && day !== prevDay;
+              // The cards of the files a rider message shared go under it. A
+              // file with no card keeps its name in the bubble instead.
+              const ids = msg.role === "user" ? msg.attachmentIds ?? [] : [];
+              const shared = ids.flatMap((id) => (cards[id] ? [cards[id]] : []));
+              const named = (msg.attachments ?? []).filter(
+                (_, k) => !(ids[k] && cards[ids[k]])
+              );
+              const bubble = (inColumn: boolean) => (
+                <div
+                  className={cn(
+                    "rounded-md px-3 py-2.5 text-sm sm:px-4 sm:py-3",
+                    inColumn ? "max-w-full" : "max-w-[90%] sm:max-w-[80%]",
+                    // rider speaks in ink; flamme stays the coach's colour
+                    msg.role === "user"
+                      ? "bg-vb-text text-white"
+                      : "bg-vb-sage-tint text-vb-text"
+                  )}
+                >
+                  {msg.role === "assistant" ? (
+                    <div className="prose prose-sm max-w-none prose-headings:text-vb-text prose-strong:text-vb-text prose-em:text-vb-clay prose-em:not-italic prose-li:marker:text-vb-forest prose-a:text-vb-forest">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                      {streaming && i === messages.length - 1 && (
+                        <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-vb-forest" />
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      {msg.content && <p>{msg.content}</p>}
+                      {/* What the rider handed over, kept on the record */}
+                      {named.length > 0 && (
+                        <ul
+                          className={cn(
+                            "space-y-1",
+                            msg.content && "mt-2 border-t border-white/20 pt-2"
+                          )}
+                        >
+                          {named.map((name) => (
+                            <li
+                              key={name}
+                              className="flex items-center gap-1.5 text-[11px] text-white/75"
+                            >
+                              <Paperclip className="h-3 w-3 shrink-0" />
+                              <span className="truncate">{name}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
               return (
                 <React.Fragment key={msg.id || i}>
                   {showDivider && (
@@ -1049,48 +1215,23 @@ function CoachPageInner() {
                       {coach} is thinking&hellip;
                     </p>
                   )
-                ) : (
-                  <div
-                    className={cn(
-                      "max-w-[90%] rounded-md px-3 py-2.5 text-sm sm:max-w-[80%] sm:px-4 sm:py-3",
-                      // rider speaks in ink; flamme stays the coach's colour
-                      msg.role === "user"
-                        ? "bg-vb-text text-white"
-                        : "bg-vb-sage-tint text-vb-text"
-                    )}
-                  >
-                    {msg.role === "assistant" ? (
-                      <div className="prose prose-sm max-w-none prose-headings:text-vb-text prose-strong:text-vb-text prose-em:text-vb-clay prose-em:not-italic prose-li:marker:text-vb-forest prose-a:text-vb-forest">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                        {streaming && i === messages.length - 1 && (
-                          <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-vb-forest" />
-                        )}
-                      </div>
-                    ) : (
-                      <>
-                        {msg.content && <p>{msg.content}</p>}
-                        {/* What the rider handed over, kept on the record */}
-                        {msg.attachments && msg.attachments.length > 0 && (
-                          <ul
-                            className={cn(
-                              "space-y-1",
-                              msg.content && "mt-2 border-t border-white/20 pt-2"
-                            )}
-                          >
-                            {msg.attachments.map((name) => (
-                              <li
-                                key={name}
-                                className="flex items-center gap-1.5 text-[11px] text-white/75"
-                              >
-                                <Paperclip className="h-3 w-3 shrink-0" />
-                                <span className="truncate">{name}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </>
-                    )}
+                ) : shared.length > 0 ? (
+                  // The cards for the files it shared sit under the rider's
+                  // message, on the rider's side of the thread.
+                  <div className="flex w-full min-w-0 max-w-[90%] flex-col items-end gap-2 sm:max-w-[80%]">
+                    {bubble(true)}
+                    {shared.map((card) => (
+                      <FileCard
+                        key={card.id}
+                        card={card}
+                        onDecided={onCardDecided}
+                        onStale={rereadCards}
+                        className="max-w-sm"
+                      />
+                    ))}
                   </div>
+                ) : (
+                  bubble(false)
                 )}
                     {msg.role === "user" && (
                       <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-vb-sunken">
@@ -1135,7 +1276,18 @@ function CoachPageInner() {
 
           {attachError && (
             <p className="mb-3 border-l-2 border-vb-red pl-3 text-xs text-vb-text-dim">
-              {attachError}
+              {attachError.text}
+              {attachError.dataIn && (
+                <>
+                  {" "}
+                  <Link
+                    href={DATA_IN_HREF}
+                    className="rounded-sm font-medium text-vb-text underline underline-offset-2 hover:text-vb-red focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-vb-red"
+                  >
+                    Open Data&nbsp;in
+                  </Link>
+                </>
+              )}
             </p>
           )}
 
@@ -1145,7 +1297,11 @@ function CoachPageInner() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask your coach anything…"
+              placeholder={
+                attachments.length
+                  ? "Ask about the ride, or just send it…"
+                  : "Ask your coach anything…"
+              }
               rows={1}
               className="max-h-32 flex-1 resize-none rounded-sm border border-vb-border bg-vb-surface px-4 py-2.5 text-sm text-vb-text placeholder-vb-text-muted focus:border-vb-forest focus:outline-none"
               style={{

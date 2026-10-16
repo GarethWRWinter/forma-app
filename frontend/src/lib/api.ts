@@ -1138,6 +1138,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   created_at: string;
+  /** the ride files a rider message carried, so each card sits under it */
+  attachment_ids?: string[];
 }
 
 /**
@@ -1158,7 +1160,61 @@ export interface ChatAttachment {
   filename: string;
   kind: string;
   summary?: ChatAttachmentSummary | null;
+  /** what Forma recognised at upload, and the filing choice */
+  card?: ChatAttachmentCard | null;
 }
+
+/** What a rider can choose for a shared ride file. */
+export type FileChoice = "save" | "chat_only" | "someone_else";
+
+/** One button on a file card, or one quiet way to change a choice. */
+export interface ChatAttachmentCardChoice {
+  choice: FileChoice;
+  label: string;
+  detail?: string | null;
+  /** someone else's takes an optional short name, at most 40 characters */
+  asks_label: boolean;
+}
+
+/**
+ * The card under the message that shared a ride file. The server writes
+ * every line (recognised, question, outcome, note, undo, the choice labels)
+ * ready to show, with the last two words already held together, so the app
+ * renders them as given rather than composing its own.
+ */
+export interface ChatAttachmentCard {
+  id: string;
+  filename: string;
+  kind: string;
+  /** the ride's start date, YYYY-MM-DD, in UTC like the fitness chart */
+  date?: string | null;
+  start_time?: string | null;
+  duration?: string | null;
+  duration_s?: number | null;
+  distance_km?: number | null;
+  /** what Forma recognised at upload */
+  state: "in_history" | "part_of_ride" | "new";
+  /** what the card shows now */
+  view: "asking" | "in_history" | "part_of_ride" | "saved" | "chat_only" | "someone_else";
+  recognised: string;
+  question?: string | null;
+  /** after a choice, shown in place of the recognised line */
+  outcome?: string | null;
+  note?: string | null;
+  undo?: string | null;
+  ride?: { id: string; title?: string | null; date?: string | null } | null;
+  overlap?: number | null;
+  hints: string[];
+  decided: boolean;
+  decision?: FileChoice | null;
+  label?: string | null;
+  decided_at?: string | null;
+  choices: ChatAttachmentCardChoice[];
+  changes: ChatAttachmentCardChoice[];
+}
+
+/** The longest name a rider can give someone else's file. */
+export const FILE_LABEL_MAX = 40;
 
 /**
  * The reply is complete at "done", but the server keeps the stream open while
@@ -1212,10 +1268,29 @@ export const chat = {
     if (opts?.limit) p.set("limit", String(opts.limit));
     if (opts?.before) p.set("before", opts.before);
     const qs = p.toString();
-    return request<ChatSession & { messages: ChatMessage[]; has_more: boolean }>(
-      `/chat/sessions/${id}${qs ? `?${qs}` : ""}`
-    );
+    return request<
+      ChatSession & {
+        messages: ChatMessage[];
+        has_more: boolean;
+        /** a card for each file the window's messages carried */
+        attachments?: ChatAttachmentCard[];
+      }
+    >(`/chat/sessions/${id}${qs ? `?${qs}` : ""}`);
   },
+
+  /**
+   * The rider's choice on a file card. Returns the card as it now stands.
+   * A save files the ride and rebuilds fitness on the server, so it can take
+   * a few seconds; a choice the file cannot take answers 409 with the reason.
+   */
+  decideAttachment: (id: string, choice: FileChoice, label?: string | null) =>
+    request<ChatAttachmentCard>(`/chat/attachments/${id}/decision`, {
+      method: "POST",
+      body: JSON.stringify({
+        choice,
+        ...(choice === "someone_else" && label ? { label } : {}),
+      }),
+    }),
 
   /**
    * Hand a ride file to the coach. Multipart, so the Content-Type header is

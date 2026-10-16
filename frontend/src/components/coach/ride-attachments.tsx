@@ -2,7 +2,7 @@
 
 import { useRef } from "react";
 import { Paperclip, X } from "lucide-react";
-import type { ChatAttachmentSummary } from "@/lib/api";
+import type { ChatAttachmentCard, ChatAttachmentSummary } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { CadenceSpinner } from "@/components/ui/cadence-spinner";
 
@@ -21,11 +21,25 @@ export const MAX_ATTACHMENTS = 3;
 export const ATTACHMENT_ACCEPT = ".gpx,.fit,.tcx,.gz";
 
 /**
- * A file with no words is still a question, but the coach needs one asked.
- * This lands in the composer where the rider can edit it or write over it,
- * which keeps the send button theirs to press.
+ * What a file sent with no words says for the rider. The server needs some
+ * words, and these ask nothing on purpose: a file with no question gets the
+ * coach asking what the rider wants from it, while the card under the
+ * message asks where it goes (16 Oct 2026). Nothing is written into the
+ * composer for them, because that would answer the coach's question before
+ * it is asked.
  */
-export const ATTACHMENT_ASK = "Take a look at this ride and tell me what you see.";
+export function attachmentOnlyMessage(count: number): string {
+  if (count <= 1) return "Here\u2019s a ride file.";
+  return `Here are ${["two", "three"][count - 2] ?? count} ride files.`;
+}
+
+/** Where a batch of rides goes instead of the chat. */
+export const DATA_IN_HREF = "/dashboard/settings#data-in";
+
+/** A zip is an archive of rides, and the archive import reads those. */
+export function isZip(file: File): boolean {
+  return /\.zip$/i.test(file.name);
+}
 
 export interface ComposerAttachment {
   /** local handle, stable from the moment the rider picks the file */
@@ -35,6 +49,8 @@ export interface ComposerAttachment {
   /** server id, and only once the file has landed and parsed */
   id?: string;
   summary?: ChatAttachmentSummary | null;
+  /** what Forma recognised, shown under the message once it is sent */
+  card?: ChatAttachmentCard | null;
 }
 
 function firstNumber(

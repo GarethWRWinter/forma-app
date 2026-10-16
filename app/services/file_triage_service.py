@@ -473,7 +473,8 @@ def _hold(text: str | None) -> str | None:
 
 
 def _day(value) -> str | None:
-    """A date as the app says it: 3 May 2026."""
+    """A date as the app says it: 3 May 2026, held together so a card line
+    never breaks inside it."""
     if isinstance(value, str):
         try:
             value = date.fromisoformat(value[:10])
@@ -483,7 +484,7 @@ def _day(value) -> str | None:
         value = value.date()
     if not isinstance(value, date):
         return None
-    return f"{value.day} {value:%b} {value.year}"
+    return f"{value.day}{NBSP}{value:%b}{NBSP}{value.year}"
 
 
 def _ride_name(title: str | None, when) -> str:

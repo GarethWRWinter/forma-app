@@ -6,22 +6,25 @@ import { Kicker } from "@/components/ui/kicker";
  * FORMA section header — kicker, bold Archivo title, ink rule that
  * draws in. `number` prefixes an editorial index ("01").
  * `action` renders right-aligned (a link or button).
+ * `id` makes the section a place another page can link to.
  */
 export function SectionHeader({
   kicker,
   title,
   number,
   action,
+  id,
   className,
 }: {
   kicker?: string;
   title: React.ReactNode;
   number?: string;
   action?: React.ReactNode;
+  id?: string;
   className?: string;
 }) {
   return (
-    <div className={cn("mb-5", className)}>
+    <div id={id} className={cn("mb-5", id && "scroll-mt-20", className)}>
       <hr className="f-rule f-draw mb-4" />
       <div className="flex items-end justify-between gap-4">
         <div>
