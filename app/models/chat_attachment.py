@@ -39,16 +39,19 @@ class ChatAttachment(TimestampMixin, Base):
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
 
     # The compact ride summary the coach is handed in context. It also
-    # holds whose ride it is (owner) and, while the file is tied to the chat
-    # it was attached in but not yet sent, unsent (see attachment_service).
+    # holds whose ride it is (owner), what Forma recognised at upload and
+    # what the rider chose on the file's card (triage, see
+    # file_triage_service) and, while the file is tied to the chat it was
+    # attached in but not yet sent, unsent (see attachment_service).
     summary: Mapped[dict] = mapped_column(SA_JSON, nullable=False)
     # Deep read of the file: power curve, climbs, fade, time in zone. Same
     # shape ride_analysis_service writes, so the coach's language about an
     # attachment and about a saved ride cannot drift apart.
     analysis: Mapped[dict | None] = mapped_column(SA_JSON, nullable=True)
 
-    # Set when the rider agrees to keep it. Also the guard against a second
-    # import of the same attachment.
+    # Set when the rider agrees to keep it, or when the file is recognised
+    # at upload as a ride already in their history. Also the guard against
+    # a second import of the same attachment.
     imported_ride_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     # Gzipped original upload, up to 25MB. Only read by save_as_ride, so it

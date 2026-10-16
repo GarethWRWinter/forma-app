@@ -481,10 +481,10 @@ def test_what_the_rider_said_about_a_file_survives_turn_fours_re_upload(world):
 
     shown = {f["attachment_id"]: f for f in _files(m.for_turn("t4")[0]["system"])["files"]}
     assert (shown[again[0]]["owner"], shown[again[1]]["owner"]) == ("self", "someone_else")
-    # Tom's numbers are measured against Gareth's FTP, and the coach is told.
-    assert "measure their power against the rider's FTP, not their own" in (
-        shown[again[1]]["ftp_used"]["source"]
-    )
+    # Tom's file is read in absolute terms: no figure from Gareth's FTP.
+    assert "ftp_used" not in shown[again[1]]
+    assert all("pct_ftp" not in e for e in shown[again[1]]["analysis"]["power_curve"])
+    assert shown[again[1]]["triage"]["decision"] == "someone_else"
     assert w.memory[-1]["caution"].count("“") == 1  # only Tom's file
     said = coach_service._execute_tool(
         w.db, w.gareth, "save_attachment_as_ride", {"attachment_id": again[1], "confirmed": True}

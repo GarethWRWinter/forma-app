@@ -12,6 +12,10 @@ save_as_ride() is the moment the rider agrees it belongs to them. It runs the
 ordinary upload path from ride_service rather than a second one of its own,
 so a promoted attachment and an uploaded file produce byte-identical rides.
 
+Between the two, ingest() also recognises the file against the rider's saved
+rides (file_triage_service), and decide() records what the rider chose on the
+file's card: save it, keep it for this chat, or someone else's ride.
+
 The analysis helpers come from ride_analysis_service on purpose. Copying them
 would let the attachment's numbers drift from the saved ride's numbers, and
 the coach would then say two different things about one file.
@@ -30,6 +34,7 @@ from app.models.chat import ChatMessage, ChatRole, ChatSession
 from app.models.chat_attachment import ChatAttachment
 from app.models.ride import Ride
 from app.models.user import User
+from app.services import file_triage_service
 from app.services.ride_analysis_service import _climbs, _fade, _peak_efforts
 from app.services.ride_service import (
     _extract_summary_from_records,
@@ -55,14 +60,44 @@ UNSENT = "unsent"
 # and counts as unknown.
 OWNERS = ("self", "someone_else", "unknown")
 
+# What the rider chose on a file's card (see decide), kept in the summary's
+# triage beside what Forma recognised at upload.
+DECISIONS = file_triage_service.DECISIONS
+LABEL_MAX = 40
+
+# Files one message carries. A batch of rides belongs in the archive import,
+# which de-duplicates and rebuilds fitness once, not in a conversation.
+MAX_FILES_PER_MESSAGE = 3
+A_ZIP = (
+    "That is a zip of rides, and the chat reads one ride file at a time. "
+    "Choose it in Settings, then Data in, then Ride archive instead: rides "
+    "already in are skipped."
+)
+TOO_MANY_FILES = (
+    "Three files is the limit for one message. For a batch, put the files in "
+    "one zip and choose it in Settings, then Data in, then Ride archive: rides "
+    "already in are skipped."
+)
+
 
 class AttachmentError(ValueError):
     """Something the rider can act on: wrong file, too big, unreadable."""
 
 
+class DecisionRefused(AttachmentError):
+    """A card choice that cannot apply to this file as it stands. code says
+    why: someone_else, saved or part_of_ride."""
+
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
+
+
 def _kind_for(filename: str | None) -> str:
     """The file's type by extension, ignoring a trailing .gz."""
     name = (filename or "").lower()
+    if name.endswith(".zip"):
+        raise AttachmentError(A_ZIP)
     if name.endswith(".gz"):
         name = name[:-3]
     for kind in SUPPORTED_KINDS:
@@ -70,7 +105,7 @@ def _kind_for(filename: str | None) -> str:
             return kind
     raise AttachmentError(
         "That file type will not open. Send a .fit, .gpx or .tcx file, "
-        "zipped or not."
+        "gzipped or not."
     )
 
 
@@ -250,6 +285,9 @@ def ingest(
         )
 
     kind = _kind_for(filename)
+    if file_bytes[:4] == b"PK\x03\x04":
+        # A zip under a ride file's name: the archive import reads those.
+        raise AttachmentError(A_ZIP)
 
     try:
         parsed = parse_ride_file(file_bytes, filename)
@@ -274,9 +312,31 @@ def ingest(
     # The bytes' own fingerprint: the same file under another name is still
     # the same file (see same_file_key).
     summary["sha256"] = hashlib.sha256(file_bytes).hexdigest()
-    # A file sent again keeps what the rider already said about the copy
-    # before it, so the coach never asks twice whose ride it is.
-    owner = _known_owner_of_copy(db, user.id, summary, filename)
+
+    # What Forma recognises before anyone asks: already in Rides, part of a
+    # saved ride, or new. A file sent again keeps what the rider chose for
+    # the copy before it, so nobody is asked twice.
+    triage = file_triage_service.recognise(db, user, summary, analysis, records)
+    copy = _decided_copy(db, user.id, summary, filename)
+    owner = file_owner(copy) if copy is not None else None
+    imported_ride_id = None
+    if copy is not None:
+        earlier = file_triage_service.triage_of(copy)
+        if earlier["decision"]:
+            triage.update({
+                k: earlier[k]
+                for k in ("decided", "decision", "label", "decided_at", "decided_by")
+            })
+            if earlier["decision"] == "save":
+                imported_ride_id = copy.imported_ride_id
+    if triage["decision"] == "someone_else":
+        owner = "someone_else"
+    elif triage["decision"] in ("save", "chat_only") or triage["state"] != "new":
+        # A ride already in Rides, or a stretch of one, is the rider's own.
+        owner = "self"
+    if triage["state"] == "in_history" and owner == "self":
+        imported_ride_id = triage["ride_id"]
+    summary["triage"] = triage
     if owner:
         summary["owner"] = owner
     if session_id:
@@ -293,6 +353,7 @@ def ingest(
         kind=kind,
         summary=summary,
         analysis=analysis,
+        imported_ride_id=imported_ride_id,
         # Compressed both ways, so decompressing always returns the exact
         # bytes uploaded, including a file that arrived gzipped already.
         raw_file=gzip.compress(file_bytes),
@@ -343,12 +404,154 @@ def _with_summary(attachment: ChatAttachment, **changes) -> None:
     attachment.summary = {k: v for k, v in summary.items() if v is not None}
 
 
+def clean_label(label: str | None) -> str | None:
+    """A name for someone else's file as the rider typed it, on one line."""
+    words = " ".join((label or "").split())
+    text = " ".join("".join(ch for ch in words if ch.isprintable()).split())
+    return text or None
+
+
+def _filed(
+    attachment: ChatAttachment, owner: str, decision: str | None,
+    label: str | None = None, by: str | None = None, ride_id: str | None = None,
+) -> None:
+    """Write whose a file is and what was chosen for it, as one change, so
+    owner and decision never disagree: someone_else goes with someone_else,
+    save and chat_only with self."""
+    triage = file_triage_service.triage_of(attachment)
+    if decision != triage["decision"] or label != triage["label"]:
+        triage.update(
+            decided=decision is not None,
+            decision=decision,
+            label=label if decision == "someone_else" else None,
+            decided_at=datetime.now(timezone.utc).isoformat() if decision else None,
+            decided_by=by if decision else None,
+        )
+    recognised = triage["state"] == "in_history" and triage["ride_id"]
+    if ride_id:
+        attachment.imported_ride_id = ride_id
+    elif recognised and owner == "someone_else" and attachment.imported_ride_id == triage["ride_id"]:
+        # Matched by time to the rider's own ride: a riding partner's file
+        # from the same outing is not that ride, so the link goes.
+        attachment.imported_ride_id = None
+    elif recognised and owner == "self" and not attachment.imported_ride_id:
+        attachment.imported_ride_id = triage["ride_id"]
+    _with_summary(attachment, owner=owner, triage=triage)
+
+
+def _owner_change(attachment: ChatAttachment, owner: str, label: str | None, by: str) -> None:
+    """Whose a file is, keeping the choice in step: someone else's is a
+    choice in itself, and self or unknown undoes one."""
+    decision = file_triage_service.triage_of(attachment)["decision"]
+    if owner == "someone_else":
+        keep = decision == "someone_else"
+        label = label or (file_triage_service.triage_of(attachment)["label"] if keep else None)
+        _filed(attachment, owner, "someone_else", label, by)
+    elif owner == "self":
+        _filed(attachment, owner, None if decision == "someone_else" else decision, by=by)
+    else:
+        _filed(attachment, owner, None)
+
+
 def set_owner(db: Session, attachment: ChatAttachment, owner: str) -> None:
-    """Record whose ride a file is. Touches nothing else."""
+    """Record whose ride a file is, on this one upload. Touches nothing in
+    the rider's history."""
     if owner not in OWNERS:
         raise ValueError(f"owner must be one of {OWNERS}")
-    _with_summary(attachment, owner=owner)
+    _owner_change(attachment, owner, None, "coach")
     db.commit()
+
+
+def record_owner(
+    db: Session, user: User, attachment: ChatAttachment, owner: str,
+    label: str | None = None,
+) -> None:
+    """The coach's record of whose ride a file is, from the rider's words, on
+    every upload of the file so each card agrees. Touches nothing in the
+    rider's history."""
+    if attachment.user_id != user.id:
+        raise AttachmentError("That file is not on your account.")
+    if owner not in OWNERS:
+        raise ValueError(f"owner must be one of {OWNERS}")
+    label = (clean_label(label) or "")[:LABEL_MAX].strip() or None
+    for copy in _copies_of(db, attachment):
+        _owner_change(copy, owner, label, "coach")
+    db.commit()
+
+
+def decide(
+    db: Session, user: User, attachment: ChatAttachment, choice: str,
+    label: str | None = None, by: str = "card",
+) -> Ride | None:
+    """What the rider chose on the file's card, for every upload of the file.
+
+    save runs save_as_ride, which checks for the ride in history again and
+    rebuilds fitness, and returns the ride: the one already in Rides when the
+    file is in history. chat_only keeps it the rider's own and files nothing.
+    someone_else marks it another person's ride, used only in this chat and
+    refused a save from then on. Choosing what is already chosen changes
+    nothing. A save is undone by deleting the ride from Rides, never here.
+    """
+    if attachment.user_id != user.id:
+        raise AttachmentError("That file is not on your account.")
+    if choice not in DECISIONS:
+        raise AttachmentError("Choose save, chat_only or someone_else.")
+    label = clean_label(label) if choice == "someone_else" else None
+    if label and len(label) > LABEL_MAX:
+        raise AttachmentError(f"Keep the name to {LABEL_MAX} characters or fewer.")
+
+    f = file_triage_service.filing(db, user.id, attachment)
+    if choice == "save":
+        if f.decision == "someone_else":
+            raise DecisionRefused(
+                "This file is marked as someone else\u2019s ride, so it stays out "
+                "of your rides. If it is yours, change that first.",
+                "someone_else",
+            )
+        if f.saved is not None:
+            return f.saved
+        if f.state == "in_history":
+            return f.ride
+        if f.state == "part_of_ride" and not f.can_keep_separately:
+            raise DecisionRefused(
+                "This file is part of a ride already in your rides, so saving it "
+                "would count that ride twice.",
+                "part_of_ride",
+            )
+        ride = save_as_ride(db, user, attachment)
+        for copy in _copies_of(db, attachment):
+            _filed(copy, "self", "save", by=by, ride_id=ride.id)
+        db.commit()
+        return ride
+
+    if f.saved is not None:
+        if f.decision == "someone_else" and choice == "chat_only":
+            # Marked someone else's after a save it still has: theirs again,
+            # and in Rides as it was.
+            for copy in _copies_of(db, attachment):
+                _filed(copy, "self", "save", by=by)
+            db.commit()
+            return None
+        raise DecisionRefused(
+            "It is saved in your rides. To take it out, delete the ride from Rides.",
+            "saved",
+        )
+    if choice == "chat_only" and f.state == "in_history":
+        # Already in Rides, so nothing to keep apart; from someone else's,
+        # it is the rider's ride in Rides again.
+        if f.decision != "someone_else":
+            return None
+        decision, owner = None, "self"
+    elif choice == "chat_only":
+        decision, owner = "chat_only", "self"
+    else:
+        decision, owner = "someone_else", "someone_else"
+    if f.decision == decision and f.label == label and f.owner == owner:
+        return None
+    for copy in _copies_of(db, attachment):
+        _filed(copy, owner, decision, label, by)
+    db.commit()
+    return None
 
 
 def bind_to_session(
@@ -410,24 +613,39 @@ def same_file_key(attachment: ChatAttachment) -> tuple:
     return _file_key(attachment.summary or {}, attachment.filename)
 
 
-def _known_owner_of_copy(
-    db: Session, user_id: str, summary: dict, filename: str
-) -> str | None:
-    """Whose ride an earlier copy of this file was said to be, newest first,
-    or None when no copy says."""
-    key = _file_key(summary, filename.rsplit("/", 1)[-1][:255])
-    for copy in (
+def _copies_query(db: Session, user_id: str):
+    return (
         db.query(ChatAttachment)
         .options(load_only(
-            ChatAttachment.id, ChatAttachment.filename, ChatAttachment.summary,
+            ChatAttachment.id, ChatAttachment.user_id, ChatAttachment.filename,
+            ChatAttachment.kind, ChatAttachment.summary,
             ChatAttachment.imported_ride_id, ChatAttachment.created_at,
         ))
         .filter(ChatAttachment.user_id == user_id)
         .order_by(ChatAttachment.created_at.desc(), ChatAttachment.id.desc())
-    ):
-        if same_file_key(copy) == key and file_owner(copy) != "unknown":
-            return file_owner(copy)
+    )
+
+
+def _decided_copy(
+    db: Session, user_id: str, summary: dict, filename: str
+) -> ChatAttachment | None:
+    """The newest earlier copy of this file with a choice or an owner on
+    record, or None when no copy has one."""
+    key = _file_key(summary, filename.rsplit("/", 1)[-1][:255])
+    for copy in _copies_query(db, user_id):
+        if same_file_key(copy) == key and (
+            file_triage_service.triage_of(copy)["decision"] or file_owner(copy) != "unknown"
+        ):
+            return copy
     return None
+
+
+def _copies_of(db: Session, attachment: ChatAttachment) -> list[ChatAttachment]:
+    """Every upload of this file by its rider, itself included. A choice is
+    about the file, not one upload of it, so each copy's card agrees."""
+    key = same_file_key(attachment)
+    copies = [c for c in _copies_query(db, attachment.user_id) if same_file_key(c) == key]
+    return copies if any(c.id == attachment.id for c in copies) else [attachment, *copies]
 
 
 @dataclass

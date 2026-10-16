@@ -219,12 +219,12 @@ def test_saving_marks_a_file_as_the_riders_own_and_a_copy_joins_the_ride(db_sess
     assert _save(db_session, gareth, first).startswith("Saved ")
     assert _owner(db_session, first) == "self"
 
-    # The same ride attached again knows it is the rider's own already, and
-    # saving it joins the ride already saved instead of counting it twice.
+    # The same ride attached again is recognised as already in Rides, so it
+    # is the rider's own, and saving it says so instead of counting it twice.
     again = _upload(db_session, gareth, PB, "2026-05-01T08:00:00", 330, 93,
                     T0 + timedelta(minutes=5))
     assert _owner(db_session, again) == "self"
-    assert _save(db_session, gareth, again).startswith("Saved ")
+    assert _save(db_session, gareth, again).startswith("Already saved. ")
     assert db_session.query(Ride).count() == 1
 
 
@@ -499,18 +499,21 @@ def test_a_name_cannot_carry_curly_quotes_to_close_its_own(db_session, gareth):
     assert coach_service._quoted(shown) == f"{OPEN_Q}{shown}{CLOSE_Q}"
 
 
-def test_a_mates_file_says_its_percentages_use_the_riders_ftp(db_session, gareth, scripted_model):
+def test_a_mates_file_is_read_in_absolute_terms(db_session, gareth, scripted_model):
+    """Percentages and zones worked out from the rider's FTP describe the
+    rider, not Tom, so Tom's file carries watts and no FTP figures at all."""
     chat = _chat(db_session, gareth)
     tom = _upload(db_session, gareth, NEAR, "2026-05-03T08:00:00", 316, 89, T0)
     attachment_service.set_owner(db_session, tom, "someone_else")
 
     _send(db_session, gareth, chat, "Tom's ride. How does he compare?", [tom.id])
 
-    source = _files(scripted_model.calls[-1])[tom.id]["ftp_used"]["source"]
-    assert source.endswith(
-        "This is someone else's ride, so its percentages and zones measure their "
-        "power against the rider's FTP, not their own"
-    )
+    shown = _files(scripted_model.calls[-1])[tom.id]
+    assert "ftp_used" not in shown
+    assert "time_in_zones_min" not in shown["analysis"]
+    curve = shown["analysis"]["power_curve"]
+    assert curve and all("pct_ftp" not in e and e["watts"] == 316 for e in curve)
+    assert shown["triage"]["decision"] == "someone_else"
 
 
 def test_the_memory_caution_names_six_files_at_most(db_session, gareth):

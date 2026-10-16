@@ -7,12 +7,14 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_current_user, require_paid_access
-from app.core.exceptions import BadRequestException, NotFoundException
+from app.core.exceptions import BadRequestException, ConflictException, NotFoundException
 from app.core.ratelimit import rate_limit
 from app.database import get_db
-from app.models.chat import ChatSession
+from app.models.chat import ChatRole, ChatSession
 from app.models.user import User
 from app.schemas.chat import (
+    AttachmentDecisionRequest,
+    ChatAttachmentCard,
     ChatMessageRequest,
     ChatMessageResponse,
     ChatSessionCreate,
@@ -21,8 +23,8 @@ from app.schemas.chat import (
     ChatSessionUpdate,
     TTSRequest,
 )
-from app.services import attachment_service
-from app.services.attachment_service import AttachmentError
+from app.services import attachment_service, file_triage_service
+from app.services.attachment_service import AttachmentError, DecisionRefused
 from app.services.coach_service import (
     create_session,
     delete_session,
@@ -64,14 +66,26 @@ def _last_message_at(session: ChatSession):
 
 
 def _verify_attachments(db: Session, user: User, attachment_ids: list[str]) -> None:
-    """Every id must be one of this rider's own files, or the send fails."""
+    """Every id must be one of this rider's own files, or the send fails.
+    More than a message carries is a batch, and batches go to Data in."""
     if not attachment_ids:
         return
+    if len(set(attachment_ids)) > attachment_service.MAX_FILES_PER_MESSAGE:
+        raise BadRequestException(detail=attachment_service.TOO_MANY_FILES)
     found = attachment_service.get_attachments(db, user.id, attachment_ids)
     if len(found) != len(set(attachment_ids)):
         raise NotFoundException(
             detail="One of those files is no longer available. Upload it again."
         )
+
+
+def _carried_ids(message) -> list[str]:
+    """The file ids a rider message carried, from its context_snapshot."""
+    snapshot = message.context_snapshot
+    if message.role != ChatRole.user or not isinstance(snapshot, dict):
+        return []
+    ids = snapshot.get("attachment_ids")
+    return [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else []
 
 
 @router.post("/sessions", response_model=ChatSessionResponse, status_code=201)
@@ -187,6 +201,13 @@ def get_chat_session(
     window = ordered[-limit:]
     has_more = len(ordered) > len(window)
 
+    carried = {m.id: _carried_ids(m) for m in window}
+    shared = list(dict.fromkeys(i for ids in carried.values() for i in ids))
+    files = {a.id: a for a in attachment_service.get_attachments(db, current_user.id, shared)}
+    cards = file_triage_service.cards(
+        db, current_user.id, [files[i] for i in shared if i in files]
+    )
+
     return ChatSessionDetailResponse(
         id=session.id,
         title=session.title,
@@ -205,9 +226,11 @@ def get_chat_session(
                 content=m.content,
                 tokens_used=m.tokens_used,
                 created_at=m.created_at,
+                attachment_ids=[i for i in carried[m.id] if i in files],
             )
             for m in window
         ],
+        attachments=cards,
     )
 
 
@@ -220,8 +243,9 @@ def upload_chat_attachment(
 ):
     """Hand the coach a ride file inside a conversation.
 
-    The file is read and analysed, not filed. It joins the ride log, and the
-    training load, only when the rider asks for it to be saved.
+    The file is read and analysed, not filed, and recognised against the
+    rider's saved rides. It joins the ride log, and the training load, only
+    when the rider chooses that on its card. The response carries the card.
     """
     if session_id:
         session = get_session(db, session_id, current_user.id)
@@ -255,7 +279,38 @@ def upload_chat_attachment(
         "filename": attachment.filename,
         "kind": attachment.kind,
         "summary": attachment.summary,
+        "card": file_triage_service.cards(db, current_user.id, [attachment])[0],
     }
+
+
+@router.post("/attachments/{attachment_id}/decision", response_model=ChatAttachmentCard)
+def decide_chat_attachment(
+    attachment_id: str,
+    body: AttachmentDecisionRequest,
+    current_user: User = Depends(require_paid_access),
+    db: Session = Depends(get_db),
+):
+    """The rider's choice on a file card: save it to Rides, keep it for this
+    chat, or mark it someone else's (with an optional short name). Only the
+    rider's own files. Returns the card as it now stands.
+
+    The same choice again changes nothing. A save runs the ordinary save
+    path, which finds a ride already in history rather than adding a second,
+    and rebuilds fitness. Someone else's file is refused a save afterwards,
+    and a save is undone from Rides, not here: both answer 409.
+    """
+    found = attachment_service.get_attachments(db, current_user.id, [attachment_id])
+    if not found:
+        raise NotFoundException(detail="That file is no longer here.")
+    attachment = found[0]
+    try:
+        attachment_service.decide(db, current_user, attachment, body.choice, body.label)
+    except DecisionRefused as exc:
+        raise ConflictException(detail=str(exc)) from exc
+    except AttachmentError as exc:
+        raise BadRequestException(detail=str(exc)) from exc
+    db.refresh(attachment)
+    return file_triage_service.cards(db, current_user.id, [attachment])[0]
 
 
 @router.post("/sessions/{session_id}/messages")
