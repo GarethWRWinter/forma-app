@@ -10,9 +10,10 @@ import { nextGoalAsk } from "@/lib/season";
  * Between goals, the one thing on Today.
  *
  * The race is behind the rider and nothing is ahead. The coach asks for the
- * race report first, then for the next goal: one ask at a time, never a
- * menu, because the base block keeps the sessions coming while they choose.
- * It takes the same slot as proposals and initiatives.
+ * race report first, then proposes the next goal: one ask at a time, never
+ * a menu, because the base block keeps every week in sessions meanwhile.
+ * It takes the same slot as proposals and initiatives, for a fortnight
+ * after the race.
  */
 export function SeasonCard({
   lastGoal,
@@ -39,14 +40,14 @@ export function SeasonCard({
             {lastGoal.event_name}
           </h2>
           <p className="mt-3 max-w-2xl text-base leading-relaxed text-vb-text-dim">
-            Tell me the result and how it felt, and I’ll choose the next goal
-            with you from&nbsp;it.
+            Tell me the result and how it felt. I’ll propose the next goal
+            from&nbsp;it.
           </p>
           <Link
             href={`/dashboard/goals/${lastGoal.id}/assess`}
             className={buttonVariants({ variant: "flamme", size: "sm" }) + " mt-5"}
           >
-            Tell me how it went
+            File the race report
             <Arrow />
           </Link>
         </>
@@ -57,9 +58,13 @@ export function SeasonCard({
           </h2>
           <p className="mt-3 max-w-2xl text-base leading-relaxed text-vb-text-dim">
             {plan && !plan.goal_event_id && (
-              <>Your base block is running, so the sessions keep coming. </>
+              <>
+                Your base block is running, building the aerobic engine the
+                next goal will need, so every week has its sessions.{" "}
+              </>
             )}
-            Tell me what you want next and I’ll build the season around&nbsp;it.
+            I’ll propose the next goal from how you’ve been riding, and build
+            the season around it once you say&nbsp;yes.
           </p>
           <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
             <Link

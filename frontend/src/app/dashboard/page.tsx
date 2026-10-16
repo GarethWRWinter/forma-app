@@ -192,12 +192,12 @@ export default function DashboardPage() {
     queryFn: () => rides.list(1, 5),
   });
 
-  const { data: plans } = useQuery({
+  const { data: plans, isPending: plansPending } = useQuery({
     queryKey: ["plans"],
     queryFn: () => training.getPlans(),
   });
 
-  const { data: goalsData } = useQuery({
+  const { data: goalsData, isPending: goalsPending } = useQuery({
     queryKey: ["goals"],
     queryFn: () => goalsApi.list(),
   });
@@ -244,14 +244,26 @@ export default function DashboardPage() {
   const pendingProposal = proposals?.[0];
 
   // Between goals: no goal ahead and one behind. The next step (the race
-  // report, then the next goal) takes the coach's slot.
+  // report, then the next goal) takes the coach's slot for a fortnight after
+  // the race. After that the coach's other thoughts come back, an unfiled
+  // report waits in the reports list below and the next-goal ask stays on
+  // Goal, so a rider on a long base block still hears from the coach. Only
+  // for a rider who has had a plan: one who never has is still in setup,
+  // and the setup card is what builds their first.
   const season = seasonState(goalsData?.goals);
+  const seasonAsks =
+    season.freshFromRace && (plans?.plans.length ?? 0) > 0;
 
   // Something the coach wants to raise. Held back until we know no proposal is
-  // waiting and the rider is not between goals, so it never composes a second
-  // thought while the rider still owes it an answer on the first.
+  // waiting and the between-goals ask is not taking the slot, so it never
+  // composes a second thought while the rider still owes it an answer on the
+  // first. A goals or plans request that failed holds nothing back.
   const { data: initiative } = useCoachInitiative(
-    !proposalsPending && !pendingProposal && !!goalsData && !season.betweenGoals
+    !proposalsPending &&
+      !pendingProposal &&
+      !goalsPending &&
+      !plansPending &&
+      !seasonAsks
   );
 
   const { data: weeklyLoad } = useQuery({
@@ -340,7 +352,7 @@ export default function DashboardPage() {
   // The between-goals card, when nothing outranks it. Its race report is
   // then left out of the reports list further down, so it is asked once.
   const seasonGoal =
-    !pendingProposal && !setupUnfinished && season.betweenGoals
+    !pendingProposal && !setupUnfinished && seasonAsks
       ? season.lastGoal
       : undefined;
 
@@ -685,7 +697,7 @@ export default function DashboardPage() {
                 </p>
               </div>
               <span className="f-kicker shrink-0 text-vb-text">
-                Write report <span className="f-arrow-head">→</span>
+                File the race report <span className="f-arrow-head">→</span>
               </span>
             </div>
           </Link>

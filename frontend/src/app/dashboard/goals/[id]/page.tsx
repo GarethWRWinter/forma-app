@@ -497,7 +497,7 @@ export default function GoalDetailPage() {
               href={`/dashboard/goals/${goalId}/assess`}
               className={buttonVariants({ variant: "flamme", size: "sm" })}
             >
-              File the report
+              File the race report
               <Arrow />
             </Link>
           }

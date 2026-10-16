@@ -28,6 +28,21 @@ export interface Season {
   betweenGoals: boolean;
   /** The last goal's race report is still owed. */
   needsDebrief: boolean;
+  /** Between goals, and the last goal was raced in the past fortnight. */
+  freshFromRace: boolean;
+}
+
+/** How long a finished goal keeps the coach's slot on Today for the ask
+    about what comes next. After that the next-goal ask lives on Goal. */
+const FRESH_DAYS = 14;
+
+/** Whole days from one ISO date to another, calendar days only. */
+function daysBetween(fromISO: string, toISO: string): number {
+  const [fy, fm, fd] = fromISO.slice(0, 10).split("-").map(Number);
+  const [ty, tm, td] = toISO.slice(0, 10).split("-").map(Number);
+  return Math.round(
+    (Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86_400_000
+  );
 }
 
 /** Built from the server's days_until, so a rider in a different timezone
@@ -51,6 +66,10 @@ export function seasonState(goals: GoalEvent[] | undefined): Season {
     lastGoal,
     betweenGoals,
     needsDebrief: betweenGoals && !!lastGoal?.needs_assessment,
+    freshFromRace:
+      betweenGoals &&
+      !!lastGoal &&
+      daysBetween(lastGoal.event_date, localISODate()) <= FRESH_DAYS,
   };
 }
 

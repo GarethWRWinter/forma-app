@@ -61,6 +61,7 @@ const lastActive = (s: ChatSession) =>
     Calobra Sub-30 Preparati..."), so the list cleans them on the way in. */
 function chatTitle(title: string | null | undefined, fallback = "Chat"): string {
   const clean = (title || "")
+    .replace(/^Chat - /, "Chat · ")
     .replace(/^\s*#{1,6}\s+/, "")
     .replace(/\*+|__|`/g, "")
     .replace(/(\d)\s*[\u2013\u2014]\s*(?=\d)/g, "$1-")
@@ -909,7 +910,7 @@ function CoachPageInner() {
           <span className="text-sm font-medium text-vb-text-dim">
             {chatTitle(
               sessions?.find((s) => s.id === activeSessionId)?.title,
-              "Coach Forma"
+              `Coach ${coach}`
             )}
           </span>
         </div>

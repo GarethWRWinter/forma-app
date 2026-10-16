@@ -858,7 +858,7 @@ function GoalCard({
               href={`/dashboard/goals/${goal.id}/assess`}
               className={buttonVariants({ variant: "ink", size: "sm" })}
             >
-              File the report
+              File the race report
               <Arrow />
             </Link>
           }

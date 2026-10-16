@@ -69,16 +69,29 @@ export default function AssessPage() {
   // Read after the report is filed: filing it can be what puts a rider
   // between goals onto the base block, and whether another goal is still
   // ahead decides the next step.
-  const { data: plans } = useQuery({
+  const {
+    data: plans,
+    isPending: plansPending,
+    isFetching: plansFetching,
+  } = useQuery({
     queryKey: ["plans"],
     queryFn: () => training.getPlans(),
     enabled: submitted,
   });
-  const { data: allGoals } = useQuery({
+  const {
+    data: allGoals,
+    isPending: goalsPending,
+    isFetching: goalsFetching,
+  } = useQuery({
     queryKey: ["goals"],
     queryFn: () => goalsApi.list(),
     enabled: submitted,
   });
+  // Until both have answered since the report went in, the one next step is
+  // not known: a cached or empty read would show Find the next goal and then
+  // switch to Debrief under the rider's thumb.
+  const settling =
+    plansPending || goalsPending || plansFetching || goalsFetching;
   const plan = currentPlan(plans?.plans);
   const stillChasing = seasonState(
     allGoals?.goals.filter((g) => g.id !== goalId)
@@ -134,7 +147,7 @@ export default function AssessPage() {
     });
   }
 
-  if (isLoading) {
+  if (isLoading || (submitted && settling)) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="h-8 w-8 animate-spin rounded-full border border-vb-border-subtle border-t-vb-red" />
@@ -168,9 +181,9 @@ export default function AssessPage() {
               </Link>
             }
           >
-            Filed. Everything you told me about {goal.event_name} now shapes
-            the road to {stillChasing.event_name}. When you’re ready, let’s
-            talk it&nbsp;through.
+            Filed. I’ll use what you told me about {goal.event_name} as we
+            build towards {stillChasing.event_name}. Talk me through it while
+            it’s&nbsp;fresh.
           </CoachNote>
         </div>
       );
@@ -192,13 +205,13 @@ export default function AssessPage() {
             </Link>
           }
         >
-          Filed. Everything you told me about {goal.event_name} now shapes what
-          comes&nbsp;next.
+          Filed. Now let’s use it: I’ll talk the race through with you and
+          propose the next goal from&nbsp;it.
           {runningBlock && (
             <>
               {" "}
-              Your sessions carry on from today, so nothing stops while we
-              choose the next&nbsp;goal.
+              Your base block is running meanwhile, so every week has
+              its&nbsp;sessions.
             </>
           )}
         </CoachNote>
@@ -206,7 +219,7 @@ export default function AssessPage() {
           href="/dashboard/goals?new=1"
           className="block text-center font-mono text-[11px] uppercase tracking-[0.08em] text-vb-text-muted transition-colors hover:text-vb-red"
         >
-          Set the goal myself
+          Set the goal myself →
         </Link>
       </div>
     );

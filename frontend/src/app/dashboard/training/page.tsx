@@ -182,8 +182,13 @@ export default function TrainingPage() {
   const hasActivePlan = !!activePlan;
   // No goal ahead and one behind: the masthead asks for the race report, or
   // for the next goal, instead of asking what we are chasing from scratch.
+  // Only for a rider who has had a plan, as on the server: one who never has
+  // gets the empty state below, whose Build a 12-week block starts them off.
   const season = seasonState(goalsData?.goals);
-  const lastGoal = season.betweenGoals ? season.lastGoal : undefined;
+  const lastGoal =
+    season.betweenGoals && (plans?.plans.length ?? 0) > 0
+      ? season.lastGoal
+      : undefined;
 
   // Forma's honest read on the goal, requested from the masthead.
   const coachReadMutation = useMutation({
@@ -472,14 +477,16 @@ export default function TrainingPage() {
             How did it go?
           </p>
           <p className="mt-2 max-w-md text-sm text-white/60">
-            Tell me the result and how it felt.{" "}
             {hasActivePlan ? (
               <>
-                It decides what we chase next, and your sessions carry on while
-                we&nbsp;choose.
+                Tell me the result and how it felt, and I’ll propose the next
+                goal from it. Your sessions carry on in the&nbsp;meantime.
               </>
             ) : (
-              <>It decides what we chase&nbsp;next.</>
+              <>
+                Tell me the result and how it felt, and I’ll propose the next
+                goal from&nbsp;it.
+              </>
             )}
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
@@ -491,7 +498,7 @@ export default function TrainingPage() {
                 className: "w-full sm:w-auto",
               })}
             >
-              Tell me how it went
+              File the race report
               <Arrow />
             </Link>
           </div>
@@ -507,11 +514,22 @@ export default function TrainingPage() {
           <p className="mt-2 max-w-md text-sm text-white/60">
             {activePlan && !activePlan.goal_event_id && (
               <>
-                Until you choose, you’re on a {activePlan.total_weeks}-week block
-                that builds your base, so every week has its sessions.{" "}
+                Until then you’re on a {activePlan.total_weeks}-week base block,
+                building the aerobic engine the next goal will need, so every
+                week has its sessions.{" "}
               </>
             )}
-            Name the next goal and I’ll rebuild the plan around&nbsp;it.
+            {hasActivePlan ? (
+              <>
+                I’ll propose the next goal from how you’ve been riding and
+                rebuild the plan around&nbsp;it.
+              </>
+            ) : (
+              <>
+                I’ll propose the next goal from how you’ve been riding and build
+                the season around&nbsp;it.
+              </>
+            )}
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
             <Link
@@ -628,7 +646,11 @@ export default function TrainingPage() {
           </h1>
           {!hasActivePlan && (
             <p className="mt-1 text-sm text-vb-text-dim">
-              No plan yet. Let&apos;s build one around your goal.
+              {nextUpcomingGoal
+                ? "No plan yet. Let’s build one around your\u00a0goal."
+                : plans?.plans.length
+                  ? "Your last plan has ended. Let’s build the next\u00a0block."
+                  : "No plan yet. Let’s build your first\u00a0block."}
             </p>
           )}
         </div>
