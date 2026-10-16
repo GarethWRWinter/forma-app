@@ -154,8 +154,8 @@ def delete_chat_session(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Delete a chat session, its messages and the files first sent in it.
-    Permanent."""
+    """Delete a chat session, its messages and the files first sent in it
+    (one also sent in another chat moves there). Permanent."""
     session = get_session(db, session_id, current_user.id)
     if not session:
         raise NotFoundException(detail="Chat session not found")

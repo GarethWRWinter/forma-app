@@ -858,7 +858,7 @@ function CoachPageInner() {
                         setMenuFor(null);
                         if (
                           window.confirm(
-                            "Delete this chat for good? Forma keeps what it learned, but the conversation itself is gone."
+                            "Delete this chat for good? The conversation and the ride files shared in it are gone. Forma keeps what it learned, and rides you saved stay in Rides."
                           )
                         ) {
                           removeSession.mutate(session.id);

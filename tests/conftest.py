@@ -39,6 +39,21 @@ def _no_real_model_provider(monkeypatch):
     monkeypatch.setattr(forma_core, "_client", refuse)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_voice_provider(monkeypatch):
+    """No test reaches ElevenLabs either, whatever key the environment holds
+    (settings read .env): voice is off unless a test turns it on, and the two
+    calls that would reach the provider refuse."""
+    from app.services import voice_service
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("a test tried to reach the real voice provider")
+
+    monkeypatch.setattr(voice_service, "is_voice_enabled", lambda: False)
+    monkeypatch.setattr(voice_service, "text_to_speech", refuse)
+    monkeypatch.setattr(voice_service, "text_to_speech_stream", refuse)
+
+
 # ── A scripted model for the coach's chat loop ──────────────────────────────
 
 

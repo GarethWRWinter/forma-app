@@ -51,5 +51,7 @@ class ChatAttachment(TimestampMixin, Base):
     # import of the same attachment.
     imported_ride_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
-    # Gzipped original upload. Only read by save_as_ride.
-    raw_file: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    # Gzipped original upload, up to 25MB. Only read by save_as_ride, so it
+    # is deferred: it loads when read, never with the row, including when a
+    # row is reloaded after a commit.
+    raw_file: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)

@@ -18,12 +18,13 @@ the coach would then say two different things about one file.
 """
 
 import gzip
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from sqlalchemy import or_
-from sqlalchemy.orm import Session, defer
+from sqlalchemy.orm import Session, defer, load_only
 
 from app.models.chat import ChatMessage, ChatRole, ChatSession
 from app.models.chat_attachment import ChatAttachment
@@ -253,7 +254,9 @@ def ingest(
     try:
         parsed = parse_ride_file(file_bytes, filename)
     except Exception:
-        logger.warning("Chat attachment: could not parse %s", filename)
+        # Escaped and cut short: the name is the rider's text, and a line
+        # break in it would otherwise write a log line of its own.
+        logger.warning("Chat attachment: could not parse %r", (filename or "")[:80])
         raise AttachmentError(
             "That file would not open. It may be corrupted or only part of a "
             "download."
@@ -268,6 +271,14 @@ def ingest(
         filename, kind, records, session_summary, parsed.get("start_time")
     )
     analysis = _build_analysis(records, session_summary, user)
+    # The bytes' own fingerprint: the same file under another name is still
+    # the same file (see same_file_key).
+    summary["sha256"] = hashlib.sha256(file_bytes).hexdigest()
+    # A file sent again keeps what the rider already said about the copy
+    # before it, so the coach never asks twice whose ride it is.
+    owner = _known_owner_of_copy(db, user.id, summary, filename)
+    if owner:
+        summary["owner"] = owner
     if session_id:
         # Tied to the chat it was attached in from the start, so deleting
         # that chat deletes it even if it is never sent. Until a message
@@ -298,8 +309,11 @@ def get_attachments(
     """Fetch the rider's own attachments by id. Never anyone else's."""
     if not attachment_ids:
         return []
+    # The raw bytes (up to 25MB gzipped) load only if a caller reads them;
+    # only saving a file needs them.
     return (
         db.query(ChatAttachment)
+        .options(defer(ChatAttachment.raw_file))
         .filter(
             ChatAttachment.user_id == user_id,
             ChatAttachment.id.in_(attachment_ids),
@@ -314,9 +328,12 @@ CHAT_FILES_IN_FULL = 6
 
 
 def file_owner(attachment: ChatAttachment) -> str:
-    """self, someone_else or unknown."""
+    """self, someone_else or unknown. A file saved into the rider's history
+    before owners were kept counts as their own: saving one now marks it so."""
     owner = (attachment.summary or {}).get("owner")
-    return owner if owner in OWNERS else "unknown"
+    if owner in OWNERS:
+        return owner
+    return "self" if attachment.imported_ride_id else "unknown"
 
 
 def _with_summary(attachment: ChatAttachment, **changes) -> None:
@@ -374,11 +391,43 @@ def bind_to_session(
     return tied
 
 
+def _file_key(summary: dict, filename: str | None) -> tuple:
+    """What makes two uploads one file. A ride's type, start and sample
+    count, whatever it is called: a browser saves a second download as
+    "name (1)". The type keeps a FIT and the GPX made from it apart, since
+    the FIT can hold more. Without a start (a route, say), the bytes'
+    fingerprint, then the name."""
+    if summary.get("start_time"):
+        return ("ride", summary.get("kind"), summary["start_time"], summary.get("samples"))
+    if summary.get("sha256"):
+        return ("bytes", summary["sha256"])
+    return ("name", filename, summary.get("samples"))
+
+
 def same_file_key(attachment: ChatAttachment) -> tuple:
-    """Two uploads of one file parse to the same name, start and sample
-    count, so a file attached again shows once."""
-    summary = attachment.summary or {}
-    return (attachment.filename, summary.get("start_time"), summary.get("samples"))
+    """Two uploads of one file share this key, so a file attached again
+    shows once."""
+    return _file_key(attachment.summary or {}, attachment.filename)
+
+
+def _known_owner_of_copy(
+    db: Session, user_id: str, summary: dict, filename: str
+) -> str | None:
+    """Whose ride an earlier copy of this file was said to be, newest first,
+    or None when no copy says."""
+    key = _file_key(summary, filename.rsplit("/", 1)[-1][:255])
+    for copy in (
+        db.query(ChatAttachment)
+        .options(load_only(
+            ChatAttachment.id, ChatAttachment.filename, ChatAttachment.summary,
+            ChatAttachment.imported_ride_id, ChatAttachment.created_at,
+        ))
+        .filter(ChatAttachment.user_id == user_id)
+        .order_by(ChatAttachment.created_at.desc(), ChatAttachment.id.desc())
+    ):
+        if same_file_key(copy) == key and file_owner(copy) != "unknown":
+            return file_owner(copy)
+    return None
 
 
 @dataclass
@@ -443,14 +492,48 @@ def chat_files(db: Session, user_id: str, session_id: str) -> ChatFiles:
 
 
 def delete_session_files(db: Session, user_id: str, session_id: str) -> int:
-    """Delete the files tied to one of the rider's chats, raw bytes and all.
-    A ride already saved from one keeps its ride. The caller commits."""
-    return (
-        db.query(ChatAttachment)
-        .filter(
+    """Delete the files tied to one of the rider's chats, raw bytes and all,
+    and return how many went. A file the rider also sent into another of
+    their chats moves to the first of those instead, so it is still there to
+    read. A ride already saved from one keeps its ride. The caller commits."""
+    tied = {
+        aid
+        for (aid,) in db.query(ChatAttachment.id).filter(
             ChatAttachment.user_id == user_id,
             ChatAttachment.session_id == session_id,
         )
+    }
+    if not tied:
+        return 0
+
+    sent_elsewhere: dict[str, str] = {}
+    for other_chat, snapshot in (
+        db.query(ChatMessage.session_id, ChatMessage.context_snapshot)
+        .join(ChatSession, ChatSession.id == ChatMessage.session_id)
+        .filter(
+            ChatSession.user_id == user_id,
+            ChatMessage.session_id != session_id,
+            ChatMessage.role == ChatRole.user,
+            ChatMessage.context_snapshot.isnot(None),
+        )
+        .order_by(ChatMessage.created_at, ChatMessage.id)
+    ):
+        ids = snapshot.get("attachment_ids") if isinstance(snapshot, dict) else None
+        for aid in ids if isinstance(ids, list) else []:
+            if aid in tied:
+                sent_elsewhere.setdefault(aid, other_chat)
+
+    for aid, other_chat in sent_elsewhere.items():
+        db.query(ChatAttachment).filter(
+            ChatAttachment.user_id == user_id, ChatAttachment.id == aid
+        ).update({ChatAttachment.session_id: other_chat}, synchronize_session=False)
+
+    gone = tied - set(sent_elsewhere)
+    if not gone:
+        return 0
+    return (
+        db.query(ChatAttachment)
+        .filter(ChatAttachment.user_id == user_id, ChatAttachment.id.in_(gone))
         .delete(synchronize_session=False)
     )
 

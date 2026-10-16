@@ -241,9 +241,9 @@ def test_history_says_which_message_carried_which_file(db_session, gareth, model
 
     users = [m["content"] for m in model[1]["messages"] if m["role"] == ChatRole.user]
     assert users[0] == (
-        "[Shared with this message: "
-        "Sa_Calobra_29_53_sub_30_mission_complete_Failure_is_the_path_to_success_.gpx, "
-        "Sa_Calobra_30_47_Can_I_find_47_seconds_.gpx]\n\nOverlay these."
+        "[Files shared with this message, by file name: "
+        "\u201cSa_Calobra_29_53_sub_30_mission_complete_Failure_is_the_path_to_success_.gpx\u201d, "
+        "\u201cSa_Calobra_30_47_Can_I_find_47_seconds_.gpx\u201d]\n\nOverlay these."
     )
     assert users[1] == "Cadence?"
 
@@ -300,6 +300,65 @@ def test_only_the_six_newest_files_are_open_and_older_ones_are_named(db_session,
     assert [f["file"] for f in payload["files"]] == [f"ride_{i}.gpx" for i in range(2, 8)]
     assert payload["older_files_named_only"] == ["ride_0.gpx", "ride_1.gpx"]
     assert "only the 6 most recent are kept open" in _files_text(model[-1])
+
+
+def test_the_list_of_older_files_stays_short(db_session, gareth, model):
+    chat = _chat(db_session, gareth, "s-lots")
+    ids = []
+    for i in range(30):
+        start = (datetime(2026, 3, 1, 8) + timedelta(days=i)).isoformat()
+        ids.append(_upload(db_session, gareth, f"ride_{i}.gpx", start, 250, 90,
+                           T0 + timedelta(minutes=i)).id)
+    _send(db_session, gareth, chat, "All of them.", ids)
+
+    payload = _files(model[-1])
+    assert len(payload["files"]) == 6
+    # The newest 20 of the 24 older files are named; the oldest 4 are counted.
+    assert payload["older_files_named_only"] == [f"ride_{i}.gpx" for i in range(4, 24)]
+    assert payload["older_files_not_listed"] == 4
+    assert "older_files_not_listed, when there, counts still older files" in _files_text(model[-1])
+
+
+def test_reading_and_labelling_files_never_loads_their_raw_bytes(db_session, gareth):
+    """The raw file is up to 25MB gzipped and the backend runs one worker:
+    only saving a file needs it."""
+    from sqlalchemy import event
+
+    from app.api.v1 import chat as chat_api
+
+    chat = _chat(db_session, gareth, "s-raw")
+    a = _upload(db_session, gareth, PB, "2026-05-01T08:00:00", 330, 93, T0)
+    attachment_service.bind_to_session(db_session, gareth.id, chat.id, [a.id])
+    db_session.expire_all()
+
+    selects = []
+
+    def seen(conn, cursor, statement, *args):
+        if statement.lstrip().upper().startswith("SELECT"):
+            selects.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", seen)
+    try:
+        chat_api._verify_attachments(db_session, gareth, [a.id])
+        said = coach_service._execute_tool(
+            db_session, gareth, "set_attachment_owner", {"attachment_id": a.id, "owner": "self"}
+        )
+        attachment_service.chat_files(db_session, gareth.id, chat.id)
+    finally:
+        event.remove(engine, "before_cursor_execute", seen)
+
+    assert said.startswith("Recorded.")
+    assert selects and not [s for s in selects if "raw_file" in s]
+
+
+def test_the_files_fingerprint_stays_out_of_the_coachs_view(db_session, gareth, model):
+    chat = _chat(db_session, gareth, "s-sha")
+    a = _upload(db_session, gareth, PB, "2026-05-01T08:00:00", 330, 93, T0)
+    assert len(a.summary["sha256"]) == 64
+    _send(db_session, gareth, chat, "Look.", [a.id])
+    assert "sha256" not in _by_id(model[-1])[a.id]["summary"]
+    assert a.summary["sha256"] not in _files_text(model[-1])
 
 
 def test_another_riders_file_and_another_chats_file_never_appear(db_session, gareth, mate, model):
@@ -360,8 +419,8 @@ def test_a_hostile_filename_reaches_the_coach_cleaned(db_session, gareth, model)
     prompt = _whole_prompt(model[-1])
     assert "<system>" not in prompt and "instructions]" not in prompt
     assert "x" * 81 not in prompt
-    note = next(m["content"] for m in model[-1]["messages"] if m["content"].startswith("[Shared"))
-    assert note == f"[Shared with this message: {shown}]\n\nLook."
+    note = next(m["content"] for m in model[-1]["messages"] if m["content"].startswith("[Files"))
+    assert note == f"[Files shared with this message, by file name: \u201c{shown}\u201d]\n\nLook."
 
 
 # ── Deleting a chat ──────────────────────────────────────────────────────────

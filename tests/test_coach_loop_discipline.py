@@ -9,7 +9,9 @@ and the next turn read that line back as if it were an answer.
 
 - The last round sends tool_choice {"type": "none"}, so it has to be words.
 - find_ride and analyse_ride run at most twice per rider message, parallel
-  calls counted; past that the coach is told to answer from what it has.
+  calls counted; past that the coach is told to answer from what it has, and
+  the next round is the last, so a model that keeps hunting costs one more
+  round, not three.
 - A turn that still ends with no words (a max_tokens cut-off) promises
   nothing, is marked in its snapshot, and shows the next turn a plain note
   that no answer was given.
@@ -73,7 +75,7 @@ def _replies(db, chat) -> list[ChatMessage]:
 
 
 def _tool_results(call) -> list[str]:
-    return [r["content"] for r in call["messages"][-1]["content"]]
+    return [r["content"] for r in call["messages"][-1]["content"] if r["type"] == "tool_result"]
 
 
 @pytest.fixture
@@ -94,14 +96,16 @@ def ran(monkeypatch):
 
 
 @pytest.mark.parametrize("voice", [False, True], ids=["chat", "voice"])
-def test_five_rounds_of_searching_end_in_words_on_the_last(db_session, gareth, scripted_model, ran, voice):
+def test_five_rounds_of_tools_end_in_words_on_the_last(db_session, gareth, scripted_model, ran, voice):
     chat = _chat(db_session, gareth)
-    search = {"query": "Sa Calobra"}
+    # Not a ride lookup, so the lookup limit never steps in: only the round
+    # limit does.
+    poke = {"attachment_id": "a-missing", "owner": "self"}
     for _ in range(4):
-        scripted_model.append(([], [scripted_model.tool_use("find_ride", search)]))
-    # The model would search a fifth time, but the last round cannot.
+        scripted_model.append(([], [scripted_model.tool_use("set_attachment_owner", poke)]))
+    # The model would call a tool a fifth time, but the last round cannot.
     answer = "Your cadence held at 88 rpm on the 29:53 and 91 on the 30:47."
-    scripted_model.append(([answer], [scripted_model.tool_use("find_ride", search)]))
+    scripted_model.append(([answer], [scripted_model.tool_use("set_attachment_owner", poke)]))
 
     chunks = _send(db_session, gareth, chat, "Now analyse my cadence.", voice=voice)
 
@@ -118,8 +122,36 @@ def test_five_rounds_of_searching_end_in_words_on_the_last(db_session, gareth, s
     (stored,) = _replies(db_session, chat)
     assert stored.content.strip() == answer
     assert "fallback" not in (stored.context_snapshot or {})
-    # Two searches ran; the third and fourth were refused.
+    assert ran == ["set_attachment_owner"] * 4
+
+
+@pytest.mark.parametrize("voice", [False, True], ids=["chat", "voice"])
+def test_a_refused_lookup_makes_the_next_round_the_last(db_session, gareth, scripted_model, ran, voice):
+    """Turn 2 of the incident, with a model that hunts every round it may:
+    two lookups run, the third is refused, and the round after it answers.
+    Before, rounds 3 and 4 went on more refused lookups, each one re-billing
+    the history and adding seconds of silence."""
+    chat = _chat(db_session, gareth)
+    tool = scripted_model.tool_use
+    scripted_model.append(([], [tool("find_ride", {"query": "Sa Calobra"})]))
+    scripted_model.append(([], [
+        tool("find_ride", {"date_from": "2026-05-01"}), tool("analyse_ride", {"ride_id": "r-1"}),
+    ]))
+    # It would hunt again; the forced round cannot.
+    answer = "Both files are here: 93 rpm on the 29:53 and 89 on the 30:47."
+    scripted_model.append(([answer], [tool("find_ride", {"query": "30:47"})]))
+
+    chunks = _send(db_session, gareth, chat, "What about cadence?", voice=voice)
+
+    calls = scripted_model.calls
+    assert [c.get("tool_choice") for c in calls] == [None, None, NONE]
+    assert _tool_results(calls[2])[-1] == coach_service._LOOKUP_LIMIT_REACHED
+    assert calls[2]["messages"][-1]["content"][-1] == {
+        "type": "text", "text": coach_service._LAST_ROUND_NOTE,
+    }
     assert ran == ["find_ride", "find_ride"]
+    assert _said(chunks).strip() == answer
+    assert len([c for c in chunks if c["type"] == "status"]) == 2
 
 
 def test_a_turn_that_answers_early_is_never_forced(db_session, gareth, scripted_model):
@@ -142,16 +174,17 @@ def test_the_third_ride_lookup_is_refused_parallel_calls_counted(db_session, gar
         tool("analyse_ride", {"ride_id": "r-1"}),
         tool("find_ride", {"date_from": "2026-10-01"}),
     ]))
-    scripted_model.append(([], [tool("analyse_ride", {"ride_id": "r-2"})]))
-    scripted_model.append((["The two files are all I have to go on."], ()))
+    # The round after a refusal is the last, so this lookup never runs.
+    scripted_model.append((["The two files are all I have to go on."],
+                           [tool("analyse_ride", {"ride_id": "r-2"})]))
 
     chunks = _send(db_session, gareth, chat, "What about gear changes?")
 
     assert ran == ["find_ride", "analyse_ride"]
-    first, second = _tool_results(scripted_model.calls[1]), _tool_results(scripted_model.calls[2])
+    assert [c.get("tool_choice") for c in scripted_model.calls] == [None, NONE]
+    first = _tool_results(scripted_model.calls[1])
     assert first[2] == coach_service._LOOKUP_LIMIT_REACHED
     assert first[0] != coach_service._LOOKUP_LIMIT_REACHED
-    assert second == [coach_service._LOOKUP_LIMIT_REACHED]
     # The rider is never told a search is running when it is not.
     assert len([c for c in chunks if c["type"] == "status"]) == 2
     assert "say plainly what it is" in coach_service._LOOKUP_LIMIT_REACHED
@@ -255,6 +288,14 @@ def _turn_lines(caplog) -> list[dict]:
     ]
 
 
+_ROUND_SHAPE = ("forced", "stop", "blocks", "tools", "results")
+
+
+def _shape(line) -> list[dict]:
+    """Each round without its timings and token counts."""
+    return [{k: r[k] for k in _ROUND_SHAPE} for r in line["per_round"]]
+
+
 def test_one_coach_turn_line_says_what_each_round_did(db_session, gareth, scripted_model, caplog):
     caplog.set_level(logging.INFO, logger="forma.coach_turn")
     chat = _chat(db_session, gareth)
@@ -274,12 +315,22 @@ def test_one_coach_turn_line_says_what_each_round_did(db_session, gareth, script
     assert line["session"] == chat.id
     assert line["surface"] == "chat"
     assert line["rounds"] == 3
-    assert line["per_round"] == [
-        {"stop": "tool_use", "blocks": ["thinking", "tool_use"], "tools": ["find_ride"]},
-        {"stop": "tool_use", "blocks": ["tool_use", "tool_use"], "tools": ["find_ride", "analyse_ride"]},
-        {"stop": "end_turn", "blocks": ["thinking", "text"], "tools": []},
+    assert _shape(line) == [
+        {"forced": False, "stop": "tool_use", "blocks": ["thinking", "tool_use"],
+         "tools": ["find_ride"],
+         "results": [{"tool": "find_ride", "outcome": "empty", "matches": 0}]},
+        {"forced": False, "stop": "tool_use", "blocks": ["tool_use", "tool_use"],
+         "tools": ["find_ride", "analyse_ride"],
+         "results": [{"tool": "find_ride", "outcome": "empty", "matches": 0},
+                     {"tool": "analyse_ride", "outcome": "refused"}]},
+        # The round after the refusal is the last.
+        {"forced": True, "stop": "end_turn", "blocks": ["thinking", "text"],
+         "tools": [], "results": []},
     ]
-    assert line["files"] == 1
+    for r in line["per_round"]:
+        assert (r["in"], r["out"], r["cache_read"], r["cache_write"]) == (10, 5, 0, 0)
+        assert 0 <= r["ms"] <= line["total_ms"]
+    assert (line["carried"], line["files"], line["files_open"], line["files_named_only"]) == (1, 1, 1, 0)
     assert line["lookups_refused"] == 1
     assert line["ended"] == "reply" and line["fallback"] is False
     assert 0 <= line["prep_ms"] <= line["first_byte_ms"] <= line["first_text_ms"] <= line["total_ms"]
@@ -301,8 +352,10 @@ def test_the_coach_turn_line_marks_a_fallback(db_session, gareth, scripted_model
     (line,) = _turn_lines(caplog)
     assert line["surface"] == ("voice" if voice else "chat")
     assert line["ended"] == "fallback" and line["fallback"] is True
-    assert line["per_round"] == [{"stop": "max_tokens", "blocks": ["thinking"], "tools": []}]
-    assert line["files"] == 0
+    assert _shape(line) == [
+        {"forced": False, "stop": "max_tokens", "blocks": ["thinking"], "tools": [], "results": []},
+    ]
+    assert (line["carried"], line["files"]) == (0, 0)
     assert line["first_text_ms"] is None
 
 
