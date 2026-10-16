@@ -37,26 +37,30 @@ NEAR = "Sa_Calobra_30_47_Can_I_find_47_seconds_.gpx"
 KOM = "Sa_Calobra_KOM_pro.gpx"
 
 
-def _gpx(start: str, seconds: int, watts=None, hr=None, rpm=None) -> bytes:
+def _gpx(start: str, seconds: int, watts=None, hr=None, rpm=None, times=True) -> bytes:
     """A climb file, one point a second. Leave watts, hr and rpm out for a
-    trace with none of them."""
+    trace with none of them; watts and hr may be a function of the second.
+    times=False writes a route: points with no times at all."""
     t0 = datetime.fromisoformat(start)
     points = []
     for i in range(seconds + 1):
         ts = (t0 + timedelta(seconds=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
         ext = ""
-        if watts is not None:
-            ext += f"<power>{watts}</power>"
+        w = watts(i) if callable(watts) else watts
+        h = hr(i) if callable(hr) else hr
+        if w is not None:
+            ext += f"<power>{w}</power>"
         tpx = ""
-        if hr is not None:
-            tpx += f"<gpxtpx:hr>{hr}</gpxtpx:hr>"
+        if h is not None:
+            tpx += f"<gpxtpx:hr>{h}</gpxtpx:hr>"
         if rpm is not None:
             tpx += f"<gpxtpx:cad>{rpm}</gpxtpx:cad>"
         if tpx:
             ext += f"<gpxtpx:TrackPointExtension>{tpx}</gpxtpx:TrackPointExtension>"
         points.append(
             f'<trkpt lat="{39.80 + i * 0.00003:.6f}" lon="2.80"><ele>{5 + 0.25 * i:.2f}</ele>'
-            f"<time>{ts}</time>" + (f"<extensions>{ext}</extensions>" if ext else "") + "</trkpt>"
+            + (f"<time>{ts}</time>" if times else "")
+            + (f"<extensions>{ext}</extensions>" if ext else "") + "</trkpt>"
         )
     return (
         '<?xml version="1.0"?><gpx version="1.1" '
@@ -136,7 +140,7 @@ def test_gareths_three_files(db_session, gareth):
     card = _card(db_session, gareth, pb)
     assert (card["state"], card["view"], card["question"]) == ("in_history", "in_history", None)
     assert card["choices"] == [] and card["ride"]["id"] == saved.id
-    assert _words(card["recognised"]) == "Already in your rides as Sprint Training, 1 May 2026."
+    assert _words(card["recognised"]) == "Already in your rides: Sprint Training, 1 May 2026."
     assert pb.imported_ride_id == saved.id
     assert attachment_service.file_owner(pb) == "self"
     assert pb.summary["triage"]["matched"] == "time"
@@ -148,8 +152,14 @@ def test_gareths_three_files(db_session, gareth):
     assert [_words(c["label"]) for c in card["choices"]] == [
         "Mine: save to my rides", "Mine: just for this chat", "Someone else\u2019s",
     ]
-    assert _words(card["choices"][0]["detail"]) == "It joins Rides and your fitness chart for 3 May 2026."
-    assert _words(card["recognised"]) == "Not in your rides yet."
+    # Each choice says what it does, so none carries more weight.
+    assert [_words(c["detail"]) for c in card["choices"]] == [
+        "It joins Rides and your fitness chart for 3 May 2026.",
+        "It stays out of Rides and your fitness chart.",
+        "For comparison only, and only in this chat.",
+    ]
+    assert _words(card["recognised"]) == "Nothing in your rides matches it."
+    assert _words(card["question"]) == "Whose ride is this?"
     assert near.imported_ride_id is None
     assert attachment_service.file_owner(near) == "unknown"
 
@@ -159,7 +169,7 @@ def test_gareths_three_files(db_session, gareth):
     assert _words(card["recognised"]) == (
         "Its best 20 minutes is 452 W, well above your FTP of 290 W."
     )
-    assert _words(card["question"]) == "Is it someone else\u2019s?"
+    assert _words(card["question"]) == "Yours, or someone else\u2019s?"
     # A hint phrases the question and decides nothing.
     assert attachment_service.file_owner(kom) == "unknown"
     assert db_session.query(Ride).count() == 1
@@ -187,6 +197,7 @@ def test_a_stretch_of_a_saved_ride_is_part_of_it_and_never_saved_again(db_sessio
     card = _card(db_session, gareth, climb)
     assert (card["state"], card["view"], card["overlap"]) == ("part_of_ride", "part_of_ride", 1.0)
     assert card["choices"] == [] and card["ride"]["id"] == whole.id
+    assert _choices(card, "changes") == ["someone_else"]
     assert _words(card["recognised"]) == "Part of Sprint Training, 1 May 2026, already in your rides."
     assert attachment_service.file_owner(climb) == "self"
     # Part of a ride is not that ride: the file keeps no link of its own.
@@ -205,9 +216,15 @@ def test_a_file_mostly_inside_a_saved_ride_may_be_kept_separately(db_session, ga
 
     card = _card(db_session, gareth, early)
     assert card["view"] == "part_of_ride" and 0.5 <= card["overlap"] < 0.9
-    assert _choices(card) == ["save"]
-    assert _words(card["choices"][0]["label"]) == "Keep as a separate ride"
-    assert _words(card["recognised"]).startswith("Most of it overlaps Sprint Training")
+    # Nothing is asked: keeping it apart is a quiet option, not a question.
+    assert (card["question"], card["choices"]) == (None, [])
+    assert _choices(card, "changes") == ["save", "someone_else"]
+    assert _words(card["changes"][0]["label"]) == "Keep as a separate ride"
+    assert _words(card["changes"][0]["detail"]) == (
+        "It joins Rides on its own, so the minutes it shares with that ride count "
+        "twice in your fitness chart."
+    )
+    assert _words(card["recognised"]) == "67% of it overlaps Sprint Training, 1 May 2026, already in your rides."
 
     ride = attachment_service.decide(db_session, gareth, early, "save")
     assert db_session.query(Ride).count() == 2
@@ -225,9 +242,11 @@ def test_a_riding_partners_file_from_the_same_outing_is_not_called_yours(db_sess
     assert (card["state"], card["view"]) == ("new", "asking")
     assert "alongside" in card["hints"]
     assert _words(card["recognised"]) == (
-        "Recorded alongside Sprint Training, 1 May 2026, but the numbers differ."
+        "Recorded at the same time as Sprint Training, 1 May 2026, but the numbers differ."
     )
-    assert _words(card["question"]) == "Is it someone else\u2019s?"
+    assert _words(card["question"]) == "Yours, or someone else\u2019s?"
+    # The time it covers is in Rides already, so there is no save to offer.
+    assert _choices(card) == ["chat_only", "someone_else"]
     assert tom.imported_ride_id is None
 
 
@@ -278,7 +297,7 @@ def test_a_second_device_on_the_same_outing_agrees_and_is_linked(db_session, gar
 
 @pytest.mark.parametrize("hint,data,line", [
     ("high_hr", _gpx("2026-05-05T08:00:00", 300, watts=250, hr=199),
-     "Its heart rate reaches 199 bpm, above your max of 186 bpm."),
+     "Its heart rate holds 199 bpm for 30 seconds, above your max of 186 bpm."),
     ("route", _gpx("2026-05-05T08:00:00", 300),
      "No power or heart rate in it, so it reads like a route or a GPS trace."),
     ("before_first_ride", _gpx("2024-03-02T08:00:00", 300, watts=250, hr=150),
@@ -488,7 +507,8 @@ def test_a_batch_is_pointed_to_data_in(api):
     for name in ("export_123.zip", "misnamed.gpx"):
         r = api.upload(name, archive.getvalue())
         assert r.status_code == 400
-        assert "Settings, then Data in, then Ride archive" in r.json()["detail"]
+        assert r.json()["detail"] == attachment_service.A_ZIP
+        assert "Ride archive in Settings, then Data in" in r.json()["detail"]
 
     sid = api.post("/api/v1/chat/sessions", json={}).json()["id"]
     ids = [api.upload(f"r{i}.gpx", _gpx(f"2026-04-0{i + 1}T08:00:00", 300, watts=200)).json()["id"]
@@ -496,7 +516,9 @@ def test_a_batch_is_pointed_to_data_in(api):
     r = api.post(f"/api/v1/chat/sessions/{sid}/messages",
                  json={"content": "All of these.", "attachment_ids": ids})
     assert r.status_code == 400
-    assert r.json()["detail"].startswith("Three files is the limit for one message. For a batch")
+    assert r.json()["detail"].startswith(
+        "Three files is the limit for one message. If these are your own rides"
+    )
 
 
 # ── What the coach is told ──────────────────────────────────────────────────
@@ -563,18 +585,34 @@ def test_the_files_block_carries_triage_decision_and_label(db_session, gareth, s
         assert rule in note
 
 
-def test_a_file_read_before_triage_was_kept_has_no_card_to_point_at(db_session, gareth, scripted_model):
+def _before_triage(db, a) -> ChatAttachment:
+    """An upload as it was stored before triage was kept."""
+    a.summary = {k: v for k, v in a.summary.items() if k not in ("triage", "owner")}
+    a.imported_ride_id = None
+    db.commit()
+    return a
+
+
+def test_a_file_read_before_triage_was_kept_is_recognised_on_first_read(
+    db_session, gareth, scripted_model
+):
+    """Gareth's Sa Calobra chat of 16 Oct was shared before this shipped:
+    on its first read the 29:53, already in his rides, is linked and asks
+    nothing, and the 30:47 gets its card."""
+    saved = _archive(db_session, gareth, PB_BYTES)
     chat = ChatSession(id="s-old", user_id=gareth.id, title="Chat")
     db_session.add(chat)
     db_session.commit()
-    old = _attach(db_session, gareth, NEAR, NEAR_BYTES)
-    old.summary = {k: v for k, v in old.summary.items() if k != "triage"}
-    db_session.commit()
-    _send(db_session, gareth, chat, "Remember this one?", [old.id])
-    shown = _files(scripted_model.calls[-1])[old.id]
-    assert "triage" not in shown and shown["owner"] == "unknown"
-    # Its card, should a message carry it, reads as new and asks.
-    assert _card(db_session, gareth, old)["view"] == "asking"
+    pb = _before_triage(db_session, _attach(db_session, gareth, PB, PB_BYTES))
+    near = _before_triage(db_session, _attach(db_session, gareth, NEAR, NEAR_BYTES))
+    _send(db_session, gareth, chat, "Remember these?", [pb.id, near.id])
+
+    shown = _files(scripted_model.calls[-1])
+    assert shown[pb.id]["triage"]["state"] == "in_history"
+    assert shown[pb.id]["triage"]["saved_ride"]["ride_id"] == saved.id
+    assert shown[near.id]["triage"] == {"state": "new", "card": "asking"}
+    assert _card(db_session, gareth, pb)["view"] == "in_history"
+    assert _card(db_session, gareth, near)["view"] == "asking"
 
 
 def test_the_memory_pass_keeps_nothing_from_someone_elses_file(db_session, gareth, scripted_model, monkeypatch):
@@ -588,7 +626,8 @@ def test_the_memory_pass_keeps_nothing_from_someone_elses_file(db_session, garet
     _send(db_session, gareth, chat, "How far off am I?", [kom.id])
     assert seen[-1]["caution"].endswith(
         "Someone else's file is that person's data, used only inside this chat: "
-        "record nothing from it at all, about the rider or about the person who rode it."
+        "record none of its numbers and nothing about the person who rode it. "
+        "What the rider says about their own riding or goals still counts as usual."
     )
 
 
@@ -632,10 +671,464 @@ def test_the_new_words_for_the_coach_and_the_rider_carry_no_dashes():
     from app.services import attachment_service as svc
 
     words = [
-        coach_service._SOMEONE_ELSES_CAUTION, svc.A_ZIP, svc.TOO_MANY_FILES,
+        coach_service._SOMEONE_ELSES_CAUTION, coach_service._CHAT_ONLY_CAUTION,
+        svc.A_ZIP, svc.TOO_MANY_FILES, *coach_service._SAVE_REFUSED.values(),
         json.dumps(next(t for t in coach_service.COACH_TOOLS
                         if t["name"] == "save_attachment_as_ride")),
     ]
     for text in words:
         assert not any(d in text for d in DASHES), text
         assert "kicker" not in text.lower()
+
+
+# ── Review scenarios, 16 Oct 2026 ───────────────────────────────────────────
+# Each of these failed before the review fixes: the state a file was given
+# at upload was never checked again, a save trusted it, and the coach's save
+# skipped what the card guards.
+
+
+def _fit(start: str, seconds: int, watts: int, hr: int, threshold: int | None = None) -> bytes:
+    """A FIT activity, one record a second, with the head unit's threshold."""
+    from datetime import timezone
+
+    from fit_tool.fit_file_builder import FitFileBuilder
+    from fit_tool.profile.messages.file_id_message import FileIdMessage
+    from fit_tool.profile.messages.record_message import RecordMessage
+    from fit_tool.profile.messages.session_message import SessionMessage
+    from fit_tool.profile.profile_type import FileType, Manufacturer
+
+    t0 = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
+
+    def ms(t):
+        return round(t.timestamp() * 1000)
+
+    builder = FitFileBuilder(auto_define=True, min_string_size=50)
+    file_id = FileIdMessage()
+    file_id.type = FileType.ACTIVITY
+    file_id.manufacturer = Manufacturer.DEVELOPMENT.value
+    file_id.product = 0
+    file_id.time_created = ms(t0)
+    file_id.serial_number = 1234
+    builder.add(file_id)
+    for i in range(seconds + 1):
+        record = RecordMessage()
+        record.timestamp = ms(t0 + timedelta(seconds=i))
+        record.power = watts
+        record.heart_rate = hr
+        record.position_lat = 39.8 + i * 0.00003
+        record.position_long = 2.8
+        record.altitude = 5 + 0.25 * i
+        record.distance = i * 3.3
+        builder.add(record)
+    session = SessionMessage()
+    session.start_time = ms(t0)
+    session.timestamp = ms(t0 + timedelta(seconds=seconds))
+    session.total_elapsed_time = seconds
+    session.total_timer_time = seconds
+    if threshold:
+        session.threshold_power = threshold
+    builder.add(session)
+    return builder.build().to_bytes()
+
+
+def _chunks(raw: list[str]) -> list[dict]:
+    return [json.loads(c[len("data: "):]) for c in raw]
+
+
+def _chat(db, user, sid="s-review") -> ChatSession:
+    chat = ChatSession(id=sid, user_id=user.id, title="Chat")
+    db.add(chat)
+    db.commit()
+    return chat
+
+
+def _coach_save(db, user, a) -> str:
+    return coach_service._execute_tool(
+        db, user, "save_attachment_as_ride", {"attachment_id": a.id, "confirmed": True}
+    )
+
+
+def _coach_owner(db, user, a, owner="self") -> str:
+    return coach_service._execute_tool(
+        db, user, "set_attachment_owner", {"attachment_id": a.id, "owner": owner}
+    )
+
+
+WHOLE_MORNING = _gpx("2026-05-01T07:30:00", 3 * 3600, watts=330, hr=168)
+
+
+def test_saving_the_whole_ride_turns_its_climb_into_part_of_it(db_session, gareth):
+    """Both arrive new. Once the whole morning is saved, the climb's card
+    stops asking, and a save of it is refused: the climb's load never
+    counts twice."""
+    whole = _attach(db_session, gareth, "whole_morning.gpx", WHOLE_MORNING)
+    climb = _attach(db_session, gareth, PB, PB_BYTES)
+    assert _card(db_session, gareth, climb)["view"] == "asking"
+
+    ride = attachment_service.decide(db_session, gareth, whole, "save")
+    card = _card(db_session, gareth, climb)
+    assert (card["view"], card["ride"]["id"], card["choices"]) == ("part_of_ride", ride.id, [])
+    with pytest.raises(attachment_service.DecisionRefused) as refused:
+        attachment_service.decide(db_session, gareth, db_session.get(ChatAttachment, climb.id), "save")
+    assert refused.value.code == "part_of_ride"
+    assert db_session.query(Ride).count() == 1
+
+
+def test_a_ride_arriving_after_the_file_is_noticed(db_session, gareth, scripted_model):
+    """The archive import, or a Wahoo sync, brings the ride in after the file
+    was dropped into chat: undecided or kept for the chat, the card now says
+    it is in Rides, and so does the coach."""
+    asking = _attach(db_session, gareth, NEAR, NEAR_BYTES)
+    kept = _attach(db_session, gareth, PB, PB_BYTES)
+    attachment_service.decide(db_session, gareth, kept, "chat_only")
+    near_ride = _archive(db_session, gareth, NEAR_BYTES)
+    pb_ride = _archive(db_session, gareth, PB_BYTES)
+
+    for a, ride in ((asking, near_ride), (kept, pb_ride)):
+        card = _card(db_session, gareth, a)
+        assert (card["view"], card["ride"]["id"], card["outcome"]) == ("in_history", ride.id, None)
+        assert _words(card["recognised"]).startswith("Already in your rides: Sprint Training")
+
+    chat = _chat(db_session, gareth)
+    _send(db_session, gareth, chat, "How do they compare?", [asking.id, kept.id])
+    shown = _files(scripted_model.calls[-1])
+    assert shown[asking.id]["triage"]["saved_ride"]["ride_id"] == near_ride.id
+    assert shown[kept.id]["triage"]["state"] == "in_history"
+    assert db_session.query(Ride).count() == 2
+
+
+def test_a_saved_stretch_inside_a_new_file_is_noticed(db_session, gareth):
+    """A 30 minute stretch is in Rides; the whole 3 hour outing arrives.
+    The card says so, and what a save would do to the fitness chart, and
+    the coach cannot save it from a word in the chat."""
+    stretch = _archive(db_session, gareth, PB_BYTES)
+    whole = _attach(db_session, gareth, "whole_morning.gpx", WHOLE_MORNING)
+
+    card = _card(db_session, gareth, whole)
+    assert card["view"] == "asking" and "holds" in card["hints"]
+    assert _words(card["recognised"]) == "It includes Sprint Training, 1 May 2026, already in your rides."
+    assert _words(card["choices"][0]["detail"]) == (
+        "It joins Rides on its own, so the minutes it shares with that ride count "
+        "twice in your fitness chart."
+    )
+    assert whole.summary["triage"]["hints"]["holds"]["ride_id"] == stretch.id
+
+    _coach_owner(db_session, gareth, whole)
+    said = _coach_save(db_session, gareth, whole)
+    assert said.startswith("Error: nothing was saved. This file is filed on its card only")
+    assert db_session.query(Ride).count() == 1
+
+
+def test_a_time_match_stays_a_time_match_on_re_upload(db_session, gareth):
+    """A different recording of the outing, linked by time, is not the saved
+    ride's own bytes: sent again, it is still a time match the rider can
+    say is not theirs, and the coach is never told the data is identical."""
+    _archive(db_session, gareth, PB_BYTES)
+    trace = _gpx("2026-05-01T08:00:00", 1793)
+    _attach(db_session, gareth, "trace.gpx", trace)
+    again = _attach(db_session, gareth, "trace (1).gpx", trace)
+    assert again.summary["triage"]["matched"] == "time"
+    assert _choices(_card(db_session, gareth, again), "changes") == ["someone_else"]
+
+    said = _coach_owner(db_session, gareth, again, "someone_else")
+    assert "lined up in time" in said and "exactly this data" not in said
+
+
+def test_a_mates_file_from_the_same_ride_cannot_be_saved_or_called_saved(api):
+    """Tom's file, recorded beside Gareth's ride: no save on the card, a
+    save refused with the reason, nothing in Rides changed, and no undo line
+    that would delete Gareth's own ride."""
+    _archive(api.db, api.rider, _gpx("2026-05-01T08:00:00", 1793, watts=250, hr=150))
+    tom = api.upload("tom.gpx", PB_BYTES).json()
+    assert _choices(tom["card"]) == ["chat_only", "someone_else"]
+
+    r = api.decide(tom["id"], "save")
+    assert r.status_code == 409
+    assert "covers the same time as a ride already in your rides" in r.json()["detail"]
+    a = api.db.get(ChatAttachment, tom["id"])
+    assert a.imported_ride_id is None and attachment_service.file_owner(a) == "unknown"
+    assert api.db.query(Ride).count() == 1
+
+    _coach_owner(api.db, api.rider, a)
+    said = _coach_save(api.db, api.rider, a)
+    assert said.startswith("Error: nothing was saved. This file was recorded at the same time")
+    assert api.db.query(Ride).count() == 1
+
+
+def test_a_mate_on_the_same_ride_with_close_numbers_is_not_linked(db_session, gareth):
+    """Tom at 300 W and 160 bpm, starting 30 s after Gareth's 330 W and 168
+    bpm: close on average, apart second by second."""
+    _archive(db_session, gareth, PB_BYTES)
+    tom = _attach(db_session, gareth, "tom.gpx", _gpx("2026-05-01T08:00:30", 1793, watts=300, hr=160))
+    triage = tom.summary["triage"]
+    assert triage["state"] == "new" and "alongside" in triage["hints"]
+    assert tom.imported_ride_id is None
+
+
+def test_saving_a_pros_fit_file_never_sets_the_riders_ftp(db_session, gareth):
+    kom = _attach(db_session, gareth, "kom.fit", _fit("2026-04-12T10:00:00", 1500, 452, 178, threshold=430))
+    assert "faster" in kom.summary["triage"]["hints"]
+    ride = attachment_service.decide(db_session, gareth, kom, "save")
+    db_session.refresh(gareth)
+    assert gareth.ftp == 290
+    # The ride keeps the file's own threshold for its training stress.
+    assert ride.ftp_at_time == 430
+
+
+def test_the_coachs_save_holds_to_the_cards_guards(db_session, gareth):
+    """A spoken save of a file that looks like a pro's, or of one two thirds
+    inside a saved ride, is refused and pointed at the card."""
+    kom = _attach(db_session, gareth, KOM, KOM_BYTES)
+    _coach_owner(db_session, gareth, kom)
+    assert _coach_save(db_session, gareth, kom).startswith(
+        "Error: nothing was saved. This file is filed on its card only"
+    )
+    assert db_session.query(Ride).count() == 0
+
+    _archive(db_session, gareth, _gpx("2026-05-01T08:10:00", 1800, watts=330, hr=168))
+    early = _attach(db_session, gareth, "early.gpx", PB_BYTES)
+    assert _coach_save(db_session, gareth, early).startswith(
+        "Error: nothing was saved. This file is a stretch of a ride"
+    )
+    assert db_session.query(Ride).count() == 1
+
+
+def test_a_linked_file_whose_ride_was_deleted_saves_as_a_fresh_ride(db_session, gareth, scripted_model):
+    saved = _archive(db_session, gareth, PB_BYTES)
+    pb = _attach(db_session, gareth, PB, PB_BYTES)
+    db_session.delete(saved)
+    db_session.commit()
+
+    card = _card(db_session, gareth, pb)
+    assert card["view"] == "chat_only"
+    assert _words(card["outcome"]) == (
+        "The ride it matched is no longer in your rides, so it’s just for this chat."
+    )
+    assert _choices(card, "changes") == ["save", "someone_else"]
+
+    ride = attachment_service.decide(db_session, gareth, db_session.get(ChatAttachment, pb.id), "save")
+    card = _card(db_session, gareth, pb)
+    assert (card["view"], card["ride"]["id"], _words(card["outcome"])) == ("saved", ride.id, "Saved to Rides.")
+
+    chat = _chat(db_session, gareth)
+    _send(db_session, gareth, chat, "Saved?", [pb.id])
+    triage = _files(scripted_model.calls[-1])[pb.id]["triage"]
+    assert triage["decision"] == "save" and triage["saved_as"]["ride_id"] == ride.id
+
+
+def test_a_poorer_saved_ride_never_replaces_the_files_own_read(db_session, gareth, scripted_model):
+    """The phone's heart rate only recording is in Rides; the head unit's
+    file, with power, is shared. The coach reads the file, power curve and
+    all, and the summary and analysis describe one recording."""
+    _archive(db_session, gareth, _gpx("2026-05-01T08:00:00", 1793, hr=168))
+    head_unit = _attach(db_session, gareth, PB, PB_BYTES)
+    assert head_unit.summary["triage"]["state"] == "in_history"
+
+    chat = _chat(db_session, gareth)
+    _send(db_session, gareth, chat, "Pacing?", [head_unit.id])
+    shown = _files(scripted_model.calls[-1])[head_unit.id]
+    assert shown["analysis_source"].startswith("this file")
+    assert shown["analysis"]["power_curve"]
+    assert shown["summary"]["avg_power"] == 330
+
+
+def test_a_saved_ride_read_in_place_of_the_file_brings_its_own_summary(db_session, gareth, scripted_model):
+    saved = _archive(db_session, gareth, PB_BYTES)
+    second = _attach(db_session, gareth, "wahoo.gpx", _gpx("2026-05-01T08:00:00", 1793, watts=318, hr=168))
+    chat = _chat(db_session, gareth)
+    _send(db_session, gareth, chat, "Pacing?", [second.id])
+    shown = _files(scripted_model.calls[-1])[second.id]
+    assert shown["analysis_source"].startswith("the saved ride")
+    assert shown["summary"]["avg_power"] == round(saved.average_power)
+
+
+def test_a_route_with_no_times_is_never_dated_today(db_session, gareth):
+    route = _attach(db_session, gareth, "route.gpx", _gpx("2026-05-01T08:00:00", 2000, times=False))
+    assert "duration" not in route.summary
+    card = _card(db_session, gareth, route)
+    assert (card["duration"], card["duration_s"]) == (None, None)
+    assert _choices(card) == ["chat_only", "someone_else"]
+    assert _words(card["question"]) == "Yours, or someone else’s?"
+
+    with pytest.raises(attachment_service.DecisionRefused) as refused:
+        attachment_service.decide(db_session, gareth, route, "save")
+    assert refused.value.code == "no_times"
+    with pytest.raises(attachment_service.AttachmentError):
+        attachment_service.save_as_ride(db_session, gareth, route)
+    assert db_session.query(Ride).count() == 0
+
+
+def test_two_riders_files_on_the_same_second_are_two_files(db_session, gareth):
+    """Same start, same length, same samples: their numbers keep them apart,
+    so marking Tom's file never touches Gareth's card."""
+    mine = _attach(db_session, gareth, "mine.gpx", PB_BYTES)
+    tom = _attach(db_session, gareth, "tom.gpx", _gpx("2026-05-01T08:00:00", 1793, watts=250, hr=150))
+    assert attachment_service.same_file_key(mine) != attachment_service.same_file_key(tom)
+    attachment_service.decide(db_session, gareth, tom, "someone_else", "Tom")
+    assert _card(db_session, gareth, mine)["view"] == "asking"
+
+
+def test_a_heart_rate_spike_is_not_someone_elses_heart(db_session, gareth):
+    spiky = _gpx("2026-05-05T08:00:00", 3600, watts=220,
+                 hr=lambda i: 225 if 1800 <= i < 1803 else 148)
+    a = _attach(db_session, gareth, "spike.gpx", spiky)
+    assert "high_hr" not in a.summary["triage"]["hints"]
+
+
+def test_a_short_pro_effort_still_wonders_aloud(db_session, gareth):
+    kom = _attach(db_session, gareth, "short_kom.gpx", _gpx("2026-04-12T10:00:00", 480, watts=560, hr=178))
+    card = _card(db_session, gareth, kom)
+    assert _words(card["recognised"]) == "Its best 8 minutes is 560 W, well above your FTP of 290 W."
+
+
+def test_once_the_rider_says_its_theirs_the_card_keeps_every_choice(db_session, gareth):
+    """The coach heard "that's mine" about the KOM file: the card stops
+    wondering aloud but keeps Someone else's, so a misread is corrected on
+    the card."""
+    kom = _attach(db_session, gareth, KOM, KOM_BYTES)
+    _coach_owner(db_session, gareth, kom)
+    card = _card(db_session, gareth, kom)
+    assert _choices(card) == ["save", "chat_only", "someone_else"]
+    assert _words(card["recognised"]) == "Nothing in your rides matches it."
+    assert _words(card["question"]) == "Should it join your rides?"
+
+
+def test_a_guessed_owner_is_not_handed_down(db_session, gareth):
+    """Linked by time, the file was taken as Gareth's. Its ride deleted, the
+    same file sent again is asked about afresh."""
+    saved = _archive(db_session, gareth, PB_BYTES)
+    _attach(db_session, gareth, PB, PB_BYTES)
+    db_session.delete(saved)
+    db_session.commit()
+    again = _attach(db_session, gareth, PB, PB_BYTES)
+    assert attachment_service.file_owner(again) == "unknown"
+    assert _choices(_card(db_session, gareth, again)) == ["save", "chat_only", "someone_else"]
+
+
+def test_identical_bytes_marked_someone_elses_say_the_saved_ride_holds_them(
+    db_session, gareth, scripted_model
+):
+    first = _attach(db_session, gareth, NEAR, NEAR_BYTES)
+    ride = attachment_service.decide(db_session, gareth, first, "save")
+    again = _attach(db_session, gareth, "renamed.gpx", NEAR_BYTES)
+    attachment_service.decide(db_session, gareth, again, "someone_else", "tom's KOM")
+
+    card = _card(db_session, gareth, again)
+    assert card["label"] == "Tom’s KOM"
+    assert _words(card["outcome"]) == "Tom’s KOM, for comparison only."
+    chat = _chat(db_session, gareth)
+    _send(db_session, gareth, chat, "Whose is this?", [again.id])
+    triage = _files(scripted_model.calls[-1])[again.id]["triage"]
+    assert triage["same_data_as"]["ride_id"] == ride.id and "lines_up_with" not in triage
+
+
+def test_card_dates_are_utc_whatever_offset_the_file_wrote(db_session, gareth):
+    offset = _gpx("2026-05-02T01:00:00", 600, watts=250, hr=150).replace(b"Z</time>", b"+02:00</time>")
+    a = _attach(db_session, gareth, "late.gpx", offset)
+    assert a.summary["start_time"] == "2026-05-01T23:00:00+00:00"
+    card = _card(db_session, gareth, a)
+    assert card["date"] == "2026-05-01"
+    assert _words(card["choices"][0]["detail"]) == "It joins Rides and your fitness chart for 1 May 2026."
+
+
+def test_the_same_file_twice_in_one_message_shows_one_card(api):
+    sid = api.post("/api/v1/chat/sessions", json={}).json()["id"]
+    one = api.upload(NEAR, NEAR_BYTES, sid).json()["id"]
+    two = api.upload(NEAR.replace(".gpx", " (1).gpx"), NEAR_BYTES, sid).json()["id"]
+    session = api.db.get(ChatSession, sid)
+    attachment_service.bind_to_session(api.db, api.rider.id, sid, [one, two])
+    coach_service.add_user_message(api.db, session, "This one.", [one, two])
+
+    detail = api.get(f"/api/v1/chat/sessions/{sid}").json()
+    assert detail["messages"][0]["attachment_ids"] == [one]
+    assert [c["id"] for c in detail["attachments"]] == [one]
+    first, second = (_card(api.db, api.rider, api.db.get(ChatAttachment, i)) for i in (one, two))
+    assert first["file_key"] == second["file_key"]
+
+
+def test_the_coachs_file_tools_tell_the_app_the_card_changed(db_session, gareth, scripted_model):
+    chat = _chat(db_session, gareth)
+    near = _attach(db_session, gareth, NEAR, NEAR_BYTES)
+    scripted_model.append(([], [
+        scripted_model.tool_use("set_attachment_owner", {"attachment_id": near.id, "owner": "self"}),
+        scripted_model.tool_use("save_attachment_as_ride", {"attachment_id": near.id, "confirmed": True}),
+    ]))
+    scripted_model.append((["In."], []))
+    chunks = _chunks(_send(db_session, gareth, chat, "Mine, from Sunday. Save it to my rides.", [near.id]))
+    events = [c for c in chunks if c["type"] == "files_updated"]
+    assert events == [
+        {"type": "files_updated", "attachment_ids": [near.id], "saved": False},
+        {"type": "files_updated", "attachment_ids": [near.id], "saved": True},
+    ]
+    assert _card(db_session, gareth, near)["view"] == "saved"
+
+
+def test_a_save_that_finds_the_ride_in_rides_says_so_to_the_coach(db_session, gareth):
+    near = _attach(db_session, gareth, NEAR, NEAR_BYTES)
+    _coach_owner(db_session, gareth, near)
+    _archive(db_session, gareth, NEAR_BYTES)
+    said = _coach_save(db_session, gareth, db_session.get(ChatAttachment, near.id))
+    assert said.startswith("Already in the rider's history")
+    assert db_session.query(Ride).count() == 1
+
+
+def test_a_file_without_power_says_the_fitness_chart_will_not_move(db_session, gareth, scripted_model):
+    hr_only = _attach(db_session, gareth, "hr_only.gpx", _gpx("2026-05-05T08:00:00", 600, hr=150))
+    card = _card(db_session, gareth, hr_only)
+    assert _words(card["choices"][0]["detail"]) == (
+        "It joins Rides for 5 May 2026. With no power in it, your fitness chart won’t move."
+    )
+    _coach_owner(db_session, gareth, hr_only)
+    said = _coach_save(db_session, gareth, hr_only)
+    assert "it has no power, so their training load does not move" in said
+
+
+def test_someone_elses_file_without_a_name(db_session, gareth):
+    kom = _attach(db_session, gareth, KOM, KOM_BYTES)
+    attachment_service.decide(db_session, gareth, kom, "someone_else")
+    assert _words(_card(db_session, gareth, kom)["outcome"]) == "Someone else’s ride, for comparison only."
+
+
+def test_just_for_this_chat_keeps_its_numbers_out_of_memory(db_session, gareth, scripted_model, monkeypatch):
+    seen = []
+    monkeypatch.setattr("app.services.memory_service.extract_memories", lambda *a, **k: seen.append(k))
+    chat = _chat(db_session, gareth)
+    near = _attach(db_session, gareth, NEAR, NEAR_BYTES)
+    attachment_service.decide(db_session, gareth, near, "chat_only")
+    _send(db_session, gareth, chat, "How did I pace it?", [near.id])
+    assert seen[-1]["caution"] == (
+        "These ride files are the rider's own and kept just for this chat, named here "
+        f"by file name: “{NEAR}”. Record none of their numbers. What the rider "
+        "says in their own words still counts as usual."
+    )
+
+
+def test_the_files_note_retires_the_attachment_laws_question(db_session, gareth, scripted_model):
+    chat = _chat(db_session, gareth)
+    near = _attach(db_session, gareth, NEAR, NEAR_BYTES)
+    _send(db_session, gareth, chat, "Here’s a ride file.", [near.id])
+    note = next(
+        b["text"] for b in scripted_model.calls[-1]["system"] if b["text"].startswith(FILES_HEADING)
+    )
+    for rule in (
+        "THE ATTACHMENT LAW applies to them with one change, which overrides it",
+        "Its question, and its rule to save only after the rider has agreed in reply to you, are retired",
+        "which sits under their message, above your reply (never say below)",
+        "say in one sentence the one thing worth knowing about the file",
+        "never as you or yours",
+        "Heart rate is personal",
+    ):
+        assert rule in note
+    assert not any(d in note for d in DASHES)
+
+
+def test_a_file_saved_before_triage_was_kept_still_reads_as_saved(db_session, gareth):
+    """Saved from chat before triage, its first read finds the ride it was
+    saved as, which is its own save: Saved to Rides, not a match."""
+    near = _attach(db_session, gareth, NEAR, NEAR_BYTES)
+    ride = attachment_service.decide(db_session, gareth, near, "save")
+    near = db_session.get(ChatAttachment, near.id)
+    near.summary = {k: v for k, v in near.summary.items() if k not in ("triage", "sha256")}
+    db_session.commit()
+    card = _card(db_session, gareth, near)
+    assert (card["view"], card["ride"]["id"]) == ("saved", ride.id)

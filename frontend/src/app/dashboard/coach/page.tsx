@@ -195,22 +195,23 @@ function CoachPageInner() {
   const handleFiles = useCallback((chosen: File[]) => {
     setAttachError(null);
 
-    // A zip, or more files than one message carries, is a batch, and a batch
-    // belongs in the ride archive import: it skips rides already in and
-    // rebuilds fitness once. The chat would do neither, so it takes none of
-    // them rather than half.
+    // A zip, or more files than one message carries, is a batch. A batch of
+    // the rider's own rides belongs in the ride archive import, which skips
+    // rides already in and rebuilds fitness once; it saves every ride it
+    // reads, so files kept to compare go here three at a time instead. The
+    // chat takes none of a batch rather than half.
     const zip = chosen.find(isZip);
     const picked = chosen.filter((file) => !isZip(file));
     if (picked.length > MAX_ATTACHMENTS) {
       setAttachError({
-        text: "Three files is the limit for one message. For a batch, put the files in one zip and choose it in Settings, then Data in, then Ride archive: rides already in are skipped.",
+        text: "Three files is the limit for one message. If these are your own rides, zip them and choose the zip under Ride archive in Settings, then Data in, which skips any you already have. To compare them here, send up to three at a time.",
         dataIn: true,
       });
       return;
     }
     if (zip) {
       setAttachError({
-        text: `${zip.name} is a zip of rides, and the chat takes single ride files. Choose it in Settings, then Data in, then Ride archive instead: rides already in are skipped.`,
+        text: `${zip.name} is a zip. For one ride, unzip it and attach the file inside. For a batch of your own rides, choose it under Ride archive in Settings, then Data in, which skips any you already have.`,
         dataIn: true,
       });
       if (!picked.length) return;
@@ -399,6 +400,8 @@ function CoachPageInner() {
             // which otherwise holds its session for five minutes. A goal it
             // filed can rebuild the whole plan, so the plan and goals too.
             refreshPlan();
+          } else if (chunk.type === "files_updated") {
+            onFilesUpdated(sessionId, !!chunk.saved);
           }
         }
       } catch (error) {
@@ -415,6 +418,9 @@ function CoachPageInner() {
       setStreaming(false);
       setStatus(null);
       queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
+      // Their cards were read at upload; a choice made since on another
+      // copy of the same file is on the server, so read them again.
+      if (handedOver.ids.length) void rereadCards(sessionId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [activeSessionId, streaming]
@@ -606,12 +612,19 @@ function CoachPageInner() {
     setRenamingId(null);
   };
 
-  // Load active session messages (latest window; older pages on demand)
-  const { data: sessionData, dataUpdatedAt: sessionReadAt } = useQuery({
+  // Load active session messages (latest window; older pages on demand).
+  // The read carries when it left, not when it landed: a card choice made
+  // while it was in flight is newer than anything it brings back.
+  const { data: sessionRead } = useQuery({
     queryKey: ["chat-session", activeSessionId],
-    queryFn: () => chat.getSession(activeSessionId!, { limit: 60 }),
+    queryFn: async () => {
+      const askedAt = Date.now();
+      const data = await chat.getSession(activeSessionId!, { limit: 60 });
+      return { data, askedAt };
+    },
     enabled: !!activeSessionId,
   });
+  const sessionData = sessionRead?.data;
 
   // The conversation continues: opening COACH resumes the thread with the
   // latest message instead of an empty page, the way a messenger opens. A
@@ -644,11 +657,11 @@ function CoachPageInner() {
         }))
       );
       setHasEarlier(!!sessionData.has_more);
-      mergeCards(sessionData.attachments, sessionReadAt);
+      mergeCards(sessionData.attachments, sessionRead?.askedAt ?? 0);
     }
-    // sessionReadAt moves with sessionData; the data is what to react to.
+    // sessionData and its askedAt arrive together, as sessionRead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionData]);
+  }, [sessionRead]);
 
   // Page backwards through history as the rider scrolls up
   const loadEarlier = async () => {
@@ -689,8 +702,8 @@ function CoachPageInner() {
   // thread on screen stays as it is, earlier pages and a streaming reply
   // included. The cached session is marked behind either way, so the next
   // time the chat opens it is read fresh.
-  const rereadCards = useCallback(async () => {
-    const sessionId = activeSessionId;
+  const rereadCards = useCallback(async (inSession?: string | null) => {
+    const sessionId = inSession ?? activeSessionId;
     if (!sessionId) return;
     const askedAt = Date.now();
     try {
@@ -701,6 +714,16 @@ function CoachPageInner() {
       // the next time the chat loads.
     }
   }, [activeSessionId, mergeCards]);
+
+  // The coach filed a file, or recorded whose it is, from the rider's own
+  // words: the cards read again, and after a save Rides and fitness too.
+  const onFilesUpdated = useCallback(
+    (sessionId: string | null, saved: boolean) => {
+      void rereadCards(sessionId);
+      if (saved) refreshRideData(queryClient);
+    },
+    [rereadCards, queryClient]
+  );
 
   const onCardDecided = useCallback(
     (next: ChatAttachmentCard, before: ChatAttachmentCard) => {
@@ -715,12 +738,11 @@ function CoachPageInner() {
       if (next.view === "saved" && before.view !== "saved") {
         refreshRideData(queryClient);
       }
+      // Another upload of the same file in this chat now holds the same
+      // choice on the server. One still in the composer catches up when it
+      // is sent (see handleSend).
       const copied = Object.values(cards).some(
-        (c) =>
-          c.id !== next.id &&
-          c.kind === next.kind &&
-          !!c.start_time &&
-          c.start_time === next.start_time
+        (c) => c.id !== next.id && !!next.file_key && c.file_key === next.file_key
       );
       if (copied) void rereadCards();
     },
@@ -806,6 +828,8 @@ function CoachPageInner() {
           // which otherwise holds its session for five minutes. A goal it
           // filed can rebuild the whole plan, so the plan and goals too.
           refreshPlan();
+        } else if (chunk.type === "files_updated") {
+          onFilesUpdated(sessionId, !!chunk.saved);
         }
       }
     } catch (error) {
@@ -822,6 +846,9 @@ function CoachPageInner() {
     setStreaming(false);
     setStatus(null);
     queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
+    // Their cards were read at upload; a choice made since on another copy
+    // of the same file is on the server, so read them again.
+    if (handedOver.ids.length) void rereadCards(sessionId);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -1105,7 +1132,14 @@ function CoachPageInner() {
               // The cards of the files a rider message shared go under it. A
               // file with no card keeps its name in the bubble instead.
               const ids = msg.role === "user" ? msg.attachmentIds ?? [] : [];
-              const shared = ids.flatMap((id) => (cards[id] ? [cards[id]] : []));
+              // The same file attached twice to one message shows one card.
+              const shared = ids
+                .flatMap((id) => (cards[id] ? [cards[id]] : []))
+                .filter(
+                  (card, k, all) =>
+                    !card.file_key ||
+                    all.findIndex((c) => c.file_key === card.file_key) === k
+                );
               const named = (msg.attachments ?? []).filter(
                 (_, k) => !(ids[k] && cards[ids[k]])
               );
@@ -1284,7 +1318,7 @@ function CoachPageInner() {
                     href={DATA_IN_HREF}
                     className="rounded-sm font-medium text-vb-text underline underline-offset-2 hover:text-vb-red focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-vb-red"
                   >
-                    Open Data&nbsp;in
+                    Open Ride&nbsp;archive
                   </Link>
                 </>
               )}
@@ -1298,9 +1332,11 @@ function CoachPageInner() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={
-                attachments.length
-                  ? "Ask about the ride, or just send it…"
-                  : "Ask your coach anything…"
+                attachments.length > 1
+                  ? "Ask about the rides, or just send them…"
+                  : attachments.length
+                    ? "Ask about the ride, or just send it…"
+                    : "Ask your coach anything…"
               }
               rows={1}
               className="max-h-32 flex-1 resize-none rounded-sm border border-vb-border bg-vb-surface px-4 py-2.5 text-sm text-vb-text placeholder-vb-text-muted focus:border-vb-forest focus:outline-none"

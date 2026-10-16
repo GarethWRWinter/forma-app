@@ -233,6 +233,9 @@ def test_a_file_saved_before_owners_were_kept_counts_as_the_riders_own(
 ):
     chat = _chat(db_session, gareth)
     old = _upload(db_session, gareth, PB, "2026-05-01T08:00:00", 330, 93, T0)
+    # Saved in September, so its ride is in Rides.
+    db_session.add(Ride(id="r-saved-in-september", user_id=gareth.id, source="fit_upload",
+                        ride_date=T0.replace(month=9), duration_seconds=120))
     old.imported_ride_id = "r-saved-in-september"
     db_session.commit()
     assert "owner" not in old.summary
@@ -276,10 +279,24 @@ def test_the_memory_pass_is_cautioned_until_every_file_is_the_riders_own(
     _send(db_session, gareth, chat, "The 29:53 is mine, the 30:47 is my mate's.", voice=voice)
     caution = extractions[-1]["caution"]
     assert f"Someone else's: \u201c{NEAR}\u201d." in caution
-    assert PB not in caution
+    # The rider's own, but its card is not answered yet, so it is just for
+    # this chat, numbers and all.
+    assert caution.endswith(
+        "These ride files are the rider's own and kept just for this chat, named "
+        f"here by file name: \u201c{PB}\u201d. Record none of their numbers. What the "
+        "rider says in their own words still counts as usual."
+    )
 
     attachment_service.set_owner(db_session, db_session.get(ChatAttachment, near.id), "self")
     _send(db_session, gareth, chat, "Actually both are mine.", voice=voice)
+    caution = extractions[-1]["caution"]
+    assert caution.startswith("These ride files are the rider's own and kept just for this chat")
+    assert PB in caution and NEAR in caution
+
+    # Filed on their cards: in Rides, so nothing is held back.
+    for a in (pb, near):
+        attachment_service.decide(db_session, gareth, db_session.get(ChatAttachment, a.id), "save")
+    _send(db_session, gareth, chat, "Both saved.", voice=voice)
     assert extractions[-1]["caution"] is None
 
 

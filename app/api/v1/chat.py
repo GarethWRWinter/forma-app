@@ -88,6 +88,20 @@ def _carried_ids(message) -> list[str]:
     return [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else []
 
 
+def _one_per_file(ids: list[str], files: dict) -> list[str]:
+    """The ids still on file, the first upload of each file only."""
+    seen: set = set()
+    kept = []
+    for i in ids:
+        if i not in files:
+            continue
+        key = attachment_service.same_file_key(files[i])
+        if key not in seen:
+            seen.add(key)
+            kept.append(i)
+    return kept
+
+
 @router.post("/sessions", response_model=ChatSessionResponse, status_code=201)
 def create_chat_session(
     body: ChatSessionCreate,
@@ -204,9 +218,10 @@ def get_chat_session(
     carried = {m.id: _carried_ids(m) for m in window}
     shared = list(dict.fromkeys(i for ids in carried.values() for i in ids))
     files = {a.id: a for a in attachment_service.get_attachments(db, current_user.id, shared)}
-    cards = file_triage_service.cards(
-        db, current_user.id, [files[i] for i in shared if i in files]
-    )
+    # The same file attached twice to one message shows one card.
+    carried = {mid: _one_per_file(ids, files) for mid, ids in carried.items()}
+    shared = list(dict.fromkeys(i for ids in carried.values() for i in ids))
+    cards = file_triage_service.cards(db, current_user.id, [files[i] for i in shared])
 
     return ChatSessionDetailResponse(
         id=session.id,
@@ -226,7 +241,7 @@ def get_chat_session(
                 content=m.content,
                 tokens_used=m.tokens_used,
                 created_at=m.created_at,
-                attachment_ids=[i for i in carried[m.id] if i in files],
+                attachment_ids=carried[m.id],
             )
             for m in window
         ],

@@ -182,7 +182,7 @@ def find_duplicate_ride(
 
 def create_ride_from_fit(
     db: Session, user: User, file_bytes: bytes, filename: str | None = None,
-    source: str = "fit_upload",
+    source: str = "fit_upload", adopt_ftp: bool = True,
 ) -> Ride:
     """
     Parse a ride file (FIT/GPX/TCX), create Ride and RideData rows,
@@ -192,6 +192,9 @@ def create_ride_from_fit(
     FIT session summary over our own re-calculations, because the head
     unit has access to real-time data we may not (e.g. zero-offset,
     coasting detection, pause handling).
+
+    adopt_ftp False keeps the file's threshold to this ride alone, never
+    the rider's profile FTP: for a file that may be someone else's.
     """
     from app.services.ride_classifier import classify_ride
 
@@ -217,7 +220,7 @@ def create_ride_from_fit(
     # Only update user.ftp if the ride is the most recent one with FTP data.
     # This prevents older rides (during batch import) from overwriting a
     # newer FTP value.
-    if device_ftp and device_ftp > 0 and int(device_ftp) != user.ftp:
+    if adopt_ftp and device_ftp and device_ftp > 0 and int(device_ftp) != user.ftp:
         # Determine this ride's date early for the FTP check
         _ride_ts = (
             start_time

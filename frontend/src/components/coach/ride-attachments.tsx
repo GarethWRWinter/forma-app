@@ -18,7 +18,9 @@ import { CadenceSpinner } from "@/components/ui/cadence-spinner";
 /** Three per message. Past that the coach is reading a folder, not a ride. */
 export const MAX_ATTACHMENTS = 3;
 
-export const ATTACHMENT_ACCEPT = ".gpx,.fit,.tcx,.gz";
+/** A zip is accepted by the picker only so the composer can say where it
+    goes (see isZip): the chat itself never takes one. */
+export const ATTACHMENT_ACCEPT = ".gpx,.fit,.tcx,.gz,.zip";
 
 /**
  * What a file sent with no words says for the rider. The server needs some
@@ -33,8 +35,9 @@ export function attachmentOnlyMessage(count: number): string {
   return `Here are ${["two", "three"][count - 2] ?? count} ride files.`;
 }
 
-/** Where a batch of rides goes instead of the chat. */
-export const DATA_IN_HREF = "/dashboard/settings#data-in";
+/** Where a batch of the rider's own rides goes instead of the chat: the
+    Ride archive import, in Settings under Data in. */
+export const DATA_IN_HREF = "/dashboard/settings#ride-archive";
 
 /** A zip is an archive of rides, and the archive import reads those. */
 export function isZip(file: File): boolean {

@@ -68,15 +68,18 @@ LABEL_MAX = 40
 # Files one message carries. A batch of rides belongs in the archive import,
 # which de-duplicates and rebuilds fitness once, not in a conversation.
 MAX_FILES_PER_MESSAGE = 3
+# The archive import saves every ride in a zip to Rides, so it is offered
+# for the rider's own rides only: files to compare stay in the chat.
 A_ZIP = (
-    "That is a zip of rides, and the chat reads one ride file at a time. "
-    "Choose it in Settings, then Data in, then Ride archive instead: rides "
-    "already in are skipped."
+    "That file is a zip. Unzip it and attach the ride file inside, or for a "
+    "batch of your own rides, choose the zip under Ride archive in Settings, "
+    "then Data in, which skips any you already have."
 )
 TOO_MANY_FILES = (
-    "Three files is the limit for one message. For a batch, put the files in "
-    "one zip and choose it in Settings, then Data in, then Ride archive: rides "
-    "already in are skipped."
+    "Three files is the limit for one message. If these are your own rides, "
+    "zip them and choose the zip under Ride archive in Settings, then Data in, "
+    "which skips any you already have. To compare them here, send up to three "
+    "at a time."
 )
 
 
@@ -86,7 +89,8 @@ class AttachmentError(ValueError):
 
 class DecisionRefused(AttachmentError):
     """A card choice that cannot apply to this file as it stands. code says
-    why: someone_else, saved or part_of_ride."""
+    why: someone_else, saved, part_of_ride, alongside, no_times, or
+    use_card (the coach's save of a file only its card can file)."""
 
     def __init__(self, message: str, code: str):
         super().__init__(message)
@@ -104,8 +108,8 @@ def _kind_for(filename: str | None) -> str:
         if name.endswith("." + kind):
             return kind
     raise AttachmentError(
-        "That file type will not open. Send a .fit, .gpx or .tcx file, "
-        "gzipped or not."
+        "That file type will not open. Send a .fit, .gpx or .tcx file, or a "
+        ".gz of one."
     )
 
 
@@ -178,7 +182,8 @@ def _build_summary(
         found = session_summary.get(key)
         return found if found is not None else computed.get(key)
 
-    duration = value("total_elapsed_time") or value("total_timer_time") or len(records)
+    # No times, no length: a route's points are not seconds.
+    duration = value("total_elapsed_time") or value("total_timer_time")
     distance_m = value("total_distance")
     elevation_m = value("total_ascent")
     avg_power = value("avg_power")
@@ -187,6 +192,9 @@ def _build_summary(
     max_hr = value("max_heart_rate")
     avg_cadence = value("avg_cadence")
     started = _as_utc(start_time) or _as_utc(session_summary.get("start_time"))
+    # In UTC, like the rides table and the fitness chart, whatever offset
+    # the file wrote its times in.
+    started = started.astimezone(timezone.utc) if started else None
 
     summary = {
         "name": filename.rsplit("/", 1)[-1],
@@ -328,7 +336,7 @@ def ingest(
                 for k in ("decided", "decision", "label", "decided_at", "decided_by")
             })
             if earlier["decision"] == "save":
-                imported_ride_id = copy.imported_ride_id
+                imported_ride_id = file_triage_service.own_ride_id(copy, earlier)
     if triage["decision"] == "someone_else":
         owner = "someone_else"
     elif triage["decision"] in ("save", "chat_only") or triage["state"] != "new":
@@ -502,27 +510,7 @@ def decide(
 
     f = file_triage_service.filing(db, user.id, attachment)
     if choice == "save":
-        if f.decision == "someone_else":
-            raise DecisionRefused(
-                "This file is marked as someone else\u2019s ride, so it stays out "
-                "of your rides. If it is yours, change that first.",
-                "someone_else",
-            )
-        if f.saved is not None:
-            return f.saved
-        if f.state == "in_history":
-            return f.ride
-        if f.state == "part_of_ride" and not f.can_keep_separately:
-            raise DecisionRefused(
-                "This file is part of a ride already in your rides, so saving it "
-                "would count that ride twice.",
-                "part_of_ride",
-            )
-        ride = save_as_ride(db, user, attachment)
-        for copy in _copies_of(db, attachment):
-            _filed(copy, "self", "save", by=by, ride_id=ride.id)
-        db.commit()
-        return ride
+        return _save(db, user, attachment, f, by)
 
     if f.saved is not None:
         if f.decision == "someone_else" and choice == "chat_only":
@@ -552,6 +540,74 @@ def decide(
         _filed(copy, owner, decision, label, by)
     db.commit()
     return None
+
+
+# Hints that mean only the rider's own button files the file: a save the
+# coach heard in the chat is refused and pointed at the card.
+CARD_ONLY_HINTS = ("faster", "high_hr", "holds")
+
+
+def _save(
+    db: Session, user: User, attachment: ChatAttachment,
+    f: "file_triage_service.Filing", by: str,
+) -> Ride:
+    """decide's save. The rides may have moved since the file arrived (an
+    archive import, a Wahoo sync, another file saved from chat), so it looks
+    again before filing anything, and files nothing a second time."""
+    if f.decision == "someone_else":
+        raise DecisionRefused(
+            "This file is marked as someone else\u2019s ride, so it stays out "
+            "of your rides. If it is yours, change that first.",
+            "someone_else",
+        )
+    if f.saved is not None:
+        return f.saved
+
+    copies = _copies_of(db, attachment)
+    file_triage_service.refresh(db, user, attachment, copies)
+    f = file_triage_service.filing(db, user.id, attachment)
+    if f.state == "in_history":
+        # In Rides already: linked by the look just taken, and nothing saved.
+        return f.ride
+    hints = f.hints
+    if not (attachment.summary or {}).get("start_time"):
+        raise DecisionRefused(
+            "This file has no times in it, so it can\u2019t sit on a date in "
+            "your rides. It reads as a route, and stays in this chat.",
+            "no_times",
+        )
+    if "alongside" in hints:
+        raise DecisionRefused(
+            "This file covers the same time as a ride already in your rides, "
+            "with different numbers, so it can\u2019t be saved as well. If it is "
+            "someone else\u2019s, mark it so.",
+            "alongside",
+        )
+    if f.state == "part_of_ride" and (by == "coach" or not f.can_keep_separately):
+        raise DecisionRefused(
+            "This file is part of a ride already in your rides, so saving it "
+            "would count that ride twice.",
+            "part_of_ride",
+        )
+    if by == "coach" and set(CARD_ONLY_HINTS) & set(hints):
+        raise DecisionRefused(
+            "This file is saved from its card only, where what it does is "
+            "written beside the button.",
+            "use_card",
+        )
+
+    ride, created = _promote(db, user, attachment)
+    if not created:
+        # The duplicate rule found it on record after all: in Rides
+        # already, so filed as that ride, with no save to undo.
+        for copy in copies:
+            file_triage_service.link_in_history(copy, ride)
+        db.commit()
+        return ride
+    for copy in copies:
+        _filed(copy, "self", "save", by=by, ride_id=ride.id)
+    db.commit()
+    return ride
 
 
 def bind_to_session(
@@ -596,12 +652,19 @@ def bind_to_session(
 
 def _file_key(summary: dict, filename: str | None) -> tuple:
     """What makes two uploads one file. A ride's type, start and sample
-    count, whatever it is called: a browser saves a second download as
-    "name (1)". The type keeps a FIT and the GPX made from it apart, since
-    the FIT can hold more. Without a start (a route, say), the bytes'
+    count, and the numbers read from it, whatever it is called: a browser
+    saves a second download as "name (1)", and a .gz of the file reads the
+    same. Two riders' files can start and stop on the same second; their
+    numbers part them. The type keeps a FIT and the GPX made from it apart,
+    since the FIT can hold more. Without a start (a route, say), the bytes'
     fingerprint, then the name."""
     if summary.get("start_time"):
-        return ("ride", summary.get("kind"), summary["start_time"], summary.get("samples"))
+        return (
+            "ride", summary.get("kind"), summary["start_time"], summary.get("samples"),
+            summary.get("duration_s"), summary.get("distance_km"),
+            summary.get("avg_power"), summary.get("max_power"),
+            summary.get("avg_hr"), summary.get("max_hr"),
+        )
     if summary.get("sha256"):
         return ("bytes", summary["sha256"])
     return ("name", filename, summary.get("samples"))
@@ -613,8 +676,11 @@ def same_file_key(attachment: ChatAttachment) -> tuple:
     return _file_key(attachment.summary or {}, attachment.filename)
 
 
-def _copies_query(db: Session, user_id: str):
-    return (
+def _copies_query(db: Session, user_id: str, key: tuple):
+    """The rider's uploads that could share key, newest first. Narrowed in
+    the database by the key's first part, so an upload never reads every
+    file the rider has shared; the caller compares the whole key."""
+    query = (
         db.query(ChatAttachment)
         .options(load_only(
             ChatAttachment.id, ChatAttachment.user_id, ChatAttachment.filename,
@@ -622,19 +688,38 @@ def _copies_query(db: Session, user_id: str):
             ChatAttachment.imported_ride_id, ChatAttachment.created_at,
         ))
         .filter(ChatAttachment.user_id == user_id)
-        .order_by(ChatAttachment.created_at.desc(), ChatAttachment.id.desc())
     )
+    if key[0] == "ride":
+        query = query.filter(
+            ChatAttachment.kind == key[1],
+            ChatAttachment.summary["start_time"].as_string() == key[2],
+        )
+    elif key[0] == "bytes":
+        query = query.filter(ChatAttachment.summary["sha256"].as_string() == key[1])
+    else:
+        query = query.filter(ChatAttachment.filename == key[1])
+    return query.order_by(ChatAttachment.created_at.desc(), ChatAttachment.id.desc())
+
+
+def _said_owner(copy: ChatAttachment) -> bool:
+    """Whether a copy's owner was said rather than guessed. A file linked
+    to a ride in Rides is taken as the rider's own, which is Forma's guess,
+    not the rider's word, so a later upload does not inherit it."""
+    if file_owner(copy) == "unknown":
+        return False
+    t = file_triage_service.triage_of(copy)
+    return t["decision"] is not None or t["state"] not in file_triage_service.LINKED
 
 
 def _decided_copy(
     db: Session, user_id: str, summary: dict, filename: str
 ) -> ChatAttachment | None:
-    """The newest earlier copy of this file with a choice or an owner on
-    record, or None when no copy has one."""
+    """The newest earlier copy of this file with a choice or an owner said
+    on record, or None when no copy has one."""
     key = _file_key(summary, filename.rsplit("/", 1)[-1][:255])
-    for copy in _copies_query(db, user_id):
+    for copy in _copies_query(db, user_id, key):
         if same_file_key(copy) == key and (
-            file_triage_service.triage_of(copy)["decision"] or file_owner(copy) != "unknown"
+            file_triage_service.triage_of(copy)["decision"] or _said_owner(copy)
         ):
             return copy
     return None
@@ -644,7 +729,9 @@ def _copies_of(db: Session, attachment: ChatAttachment) -> list[ChatAttachment]:
     """Every upload of this file by its rider, itself included. A choice is
     about the file, not one upload of it, so each copy's card agrees."""
     key = same_file_key(attachment)
-    copies = [c for c in _copies_query(db, attachment.user_id) if same_file_key(c) == key]
+    copies = [
+        c for c in _copies_query(db, attachment.user_id, key) if same_file_key(c) == key
+    ]
     return copies if any(c.id == attachment.id for c in copies) else [attachment, *copies]
 
 
@@ -763,6 +850,12 @@ def save_as_ride(db: Session, user: User, attachment: ChatAttachment) -> Ride:
     saying yes twice, or saving a file the rider had already uploaded, never
     double-counts the training load.
     """
+    return _promote(db, user, attachment)[0]
+
+
+def _promote(db: Session, user: User, attachment: ChatAttachment) -> tuple[Ride, bool]:
+    """save_as_ride, saying whether it created the ride (True) or found the
+    outing on record already (False)."""
     if attachment.user_id != user.id:
         raise AttachmentError("That file is not on your account.")
 
@@ -773,7 +866,16 @@ def save_as_ride(db: Session, user: User, attachment: ChatAttachment) -> Ride:
             .first()
         )
         if existing:
-            return existing
+            return existing, False
+
+    summary = attachment.summary or {}
+    if not summary.get("start_time"):
+        # A ride with no times would be dated today, with its points counted
+        # as seconds.
+        raise AttachmentError(
+            "That file has no times in it, so it reads as a route rather than "
+            "a ride, and a route never goes into your rides."
+        )
 
     if not attachment.raw_file:
         raise AttachmentError(
@@ -782,7 +884,6 @@ def save_as_ride(db: Session, user: User, attachment: ChatAttachment) -> Ride:
         )
     file_bytes = gzip.decompress(attachment.raw_file)
 
-    summary = attachment.summary or {}
     started = None
     if summary.get("start_time"):
         try:
@@ -798,10 +899,14 @@ def save_as_ride(db: Session, user: User, attachment: ChatAttachment) -> Ride:
             attachment.imported_ride_id = duplicate.id
             _with_summary(attachment, owner="self")
             db.commit()
-            return duplicate
+            return duplicate, False
 
+    # A file shared in chat can come from anyone's head unit, so its own
+    # threshold never becomes the rider's FTP: in review (16 Oct 2026) a
+    # pro's file saved by mistake set it from 290 W to 430 W.
     ride = create_ride_from_fit(
-        db, user, file_bytes, filename=attachment.filename, source="fit_upload"
+        db, user, file_bytes, filename=attachment.filename, source="fit_upload",
+        adopt_ftp=False,
     )
     attachment.imported_ride_id = ride.id
     # Saved into the rider's own history, so it is the rider's own ride.
@@ -819,4 +924,4 @@ def save_as_ride(db: Session, user: User, attachment: ChatAttachment) -> Ride:
         except Exception:
             logger.exception("Attachment promotion: PMC rebuild failed (ride %s)", ride.id)
 
-    return ride
+    return ride, True

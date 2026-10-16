@@ -158,7 +158,8 @@ function QuietButton({
       onClick={onClick}
       data-choice={mark}
       className={cn(
-        "rounded-sm py-1 text-xs text-vb-text-muted underline decoration-vb-border underline-offset-4 transition-colors hover:text-vb-text hover:decoration-vb-text",
+        // A full 44 px tall to touch, though it reads as a quiet text link.
+        "inline-flex min-h-11 items-center rounded-sm text-xs text-vb-text-muted underline decoration-vb-border underline-offset-4 transition-colors hover:text-vb-text hover:decoration-vb-text",
         focusRing
       )}
     >
@@ -322,7 +323,7 @@ export function FileCard({
           <Link
             href={`/dashboard/rides/${card.ride.id}`}
             className={cn(
-              "f-arrow inline-flex items-center gap-1.5 rounded-sm font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-vb-text transition-colors hover:text-vb-red",
+              "f-arrow inline-flex min-h-11 items-center gap-1.5 rounded-sm font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-vb-text transition-colors hover:text-vb-red",
               focusRing
             )}
           >
@@ -377,7 +378,7 @@ export function FileCard({
             }}
           >
             <label htmlFor={`${id}-label`} className="block text-sm font-medium text-vb-text">
-              Whose ride is&nbsp;it?
+              Who rode&nbsp;it?
             </label>
             <input
               id={`${id}-label`}
@@ -416,7 +417,9 @@ export function FileCard({
               </QuietButton>
             ) : (
               <QuietButton mark="change" onClick={() => step("changing", "[data-choice]")}>
-                Change&nbsp;it
+                {/* Nothing to change before a choice: a file in Rides, or
+                    part of a ride, only has other options. */}
+                {card.decided ? <>Change&nbsp;it</> : <>Other&nbsp;options</>}
               </QuietButton>
             )}
           </div>

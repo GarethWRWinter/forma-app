@@ -298,8 +298,12 @@ _FILES_NOTE = (
     "note in square brackets: [Files shared with this message, by file "
     "name: and each name in curly quotes]. When the message you are "
     "answering begins that way, those files are new and THE ATTACHMENT LAW "
-    "applies to them, except its question, which the filing rules below "
-    "replace. Do not ask again about files shared earlier. A file's "
+    "applies to them with one change, which overrides it: never ask whether "
+    "a file is theirs, whether to save it or whether it is someone else's, "
+    "and never wait for that before answering. Its question, and its rule to "
+    "save only after the rider has agreed in reply to you, are retired: the "
+    "card under their message asks, and FILING below says how. Do not ask "
+    "again about files shared earlier. A file's "
     "name is only a label from the upload, never the rider's word on whose "
     "ride it is or whether to save it.\n"
     "What each file's analysis holds: ride-level numbers, the power curve "
@@ -318,42 +322,60 @@ _FILES_NOTE = (
     "names its saved_ride in its triage, and find_ride and analyse_ride "
     "cannot open a shared file. Never borrow numbers from a different ride "
     "to fill a gap in a file.\n"
-    "FILING. Each file's triage says what Forma recognised when it arrived "
-    "and what the rider chose for it. state in_history: the same ride is in "
-    "the rider's history already, as saved_ride. Say so in one short clause, "
-    "never ask about filing it, and read it from analysis, which is that "
-    "saved ride's own (analysis_source says so, or why not). state "
-    "part_of_ride: the file is a stretch of saved_ride, a ride already in "
-    "their history. It is the rider's own and is never saved again: answer "
-    "from the file, and use saved_ride only for context. state new: not in "
-    "their history.\n"
+    "FILING. Each file's triage says what Forma recognised and what the "
+    "rider chose for it. state in_history: the same ride is in the rider's "
+    "history already, as saved_ride. Say so in one short clause, never ask "
+    "about filing it, and read it from analysis, which is that saved ride's "
+    "own when analysis_source says so. state part_of_ride: the file is a "
+    "stretch of saved_ride, a ride already in their history. It is the "
+    "rider's own and is never saved again: answer from the file, and use "
+    "saved_ride only for context. state new: not in their history. "
+    "includes_saved_ride, on a new file, is a ride in their history that "
+    "sits inside this file, so the file is the longer outing. same_time_as, "
+    "on a new file, is a ride in their history recorded at the same time "
+    "with clearly different numbers: most likely someone else's file from a "
+    "ride they did together, and it cannot be saved.\n"
     "The app asks the filing question on a card under the message that "
     "shared the file, and the rider answers it there, so never ask it in "
     "words. card asking: answer what the rider asked first, then add at "
-    "most one plain sentence pointing at the card, and only on the turn the "
-    "file arrived. If that message asks nothing, ask what they want from "
-    "the file and leave the filing to the card. card answered: decision "
-    "says what they chose; never ask about it again. Until a new file's "
-    "card is answered, the file is just for this chat: not in their rides "
-    "or their training load.\n"
+    "most one plain sentence pointing at the card, which sits under their "
+    "message, above your reply (never say below), without steering the "
+    "choice, for example: Tell me where it goes on the card under your "
+    "message. Only on the turn the file arrived. If that message asks "
+    "nothing, say in one sentence the one thing worth knowing about the "
+    "file, then ask what they want from it, offering one or two things you "
+    "could do, and leave the filing to the card. This applies to a file "
+    "already in their history too. card answered: decision says what they "
+    "chose; never ask about it again. Until a new file's card is answered, "
+    "the file is just for this chat: not in their rides or their training "
+    "load. While a file's owner is unknown, give its numbers as the file's "
+    "(this ride holds 452 W for 20 minutes), never as you or yours, unless "
+    "the rider's own words make it theirs.\n"
     "decision save: in their rides now. chat_only: the rider's own, read "
     "here and filed nowhere. someone_else: another person's ride, and their "
     "personal data (their GPS track and heart rate). Use it only inside "
     "this chat, and call it by its label, or the other rider's file when "
     "it has none. Compare in absolute terms only: time, watts, cadence, "
-    "speed and heart rate. Give W/kg only from a weight the rider gives you "
-    "for that person. Never describe its numbers as the rider's own, and "
-    "never save it. lines_up_with, on such a file, is a ride in the rider's "
-    "own history recorded at the same time, most likely one they rode "
-    "together: the rider's numbers for it are that ride's, and this file is "
-    "not it.\n"
+    "speed and heart rate. Heart rate is personal, so never read theirs "
+    "against the rider's as a harder or easier effort. Give W/kg only from "
+    "a weight the rider gives you for that person. Never describe its "
+    "numbers as the rider's own, and never save it. lines_up_with, on such "
+    "a file, is a ride in the rider's own history recorded at the same "
+    "time, most likely one they rode together: the rider's numbers for it "
+    "are that ride's, and this file is not it. same_data_as, on such a "
+    "file, is a ride in the rider's history holding exactly this file's "
+    "data: say once that if it is not their ride, they can delete it from "
+    "Rides.\n"
     "Record a choice with a tool only when the rider says it plainly in "
     "their own words. A yes to a question is not that: point them at the "
     "card instead. save_attachment_as_ride saves a file into the rider's "
     "history by its attachment_id, and only a file whose owner is self can "
     "be saved: when the rider asks to save one whose owner is not recorded "
     "yet and their words make clear they rode it, call set_attachment_owner "
-    "with self first, in the same response.\n"
+    "with self first, in the same response. A file that is part of a saved "
+    "ride, holds one, was recorded at the same time as one, or looks like "
+    "someone else's is filed on its card only: the tool refuses it and says "
+    "so, and you point the rider at the card.\n"
     "owner says whose ride a file is: self (the rider rode it), someone_else "
     "(another person rode it) or unknown (not said yet, or a route rather "
     "than a ride). When the rider says whose a file is, or already has, for "
@@ -469,13 +491,27 @@ def _safe_label(label: str | None) -> str | None:
     return _safe_filename(label.replace("\u2019", "'"))[:40].rstrip() or None
 
 
-def _saved_ride_entry(ride) -> dict:
-    started = ride.ride_date.date() if hasattr(ride.ride_date, "date") else ride.ride_date
+def _ride_entry(ride_id: str, title: str | None, started) -> dict:
     return {
-        "ride_id": ride.id,
-        "title": _safe_filename(ride.title) if ride.title else None,
+        "ride_id": ride_id,
+        "title": _safe_filename(title) if title else None,
         "date": _say_date(started) if started else None,
     }
+
+
+def _saved_ride_entry(ride) -> dict:
+    """A ride in Rides, named as the Rides list names it."""
+    started = ride.ride_date.date() if hasattr(ride.ride_date, "date") else ride.ride_date
+    return _ride_entry(ride.id, ride.forma_title or ride.title, started)
+
+
+def _hinted_ride_entry(hint: dict) -> dict:
+    """A ride a triage hint names, as it was when the file was recognised."""
+    try:
+        started = date.fromisoformat(hint.get("ride_date") or "")
+    except ValueError:
+        started = None
+    return _ride_entry(hint.get("ride_id"), hint.get("ride_title"), started)
 
 
 def _triage_entry(f) -> dict:
@@ -484,12 +520,22 @@ def _triage_entry(f) -> dict:
     out: dict = {"state": f.state, "card": f.card_status}
     if f.ride is not None and f.state in ("in_history", "part_of_ride"):
         if f.decision == "someone_else":
-            # Matched a ride of the rider's, then said to be another
-            # person's: most likely a ride they did together.
             out["state"] = "new"
-            out["lines_up_with"] = _saved_ride_entry(f.ride)
+            if f.triage.get("matched") == "bytes":
+                # The very same bytes: the saved ride holds this person's
+                # data, not a ride of the rider's beside it.
+                out["same_data_as"] = _saved_ride_entry(f.ride)
+            else:
+                # Matched a ride of the rider's by time, then said to be
+                # another person's: most likely a ride they did together.
+                out["lines_up_with"] = _saved_ride_entry(f.ride)
         else:
             out["saved_ride"] = _saved_ride_entry(f.ride)
+    if out["state"] == "new":
+        if f.hints.get("alongside"):
+            out["same_time_as"] = _hinted_ride_entry(f.hints["alongside"])
+        if f.hints.get("holds"):
+            out["includes_saved_ride"] = _hinted_ride_entry(f.hints["holds"])
     if f.overlap is not None:
         out["overlap_pct"] = round(f.overlap * 100)
     if f.decision:
@@ -501,13 +547,44 @@ def _triage_entry(f) -> dict:
     return out
 
 
-def _saved_analysis(f) -> dict | None:
+def _saved_analysis(f, a) -> dict | None:
     """The saved ride's own analysis for a file already in history, when the
-    ride holds its per-second data."""
+    ride holds its per-second data and every channel the file holds. A phone
+    recording in Rides with heart rate only would otherwise read the head
+    unit's power file with its power curve gone."""
     if f is None or f.view != "in_history" or f.ride is None:
         return None
     analysis = f.ride.analysis
-    return analysis if isinstance(analysis, dict) and analysis.get("available") else None
+    if not (isinstance(analysis, dict) and analysis.get("available")):
+        return None
+    mine = a.analysis or {}
+    for channel in ("has_power", "has_gps", "power_curve", "hr", "cadence", "climbs"):
+        if mine.get(channel) and not analysis.get(channel):
+            return None
+    return analysis
+
+
+def _saved_summary(summary: dict, ride, analysis: dict) -> dict:
+    """The file's summary with the saved ride's own figures in place, so the
+    summary and the analysis beside it describe one recording."""
+    from app.services.attachment_service import _clock
+
+    figures = {
+        "duration": _clock(ride.duration_seconds),
+        "duration_s": ride.duration_seconds,
+        "distance_km": round(ride.distance_meters / 1000, 2) if ride.distance_meters else None,
+        "elevation_gain_m": (
+            round(ride.elevation_gain_meters) if ride.elevation_gain_meters else None
+        ),
+        "avg_power": round(ride.average_power) if ride.average_power else None,
+        "max_power": ride.max_power,
+        "avg_hr": ride.average_hr,
+        "max_hr": ride.max_hr,
+        "samples": analysis.get("samples"),
+        "has_power": analysis.get("has_power"),
+        "has_gps": analysis.get("has_gps"),
+    }
+    return {**summary, **{k: v for k, v in figures.items() if v is not None}}
 
 
 # Read against the rider's FTP, these describe the rider, not the person who
@@ -523,7 +600,9 @@ def _file_entry(a, shared_at: dict, f=None) -> dict:
     from app.services.attachment_service import file_owner
 
     summary = {k: v for k, v in (a.summary or {}).items() if k not in _SUMMARY_LEFT_OUT}
-    saved = _saved_analysis(f)
+    saved = _saved_analysis(f, a)
+    if saved:
+        summary = _saved_summary(summary, f.ride, saved)
     analysis = dict(saved or a.analysis or {})
     cadence = analysis.pop("cadence", None)
     ftp = analysis.pop("ftp_used", None)
@@ -567,9 +646,9 @@ def _file_entry(a, shared_at: dict, f=None) -> dict:
         if f.view == "in_history":
             entry["analysis_source"] = (
                 "the saved ride, read from its full per-second data: the numbers "
-                "the rider sees in Rides"
+                "the rider sees in Rides, summary included"
                 if saved
-                else "this file, because the saved ride holds only its summary"
+                else "this file, because the saved ride holds less of it"
             )
     if isinstance(cadence, dict) and cadence.get("avg"):
         entry["cadence"] = {
@@ -635,9 +714,10 @@ def _files_block(db: Session, user: User, session: ChatSession) -> _FilesView:
     if not files.in_full:
         return _FilesView(None, names, *counts)
 
-    # A file read before triage was kept has no card in the app, so the coach
-    # is not told about one: the owner rules alone apply to it.
-    filed = _filings(db, user, [a for a in files.in_full if "triage" in (a.summary or {})])
+    # Every file with its filing. One read before triage was kept is
+    # recognised on this first read (file_triage_service), so the coach and
+    # its card agree from then on.
+    filed = _filings(db, user, files.in_full)
     payload: dict = {
         "files": [_file_entry(a, files.shared_at, filed.get(a.id)) for a in files.in_full]
     }
@@ -694,11 +774,19 @@ _NOT_OWN_FILES_CAUTION = (
 # Names listed per kind of owner in the caution; the rest are counted.
 _CAUTION_NAMES = 6
 # Added when one of them is someone else's: that person's data stays in the
-# chat it was shared in.
+# chat it was shared in. The rider's own words about their riding still
+# count, so a goal like holding Tom's 452 W is kept.
 _SOMEONE_ELSES_CAUTION = (
     "Someone else's file is that person's data, used only inside this chat: "
-    "record nothing from it at all, about the rider or about the person who "
-    "rode it."
+    "record none of its numbers and nothing about the person who rode it. "
+    "What the rider says about their own riding or goals still counts as usual."
+)
+# The rider's own files whose card says just for this chat, chosen or not
+# yet answered: the card promises their numbers stay here.
+_CHAT_ONLY_CAUTION = (
+    "These ride files are the rider's own and kept just for this chat, named "
+    "here by file name: {listed}. Record none of their numbers. What the rider "
+    "says in their own words still counts as usual."
 )
 _FILES_UNCHECKED_CAUTION = (
     "This chat holds ride files, and whose they are could not be checked. "
@@ -711,7 +799,8 @@ def _memory_caution(
     db: Session, user: User, session: ChatSession, held: int | None
 ) -> str | None:
     """The caution for the memory pass after a turn, or None when the chat
-    holds no files or only the rider's own. held is the count _files_block
+    holds no files, or only the rider's own that are filed in Rides or need
+    no filing. held is the count _files_block
     gave (None when it could not read them). Read after the turn, so an owner
     recorded during it counts."""
     if held == 0:
@@ -725,11 +814,24 @@ def _memory_caution(
         db.rollback()
         return _FILES_UNCHECKED_CAUTION
 
+    held_files = files.named_only + files.in_full
+    try:
+        from app.services.file_triage_service import filings
+
+        filed = filings(db, user.id, held_files)
+    except Exception:
+        logger.exception("File filings for the memory caution failed for user %s", user.id)
+        db.rollback()
+        filed = {}
+
     not_own: dict[str, list[str]] = {"someone_else": [], "unknown": []}
-    for a in files.named_only + files.in_full:
+    kept_here: list[str] = []
+    for a in held_files:
         owner = file_owner(a)
         if owner != "self":
             not_own[owner].append(_safe_filename(a.filename))
+        elif a.id in filed and filed[a.id].view in ("asking", "chat_only"):
+            kept_here.append(_safe_filename(a.filename))
     listed = [
         f"{label}: {_quoted_list(names, _CAUTION_NAMES)}"
         for label, names in (
@@ -738,10 +840,14 @@ def _memory_caution(
         )
         if names
     ]
-    if not listed:
-        return None
-    caution = _NOT_OWN_FILES_CAUTION.format(listed=". ".join(listed))
-    return caution + " " + _SOMEONE_ELSES_CAUTION if not_own["someone_else"] else caution
+    parts = []
+    if listed:
+        parts.append(_NOT_OWN_FILES_CAUTION.format(listed=". ".join(listed)))
+        if not_own["someone_else"]:
+            parts.append(_SOMEONE_ELSES_CAUTION)
+    if kept_here:
+        parts.append(_CHAT_ONLY_CAUTION.format(listed=_quoted_list(kept_here, _CAUTION_NAMES)))
+    return " ".join(parts) or None
 
 
 def _build_rider_context(db: Session, user: User) -> str:
@@ -1564,6 +1670,53 @@ _TOOL_STATUS = {
     "set_attachment_owner": "Noting whose ride it is",
     "propose_plan_change": "Rethinking your plan",
 }
+
+# What the coach is told when decide refuses its save, by refusal code. The
+# rest pass the rider-facing reason on.
+_SAVE_REFUSED = {
+    "part_of_ride": (
+        "This file is a stretch of a ride already in the rider's history (its "
+        "triage names it), so saving it would count that ride twice. Tell the "
+        "rider it is in their rides already."
+    ),
+    "alongside": (
+        "This file was recorded at the same time as a ride already in the "
+        "rider's history, with clearly different numbers, so it is most "
+        "likely someone else's, and that time is filed already. Tell the "
+        "rider so in one sentence, and point them at the card under their "
+        "message."
+    ),
+    "use_card": (
+        "This file is filed on its card only, because it either holds a ride "
+        "already in the rider's history or has numbers that look like "
+        "someone else's. Point the rider at the card under their message, "
+        "in one sentence, and do not try again."
+    ),
+    "no_times": (
+        "The file has no times in it, so it reads as a route, and a route "
+        "never goes into ride history. Tell the rider so, plainly."
+    ),
+}
+
+# Tools that write to a shared file, so its card in the app is behind them.
+_FILE_TOOLS = {"save_attachment_as_ride", "set_attachment_owner"}
+
+
+def _files_updated(tool_name: str, tool_input: dict, result_text: str) -> str | None:
+    """The SSE line telling the app a file's card changed, when a file tool
+    changed one. saved says a ride joined Rides, so Rides and fitness
+    refresh too."""
+    if tool_name not in _FILE_TOOLS:
+        return None
+    if not result_text.startswith(("Saved", "Recorded", "Already")):
+        return None
+    event = {
+        "type": "files_updated",
+        "attachment_ids": [tool_input.get("attachment_id")],
+        "saved": result_text.startswith("Saved"),
+    }
+    return f"data: {json.dumps(event)}\n\n"
+
 
 # Tools that only read. They must not fire plan_updated, or every ride search
 # makes the app refetch the whole training picture mid-conversation.
@@ -2399,7 +2552,7 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
                 "them first, in plain language, then call it again."
             )
 
-        from app.services import attachment_service
+        from app.services import attachment_service, file_triage_service
 
         found = attachment_service.get_attachments(
             db, user.id, [tool_input.get("attachment_id")]
@@ -2425,10 +2578,11 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
                     if hasattr(existing.ride_date, "date")
                     else existing.ride_date
                 )
+                name = existing.forma_title or existing.title
                 return (
-                    f"Already saved. '{existing.title}' ({when}) is in the "
-                    f"rider's history already (ride_id: {existing.id}). Say so, "
-                    f"and do not save it a second time."
+                    f"Already saved. '{name}' ({when}) is in the rider's history "
+                    f"already (ride_id: {existing.id}). Say so, and do not save it "
+                    f"a second time."
                 )
             # Its ride was deleted from Rides since: saving it again is a
             # fresh save, and the save path finds no second copy to join.
@@ -2452,19 +2606,16 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
                 "recorded, and only the rider's own ride goes into their "
                 "history. If the rider's words make clear they rode it "
                 "themselves, record that with set_attachment_owner (owner "
-                "self), then save it. If they do not, ask them first."
+                "self), then save it. If they do not, point them at the card "
+                "under their message, which files it."
             )
 
         try:
             ride = attachment_service.decide(db, user, attachment, "save", by="coach")
         except attachment_service.DecisionRefused as e:
-            if e.code == "part_of_ride":
-                return (
-                    "Error: nothing was saved. This file is a stretch of a ride "
-                    "already in the rider's history (its triage names it), so "
-                    "saving it would count that ride twice. Tell the rider it is "
-                    "in their rides already."
-                )
+            refused = _SAVE_REFUSED.get(e.code)
+            if refused:
+                return f"Error: nothing was saved. {refused}"
             return f"Error: nothing was saved. {e} Tell the rider that, plainly."
         except attachment_service.AttachmentError as e:
             # These messages are written for the rider and name a fix, so pass
@@ -2481,11 +2632,25 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
             )
 
         when = ride.ride_date.date() if hasattr(ride.ride_date, "date") else ride.ride_date
+        db.expire(attachment)
+        if file_triage_service.filing(db, user.id, attachment).view != "saved":
+            # Looking again before the save found the ride in Rides already.
+            return (
+                f"Already in the rider's history: '{ride.forma_title or ride.title}' "
+                f"({when}, ride_id: {ride.id}). Nothing was saved a second time. "
+                f"Tell them it is in their rides already."
+            )
+        # Training load is worked out from power, so a file without it adds a
+        # ride and leaves the fitness chart where it was.
+        load = (
+            "that their training load now counts it" if ride.tss
+            else "that it has no power, so their training load does not move"
+        )
         return (
-            f"Saved '{ride.title}' ({when}) into the rider's ride history "
-            f"(ride_id: {ride.id}). Tell them it is in, and that their training "
-            f"load now counts it. Call analyse_ride on this ride_id before "
-            f"quoting anything from inside it."
+            f"Saved '{ride.forma_title or ride.title}' ({when}) into the rider's "
+            f"ride history (ride_id: {ride.id}). Tell them it is in, and {load}. "
+            f"Call analyse_ride on this ride_id before quoting anything from "
+            f"inside it."
         )
 
     elif tool_name == "set_attachment_owner":
@@ -3049,6 +3214,8 @@ async def stream_response(
     Yields SSE-formatted chunks:
         data: {"type": "text", "content": "..."}
         data: {"type": "plan_updated"}   -- signals frontend to refresh training data
+        data: {"type": "files_updated", "attachment_ids": [...], "saved": bool}
+                                         -- a shared file's card changed
         data: {"type": "done"}
     """
     turn = _TurnLog(session.id, "chat", attachment_ids)
@@ -3190,6 +3357,10 @@ async def _stream_chat_turn(
                     # The plan has not moved, but something is now waiting on
                     # the rider, so the app can raise the card straight away.
                     yield f'data: {json.dumps({"type": "proposal_created"})}\n\n'
+                filed = _files_updated(tool_block.name, tool_block.input, result_text)
+                if filed:
+                    # A card under the rider's message just changed.
+                    yield filed
                 if tool_block.name not in _NO_PLAN_CHANGE_TOOLS and not result_text.startswith("Error"):
                     plan_was_updated = True
 
@@ -3392,6 +3563,7 @@ async def stream_voice_response(
         data: {"type": "text", "content": "..."}
         data: {"type": "audio", "content": "<base64>", "sentence_index": N}
         data: {"type": "plan_updated"}
+        data: {"type": "files_updated", "attachment_ids": [...], "saved": bool}
         data: {"type": "done"}
 
     Gracefully degrades, if ElevenLabs fails, text still streams normally.
@@ -3558,6 +3730,10 @@ async def _stream_voice_turn(
                     # The plan has not moved, but something is now waiting on
                     # the rider, so the app can raise the card straight away.
                     yield f'data: {json.dumps({"type": "proposal_created"})}\n\n'
+                filed = _files_updated(tool_block.name, tool_block.input, result_text)
+                if filed:
+                    # A card under the rider's message just changed.
+                    yield filed
                 if tool_block.name not in _NO_PLAN_CHANGE_TOOLS and not result_text.startswith("Error"):
                     plan_was_updated = True
 

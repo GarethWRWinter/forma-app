@@ -1184,6 +1184,9 @@ export interface ChatAttachmentCardChoice {
  */
 export interface ChatAttachmentCard {
   id: string;
+  /** shared by every upload of the same file: one card shows for both, and
+      a choice on one reaches the others */
+  file_key?: string | null;
   filename: string;
   kind: string;
   /** the ride's start date, YYYY-MM-DD, in UTC like the fitness chart */
@@ -1411,7 +1414,7 @@ export const chat = {
           } catch {
             continue;
           }
-          yield data; // yields {type: "text"|"audio"|"done", ...}
+          yield data; // yields {type: "text"|"audio"|"status"|"plan_updated"|"files_updated"|"done", ...}
           if (data.type === "done") {
             readOnAfterDone(reader, onClosed);
             return;

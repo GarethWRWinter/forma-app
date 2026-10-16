@@ -127,7 +127,11 @@ export function ArchiveImport() {
       : null;
 
   return (
-    <section className="rounded-sm border border-vb-border-subtle bg-vb-surface p-6">
+    // The coach's batch and zip messages link here (#ride-archive).
+    <section
+      id="ride-archive"
+      className="scroll-mt-20 rounded-sm border border-vb-border-subtle bg-vb-surface p-6"
+    >
       <div className="flex items-center justify-between gap-3">
         <h2 className="f-display text-2xl text-vb-text">Ride archive</h2>
       </div>

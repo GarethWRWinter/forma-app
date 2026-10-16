@@ -58,6 +58,9 @@ class ChatAttachmentCard(BaseModel):
     """The card under the message that shared a ride file: what Forma
     recognised, and the filing choice. Every line is ready to show."""
     id: str
+    # Shared by every upload of the same file, so the app shows one card
+    # for both and knows which cards a choice reaches.
+    file_key: str | None = None
     filename: str
     kind: str
     date: str | None = None  # the ride's start date, YYYY-MM-DD
