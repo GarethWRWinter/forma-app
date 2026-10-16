@@ -85,3 +85,23 @@ def session_display_name(workout_type: str, workout_id: object) -> str:
     """The canonical, human-friendly name for a workout."""
     pool = SESSION_NAMES.get(workout_type) or SESSION_NAMES["rest"]
     return pool[_stable_index(str(workout_id), len(pool))]
+
+
+# Long enough for "Sa Calobra rehearsal, 2 x 12", short enough for a calendar cell.
+_OWN_TITLE_MAX = 48
+
+
+def workout_display_name(workout_type: object, workout_id: object, title: str | None,
+                         phase_id: object = None) -> str:
+    """The name shown for a session, everywhere.
+
+    A plan's sessions take the canonical name. A session that belongs to no
+    plan was booked for this rider by name ("Sa Calobra rehearsal"), so it
+    keeps that name: a stock name would hide what the rider asked for. Rest
+    days keep their own title.
+    """
+    key = getattr(workout_type, "value", None) or str(workout_type)
+    own = (title or "").strip()
+    if key == "rest" or (phase_id is None and 0 < len(own) <= _OWN_TITLE_MAX):
+        return own or session_display_name(key, workout_id)
+    return session_display_name(key, workout_id)

@@ -14,7 +14,7 @@ import json
 import logging
 from datetime import date, datetime, timedelta
 
-from app.core.session_naming import session_display_name, workout_type_label
+from app.core.session_naming import workout_display_name, workout_type_label
 
 from sqlalchemy.orm import Session
 
@@ -167,8 +167,8 @@ def _build_nudge_context(
 
     if today_workout:
         context["todays_workout"] = {
-            "title": session_display_name(
-                today_workout.workout_type, today_workout.id
+            "title": workout_display_name(
+                today_workout.workout_type, today_workout.id, today_workout.title, today_workout.phase_id
             ),
             "type": workout_type_label(today_workout.workout_type),
             "structure": today_workout.title,
@@ -370,8 +370,8 @@ def _build_debrief_context(
 
     if linked_workout:
         context["planned_workout"] = {
-            "title": session_display_name(
-                linked_workout.workout_type, linked_workout.id
+            "title": workout_display_name(
+                linked_workout.workout_type, linked_workout.id, linked_workout.title, linked_workout.phase_id
             ),
             "type": workout_type_label(linked_workout.workout_type),
             "structure": linked_workout.title,

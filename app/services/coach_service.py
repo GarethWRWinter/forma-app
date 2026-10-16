@@ -24,7 +24,7 @@ from collections import Counter
 
 from app.core import forma_core
 from app.core.formulas import rider_profile_scores, rider_type_profile, w_per_kg as calc_w_per_kg
-from app.core.session_naming import session_display_name, workout_type_label
+from app.core.session_naming import workout_display_name, workout_type_label
 from app.core.workout_templates import estimate_tss, get_template
 from app.models.chat import ChatMessage, ChatRole, ChatSession
 from app.models.onboarding import GoalEvent
@@ -1171,7 +1171,7 @@ COACH_TOOLS = [
             "type": "object",
             "properties": {
                 "scheduled_date": {"type": "string", "description": "YYYY-MM-DD, taken from the dated calendar, today up to 14 days ahead"},
-                "title": {"type": "string", "description": "Workout title"},
+                "title": {"type": "string", "description": "A short name the rider will see on their calendar, at most 48 characters (e.g. Sa Calobra rehearsal). Name it for what the rider asked for."},
                 "description": {"type": "string", "description": "Description of purpose and how to perform the workout"},
                 "workout_type": {
                     "type": "string",
@@ -1557,8 +1557,7 @@ def _type_value(w: Workout) -> str:
 
 def _session_name(w: Workout) -> str:
     """The name the app shows, so the coach and the calendar agree."""
-    wtype = _type_value(w)
-    return session_display_name(wtype, w.id) if wtype != "rest" else w.title
+    return workout_display_name(_type_value(w), w.id, w.title, w.phase_id)
 
 
 def _session_facts(w: Workout) -> str:

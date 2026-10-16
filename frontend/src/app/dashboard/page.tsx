@@ -693,7 +693,7 @@ export default function DashboardPage() {
                 </Kicker>
                 <p className="f-display text-xl leading-tight">{goal.event_name}</p>
                 <p className="mt-1 text-sm text-vb-text-dim">
-                  Debrief with {coach}. What you share shapes the next block.
+                  Tell {coach} how it went while it’s&nbsp;fresh.
                 </p>
               </div>
               <span className="f-kicker shrink-0 text-vb-text">

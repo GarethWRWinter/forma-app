@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.core.session_naming import session_display_name
+from app.core.session_naming import workout_display_name
 
 
 # --- Workout Steps ---
@@ -49,6 +49,8 @@ class ActualRideSummary(BaseModel):
 class WorkoutResponse(BaseModel):
     """Summary of a planned workout."""
     id: str
+    # None for a session booked outside a plan; it decides the shown name.
+    phase_id: str | None = None
     scheduled_date: date
     title: str
     description: str | None = None
@@ -69,11 +71,11 @@ class WorkoutResponse(BaseModel):
 
     @model_validator(mode="after")
     def _apply_canonical_name(self) -> "WorkoutResponse":
-        # Single source of truth for the session name. The structural template
-        # name remains in `description`; this is the name shown everywhere and
-        # the one Forma refers to.
-        if self.workout_type != "rest":
-            self.title = session_display_name(self.workout_type, self.id)
+        # Single source of truth for the session name: this is the name shown
+        # everywhere and the one Forma refers to (workout_display_name).
+        self.title = workout_display_name(
+            self.workout_type, self.id, self.title, self.phase_id
+        )
         return self
 
 
