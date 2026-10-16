@@ -11,6 +11,8 @@ import { RiderProfileRadar } from "@/components/charts/rider-profile-radar";
 import { BriefingCard } from "@/components/dashboard/briefing-card";
 import { CoachInvite } from "@/components/dashboard/coach-invite";
 import { ActivationCard } from "@/components/dashboard/activation-card";
+import { SeasonCard } from "@/components/dashboard/season-card";
+import { currentPlan, seasonState } from "@/lib/season";
 import { Kicker } from "@/components/ui/kicker";
 import { SectionHeader } from "@/components/ui/section-header";
 import { DataTile } from "@/components/ui/data-tile";
@@ -190,12 +192,12 @@ export default function DashboardPage() {
     queryFn: () => rides.list(1, 5),
   });
 
-  const { data: plans } = useQuery({
+  const { data: plans, isPending: plansPending } = useQuery({
     queryKey: ["plans"],
     queryFn: () => training.getPlans(),
   });
 
-  const { data: goalsData } = useQuery({
+  const { data: goalsData, isPending: goalsPending } = useQuery({
     queryKey: ["goals"],
     queryFn: () => goalsApi.list(),
   });
@@ -241,11 +243,27 @@ export default function DashboardPage() {
   const { data: proposals, isPending: proposalsPending } = usePlanProposals();
   const pendingProposal = proposals?.[0];
 
+  // Between goals: no goal ahead and one behind. The next step (the race
+  // report, then the next goal) takes the coach's slot for a fortnight after
+  // the race. After that the coach's other thoughts come back, an unfiled
+  // report waits in the reports list below and the next-goal ask stays on
+  // Goal, so a rider on a long base block still hears from the coach. Only
+  // for a rider who has had a plan: one who never has is still in setup,
+  // and the setup card is what builds their first.
+  const season = seasonState(goalsData?.goals);
+  const seasonAsks =
+    season.freshFromRace && (plans?.plans.length ?? 0) > 0;
+
   // Something the coach wants to raise. Held back until we know no proposal is
-  // waiting, so it never composes a second thought while the rider still owes
-  // it an answer on the first.
+  // waiting and the between-goals ask is not taking the slot, so it never
+  // composes a second thought while the rider still owes it an answer on the
+  // first. A goals or plans request that failed holds nothing back.
   const { data: initiative } = useCoachInitiative(
-    !proposalsPending && !pendingProposal
+    !proposalsPending &&
+      !pendingProposal &&
+      !goalsPending &&
+      !plansPending &&
+      !seasonAsks
   );
 
   const { data: weeklyLoad } = useQuery({
@@ -309,8 +327,8 @@ export default function DashboardPage() {
   // Today's pass: the hero photograph rotates daily with the quote.
   const pass = dailyPass(daily?.date);
 
-  // Week X of Y from the active plan
-  const activePlan = plans?.plans.find((p) => p.status === "active");
+  // Week X of Y from the plan running today
+  const activePlan = currentPlan(plans?.plans);
   let weekOf: string | null = null;
   if (activePlan) {
     const start = new Date(activePlan.start_date).getTime();
@@ -327,9 +345,16 @@ export default function DashboardPage() {
     !!plans &&
     !!goalsData &&
     !!recentRides &&
-    !activePlan &&
+    plans.plans.length === 0 &&
     goalsData.goals.length === 0 &&
     recentRides.total === 0;
+
+  // The between-goals card, when nothing outranks it. Its race report is
+  // then left out of the reports list further down, so it is asked once.
+  const seasonGoal =
+    !pendingProposal && !setupUnfinished && seasonAsks
+      ? season.lastGoal
+      : undefined;
 
   // Today's session (first planned workout today)
   const todaySession = todayWorkouts?.find((w) => w.status !== "skipped");
@@ -433,7 +458,14 @@ export default function DashboardPage() {
           outranks initiatives. Proposals always win: they are waiting on a yes. */}
       {pendingProposal ? (
         <PlanProposalCard proposal={pendingProposal} coachName={coach} />
-      ) : setupUnfinished ? null : activation &&
+      ) : setupUnfinished ? null : seasonGoal ? (
+        <SeasonCard
+          lastGoal={seasonGoal}
+          needsDebrief={season.needsDebrief}
+          plan={activePlan}
+          coachName={coach}
+        />
+      ) : activation &&
         activation.stage_index < 4 &&
         activation.next_action ? (
         <ActivationCard activation={activation} coachName={coach} />
@@ -643,7 +675,11 @@ export default function DashboardPage() {
 
       {/* ============ GOALS NEEDING ASSESSMENT ============ */}
       {goalsData?.goals
-        .filter((g) => g.needs_assessment)
+        .filter(
+          (g) =>
+            g.needs_assessment &&
+            !(seasonGoal && season.needsDebrief && g.id === seasonGoal.id)
+        )
         .map((goal) => (
           <Link
             key={goal.id}
@@ -661,7 +697,7 @@ export default function DashboardPage() {
                 </p>
               </div>
               <span className="f-kicker shrink-0 text-vb-text">
-                Write report <span className="f-arrow-head">→</span>
+                File the race report <span className="f-arrow-head">→</span>
               </span>
             </div>
           </Link>
@@ -906,7 +942,9 @@ export default function DashboardPage() {
               }
             />
             {!goalsData ||
-            goalsData.goals.filter((g) => g.status === "upcoming").length === 0 ? (
+            goalsData.goals.filter(
+              (g) => g.status === "upcoming" && g.days_until != null
+            ).length === 0 ? (
               <EmptyState
                 title="Nothing on the calendar."
                 action={
@@ -924,7 +962,7 @@ export default function DashboardPage() {
             ) : (
               <ul className="f-stagger">
                 {goalsData.goals
-                  .filter((g) => g.status === "upcoming")
+                  .filter((g) => g.status === "upcoming" && g.days_until != null)
                   .slice(0, 3)
                   .map((goal, idx) => (
                     <li
@@ -954,30 +992,25 @@ export default function DashboardPage() {
             )}
           </section>
 
-          {plans && plans.plans.length > 0 && (
+          {activePlan && (
             <section>
               <SectionHeader kicker="In flight" title="Active plan" />
-              {plans.plans
-                .filter((p) => p.status === "active")
-                .slice(0, 1)
-                .map((plan) => (
-                  <Card key={plan.id} className="border-l-[3px] border-l-vb-text">
-                    <CardBody>
-                      <p className="f-display mb-2 text-xl leading-tight">{plan.name}</p>
-                      <p className="f-data text-xs leading-relaxed text-vb-text-dim">
-                        {formatDate(plan.start_date)} to {formatDate(plan.end_date)}
-                        <br />
-                        {plan.total_weeks} weeks · {plan.phase_count} phases
-                      </p>
-                      <Link
-                        href="/dashboard/training"
-                        className="f-kicker f-arrow mt-4 inline-block text-vb-text transition-colors hover:text-vb-red"
-                      >
-                        View calendar <span className="f-arrow-head">→</span>
-                      </Link>
-                    </CardBody>
-                  </Card>
-                ))}
+              <Card className="border-l-[3px] border-l-vb-text">
+                <CardBody>
+                  <p className="f-display mb-2 text-xl leading-tight">{activePlan.name}</p>
+                  <p className="f-data text-xs leading-relaxed text-vb-text-dim">
+                    {formatDate(activePlan.start_date)} to {formatDate(activePlan.end_date)}
+                    <br />
+                    {activePlan.total_weeks} weeks · {activePlan.phase_count} phases
+                  </p>
+                  <Link
+                    href="/dashboard/training"
+                    className="f-kicker f-arrow mt-4 inline-block text-vb-text transition-colors hover:text-vb-red"
+                  >
+                    View calendar <span className="f-arrow-head">→</span>
+                  </Link>
+                </CardBody>
+              </Card>
             </section>
           )}
         </div>

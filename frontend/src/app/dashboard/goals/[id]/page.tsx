@@ -203,6 +203,10 @@ export default function GoalDetailPage() {
     mutationFn: () => goalsApi.delete(goalId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["goals"] });
+      // The plan built for a deleted goal ends with it and is replaced.
+      queryClient.invalidateQueries({ queryKey: ["plans"] });
+      queryClient.invalidateQueries({ queryKey: ["workouts-week"] });
+      queryClient.invalidateQueries({ queryKey: ["today-workouts"] });
       router.push("/dashboard/goals");
     },
   });
@@ -493,7 +497,7 @@ export default function GoalDetailPage() {
               href={`/dashboard/goals/${goalId}/assess`}
               className={buttonVariants({ variant: "flamme", size: "sm" })}
             >
-              File the report
+              File the race report
               <Arrow />
             </Link>
           }

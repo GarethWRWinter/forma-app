@@ -9,11 +9,11 @@ Generates truly personalised training plans based on:
 - Progressive overload with recovery weeks
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from math import ceil, sqrt
 
-from sqlalchemy import or_
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import and_, or_
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.llm_utils import humanize
 
@@ -24,6 +24,7 @@ from app.core.workout_templates import (
     get_template,
 )
 from app.models.onboarding import EventPriority, GoalEvent, GoalStatus
+from app.models.ride import Ride
 from app.models.training import (
     PeriodizationModel,
     PhaseType,
@@ -82,6 +83,9 @@ GOAL_WORKOUT_EMPHASIS = {
 DEFAULT_EMPHASIS = {
     "endurance": 2, "sweet_spot": 2, "threshold": 1, "tempo": 1, "recovery": 1,
 }
+
+# A plan built this soon after an A or B race opens with a recovery week.
+RECOVERY_DAYS = 7
 
 # Priority ranking — lower is more important
 PRIORITY_RANK = {
@@ -398,6 +402,7 @@ def generate_plan(
     goal_event_id: str | None = None,
     periodization_model: str = "traditional",
     name: str | None = None,
+    recover_first: bool | None = None,
 ) -> TrainingPlan:
     """
     Generate a personalised periodized training plan that considers ALL
@@ -408,10 +413,22 @@ def generate_plan(
     - C-race: rest day on event date, no other accommodation
 
     Adapts to current fitness, experience, available hours, and goal types.
+    recover_first: the first seven days are a recovery week. Left as None,
+    that happens when an A or B race was ridden in the past week, whoever
+    builds the plan: the season keeper the morning after, a new goal, or
+    Build my season. A base block once opened with tempo the day after the
+    race.
     """
-    today = date.today()
+    from app.services.season_service import lock_rider
 
-    # ── 1. Cancel any existing active plans ──
+    today = date.today()
+    # One build at a time per rider: the season keeper, a goal write and
+    # Build my season pressed at once would otherwise each find no active
+    # plan and leave the rider with two.
+    lock_rider(db, user)
+
+    # ── 1. End any existing active plans ──
+    # Ended, not cancelled: the weeks already ridden stay on the calendar.
     existing_active = (
         db.query(TrainingPlan)
         .filter(
@@ -421,9 +438,18 @@ def generate_plan(
         .all()
     )
     for old_plan in existing_active:
-        old_plan.status = PlanStatus.cancelled
+        retire_plan(db, old_plan, today)
     if existing_active:
         db.flush()
+
+    if recover_first is None:
+        recover_first = db.query(GoalEvent.id).filter(
+            GoalEvent.user_id == user.id,
+            GoalEvent.event_date >= today - timedelta(days=RECOVERY_DAYS),
+            GoalEvent.event_date < today,
+            GoalEvent.priority.in_([EventPriority.a_race, EventPriority.b_race]),
+            GoalEvent.status != GoalStatus.dns,
+        ).first() is not None
 
     # ── 2. Gather ALL upcoming goals, sorted by priority then date ──
     all_goals = (
@@ -483,17 +509,33 @@ def generate_plan(
 
     # ── 4. Collect event dates + B-race mini-taper windows ──
     goal_event_dates = {g.event_date for g in all_goals}
-    # Sessions the rider booked with the coach (no phase) survive a rebuild,
-    # because they belong to no plan. Their days are left clear so the new
-    # plan never lays a second session, or the long ride, on top of one.
+    # A race today stays clear even once its result is filed.
+    if db.query(GoalEvent.id).filter(
+        GoalEvent.user_id == user.id, GoalEvent.event_date == today
+    ).first():
+        goal_event_dates.add(today)
+    # Sessions with no phase survive a rebuild, because they belong to no
+    # plan: the ones the rider booked with the coach, and the ones the old
+    # plan handed over (rewritten or ridden, see retire_plan). Their days are
+    # left clear so the new plan never lays a second session, or the long
+    # ride, on top of one.
     booked_dates = {
         d for (d,) in db.query(Workout.scheduled_date).filter(
             Workout.user_id == user.id,
             Workout.phase_id.is_(None),
             Workout.scheduled_date >= today,
-            Workout.status.in_([WorkoutStatus.planned, WorkoutStatus.modified]),
+            Workout.status.in_([
+                WorkoutStatus.planned, WorkoutStatus.modified, WorkoutStatus.completed,
+            ]),
         )
     }
+    # Already ridden today, planned or not: today's work is done.
+    if db.query(Ride.id).filter(
+        Ride.user_id == user.id,
+        Ride.ride_date >= datetime.combine(today, datetime.min.time()),
+        Ride.ride_date <= datetime.combine(today, datetime.max.time()),
+    ).first():
+        booked_dates.add(today)
     # B-race mini-taper: reduce volume 3 days before
     b_race_taper_dates: set[date] = set()
     for g in all_goals:
@@ -578,6 +620,7 @@ def generate_plan(
             goal_event_dates=goal_event_dates,
             b_race_taper_dates=b_race_taper_dates,
             booked_dates=booked_dates,
+            recover_first=recover_first and phase_def is phases[0],
             cumulative_week=cumulative_week,
             long_ride_cap_s=long_ride_cap_s,
             experience=experience,
@@ -587,6 +630,46 @@ def generate_plan(
     db.commit()
     db.refresh(plan)
     return plan
+
+
+def retire_plan(db: Session, plan: TrainingPlan, today: date) -> None:
+    """End a plan and keep what the rider already rode on the calendar.
+
+    A plan that has run for at least a day is completed, ending yesterday at
+    the latest, so its past weeks stay where they were ridden and nothing of
+    it lies on today or after. One that started today has no past to keep and
+    is cancelled. Rebuilding used to cancel outright, which blanked every past
+    week of the old plan. Its unanswered proposals go with it: they argue with
+    a plan that no longer exists.
+
+    Sessions from today on that the rider has made their own stay on the
+    calendar: one the coach or an accepted proposal rewrote or moved
+    (modified), and one already ridden (completed). They leave the plan and
+    stand on their own, like a session booked in chat, and the next plan
+    leaves their days clear. A rebuild used to hide a session the coach had
+    just rewritten, and today's ride along with the session it was matched
+    to.
+    """
+    from app.services.plan_review_service import _supersede_pending
+
+    kept = (
+        db.query(Workout)
+        .join(TrainingPhase, Workout.phase_id == TrainingPhase.id)
+        .filter(
+            TrainingPhase.plan_id == plan.id,
+            Workout.scheduled_date >= today,
+            Workout.status.in_([WorkoutStatus.modified, WorkoutStatus.completed]),
+        )
+        .all()
+    )
+    for w in kept:
+        w.phase_id = None
+    if plan.start_date < today:
+        plan.status = PlanStatus.completed
+        plan.end_date = min(plan.end_date, today - timedelta(days=1))
+    else:
+        plan.status = PlanStatus.cancelled
+    _supersede_pending(db, plan.user, plan.id)
 
 
 def _generate_adaptive_workouts(
@@ -604,6 +687,7 @@ def _generate_adaptive_workouts(
     cumulative_week: int,
     b_race_taper_dates: set[date] | None = None,
     booked_dates: set[date] | None = None,
+    recover_first: bool = False,
     long_ride_cap_s: int | None = None,
     experience: str | None = None,
     event_name: str | None = None,
@@ -638,12 +722,13 @@ def _generate_adaptive_workouts(
         week_end = min(current_week_start + timedelta(days=6), end)
         days_in_week = (week_end - current_week_start).days + 1
 
-        # Is this a recovery week?
+        # Is this a recovery week? The plan's first week is one when it
+        # comes straight after a race.
         is_recovery = (
             cumulative_week > 0
             and cumulative_week % (recovery_cycle + 1) == recovery_cycle
             and phase_type not in ("race", "recovery")
-        )
+        ) or (recover_first and current_week_start == start)
 
         # Calculate target weekly TSS with progression
         if is_recovery:
@@ -1306,11 +1391,13 @@ def get_plan_workouts(
 def visible_workouts(db: Session, user_id: str):
     """Every session the rider can see, as a query to narrow further.
 
-    One rule: a session is visible when it belongs to the active plan, or to
-    no plan at all. A session the coach books in chat has no phase, so it
-    outlives a rebuild. The calendar used to inner join through phases, and
-    every session the coach had ever booked was invisible (16 Oct 2026).
-    Sessions of a cancelled plan stay hidden.
+    One rule: a session is visible when it belongs to the active plan, to an
+    ended (completed) plan on or before its last day, or to no plan at all. A
+    session the coach books in chat has no phase, so it outlives a rebuild.
+    The calendar used to inner join through phases, and every session the
+    coach had ever booked was invisible (16 Oct 2026). An ended plan keeps the
+    weeks the rider rode, and nothing after them. Sessions of a cancelled
+    plan stay hidden.
     """
     return (
         db.query(Workout)
@@ -1318,7 +1405,14 @@ def visible_workouts(db: Session, user_id: str):
         .outerjoin(TrainingPlan, TrainingPhase.plan_id == TrainingPlan.id)
         .filter(
             Workout.user_id == user_id,
-            or_(Workout.phase_id.is_(None), TrainingPlan.status == PlanStatus.active),
+            or_(
+                Workout.phase_id.is_(None),
+                TrainingPlan.status == PlanStatus.active,
+                and_(
+                    TrainingPlan.status == PlanStatus.completed,
+                    Workout.scheduled_date <= TrainingPlan.end_date,
+                ),
+            ),
         )
     )
 
@@ -1329,7 +1423,11 @@ def get_workouts_by_date(
     week_start: date | None = None,
 ) -> list[Workout]:
     """Get the visible workouts for a specific date or week."""
-    query = visible_workouts(db, user_id).options(joinedload(Workout.actual_ride))
+    # Steps come in one query: the coach's context reads them for every
+    # session of the fortnight.
+    query = visible_workouts(db, user_id).options(
+        joinedload(Workout.actual_ride), selectinload(Workout.steps),
+    )
 
     if target_date:
         query = query.filter(Workout.scheduled_date == target_date)

@@ -10,10 +10,9 @@ import {
   Trophy,
   Frown,
   Ban,
-  Target,
-  Calendar,
 } from "lucide-react";
-import { goals as goalsApi } from "@/lib/api";
+import { goals as goalsApi, training } from "@/lib/api";
+import { currentPlan, nextGoalAsk, seasonState } from "@/lib/season";
 import { useAuth } from "@/lib/auth-context";
 import { formatDate, formatDuration, cn } from "@/lib/utils";
 import type { CandidateRide, GoalAssessmentSubmit } from "@/lib/api";
@@ -67,6 +66,37 @@ export default function AssessPage() {
     queryFn: () => goalsApi.get(goalId),
   });
 
+  // Read after the report is filed: filing it can be what puts a rider
+  // between goals onto the base block, and whether another goal is still
+  // ahead decides the next step.
+  const {
+    data: plans,
+    isPending: plansPending,
+    isFetching: plansFetching,
+  } = useQuery({
+    queryKey: ["plans"],
+    queryFn: () => training.getPlans(),
+    enabled: submitted,
+  });
+  const {
+    data: allGoals,
+    isPending: goalsPending,
+    isFetching: goalsFetching,
+  } = useQuery({
+    queryKey: ["goals"],
+    queryFn: () => goalsApi.list(),
+    enabled: submitted,
+  });
+  // Until both have answered since the report went in, the one next step is
+  // not known: a cached or empty read would show Find the next goal and then
+  // switch to Debrief under the rider's thumb.
+  const settling =
+    plansPending || goalsPending || plansFetching || goalsFetching;
+  const plan = currentPlan(plans?.plans);
+  const stillChasing = seasonState(
+    allGoals?.goals.filter((g) => g.id !== goalId)
+  ).futureGoal;
+
   const { data: candidateRidesData } = useQuery({
     queryKey: ["candidate-rides", goalId],
     queryFn: () => goalsApi.getCandidateRides(goalId),
@@ -79,6 +109,10 @@ export default function AssessPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["goal", goalId] });
       queryClient.invalidateQueries({ queryKey: ["goals"] });
+      // Filing the report can start the base block on the server.
+      queryClient.invalidateQueries({ queryKey: ["plans"] });
+      queryClient.invalidateQueries({ queryKey: ["workouts-week"] });
+      queryClient.invalidateQueries({ queryKey: ["today-workouts"] });
       setSubmitted(true);
     },
   });
@@ -113,7 +147,7 @@ export default function AssessPage() {
     });
   }
 
-  if (isLoading) {
+  if (isLoading || (submitted && settling)) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="h-8 w-8 animate-spin rounded-full border border-vb-border-subtle border-t-vb-red" />
@@ -125,8 +159,36 @@ export default function AssessPage() {
     return <div className="py-20 text-center text-vb-text-dim">Goal not found</div>;
   }
 
-  // Success screen
+  // Success screen: one next step. With another goal still ahead, the coach
+  // talks the race through. With nothing ahead, it talks it through and
+  // proposes the next goal; the base block, when there is one, keeps the
+  // sessions coming meanwhile.
   if (submitted) {
+    if (stillChasing) {
+      return (
+        <div className="mx-auto max-w-lg space-y-6 py-8">
+          <CoachNote
+            kicker="Race report filed"
+            coachName={coachName}
+            className="f-rise"
+            action={
+              <Link
+                href={`/dashboard/coach?goal_id=${goalId}&debrief=true`}
+                className={buttonVariants({ variant: "flamme", size: "sm" })}
+              >
+                Debrief
+                <Arrow />
+              </Link>
+            }
+          >
+            Filed. I’ll use what you told me about {goal.event_name} as we
+            build towards {stillChasing.event_name}. Talk me through it while
+            it’s&nbsp;fresh.
+          </CoachNote>
+        </div>
+      );
+    }
+    const runningBlock = !!plan && !plan.goal_event_id;
     return (
       <div className="mx-auto max-w-lg space-y-6 py-8">
         <CoachNote
@@ -135,62 +197,30 @@ export default function AssessPage() {
           className="f-rise"
           action={
             <Link
-              href={`/dashboard/coach?goal_id=${goalId}&debrief=true`}
+              href={`/dashboard/coach?ask=${encodeURIComponent(nextGoalAsk(goal, true))}`}
               className={buttonVariants({ variant: "flamme", size: "sm" })}
             >
-              Debrief
+              Find the next goal
               <Arrow />
             </Link>
           }
         >
-          Filed. Everything you told me about {goal.event_name} now shapes
-          how I build what comes next. When you&apos;re ready, let&apos;s
-          talk it through.
+          Filed. Now let’s use it: I’ll talk the race through with you and
+          propose the next goal from&nbsp;it.
+          {runningBlock && (
+            <>
+              {" "}
+              Your base block is running meanwhile, so every week has
+              its&nbsp;sessions.
+            </>
+          )}
         </CoachNote>
-
-        {/* What's next, invite user to plan their next block */}
-        <div className="border border-vb-border-subtle bg-vb-surface p-5">
-          <Kicker className="mb-1.5">What&apos;s next</Kicker>
-          <h2 className="f-display text-xl text-vb-text">
-            Keep the wheels turning
-          </h2>
-          <p className="mt-1 text-xs text-vb-text-dim">
-            Pick your next target and the season rebuilds around it, or start
-            a fresh block and keep the fitness you just banked.
-          </p>
-          <div className="f-stagger mt-4 grid gap-2 sm:grid-cols-2">
-            <Link
-              href="/dashboard/goals?new=1"
-              className="f-lift flex items-center gap-3 border border-vb-border-subtle bg-vb-surface p-3"
-            >
-              <Target className="h-5 w-5 shrink-0 text-vb-red" />
-              <div>
-                <p className="text-sm font-medium text-vb-text">Name the next race</p>
-                <p className="text-[11px] text-vb-text-muted">
-                  The season builds backwards from it
-                </p>
-              </div>
-            </Link>
-            <Link
-              href="/dashboard/training"
-              className="f-lift flex items-center gap-3 border border-vb-border-subtle bg-vb-surface p-3"
-            >
-              <Calendar className="h-5 w-5 shrink-0 text-vb-text" />
-              <div>
-                <p className="text-sm font-medium text-vb-text">New training block</p>
-                <p className="text-[11px] text-vb-text-muted">
-                  Keep building while it decides
-                </p>
-              </div>
-            </Link>
-          </div>
-          <Link
-            href={`/dashboard/goals/${goalId}`}
-            className="mt-4 block text-center font-mono text-[11px] uppercase tracking-[0.08em] text-vb-text-muted transition-colors hover:text-vb-red"
-          >
-            Or review the goal
-          </Link>
-        </div>
+        <Link
+          href="/dashboard/goals?new=1"
+          className="block text-center font-mono text-[11px] uppercase tracking-[0.08em] text-vb-text-muted transition-colors hover:text-vb-red"
+        >
+          Set the goal myself →
+        </Link>
       </div>
     );
   }

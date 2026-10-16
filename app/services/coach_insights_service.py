@@ -155,6 +155,16 @@ def _build_nudge_context(
         "this_week_compliance": week_read or f"{completed}/{total} sessions completed",
     }
 
+    # No goal ahead: the morning note says what comes next.
+    try:
+        from app.services.season_service import season_note, season_state
+
+        note = season_note(season_state(db, user, today), in_chat=False)
+        if note:
+            context["season"] = note
+    except Exception:
+        logger.exception("Season state for nudge failed (user=%s)", user.id)
+
     if today_workout:
         context["todays_workout"] = {
             "title": session_display_name(

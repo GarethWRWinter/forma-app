@@ -622,6 +622,8 @@ export const metrics = {
 export interface TrainingPlan {
   id: string;
   name: string;
+  /** The goal it was built for; null for a base block aimed at no goal. */
+  goal_event_id: string | null;
   start_date: string;
   end_date: string;
   status: string;
@@ -884,6 +886,8 @@ export interface GoalEvent {
   assessment_data: Record<string, unknown> | null;
   assessment_completed_at: string | null;
   needs_assessment: boolean;
+  /** Saving this goal rebuilt the plan on the server. */
+  plan_rebuilt?: boolean;
 }
 
 export interface GoalAssessmentSubmit {

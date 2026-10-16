@@ -38,6 +38,7 @@ from app.services.onboarding_service import (
     get_goals,
     update_goal,
 )
+from app.services.season_service import try_ensure_season
 
 router = APIRouter(prefix="/goals", tags=["goals"])
 
@@ -47,7 +48,7 @@ GPX_UPLOAD_DIR = os.path.join(
 )
 
 
-def _goal_to_response(goal) -> GoalEventResponse:
+def _goal_to_response(goal, plan_rebuilt: bool = False) -> GoalEventResponse:
     """Convert GoalEvent model to response, adding days_until and needs_assessment."""
     today = date.today()
     event_date = goal.event_date
@@ -85,7 +86,14 @@ def _goal_to_response(goal) -> GoalEventResponse:
         assessment_data=goal.assessment_data,
         assessment_completed_at=goal.assessment_completed_at,
         needs_assessment=needs_assessment,
+        plan_rebuilt=plan_rebuilt,
     )
+
+
+def _settle_season(db: Session, user: User) -> bool:
+    """After a goal write, give the rider the plan their goals now call for.
+    True when a plan was built, so the client does not build a second one."""
+    return try_ensure_season(db, user) in ("block", "goal_plan")
 
 
 @router.get("", response_model=GoalEventListResponse)
@@ -131,7 +139,9 @@ def create_goal_event(
         from app.services.route_service import fetch_route_data_bg
         background_tasks.add_task(fetch_route_data_bg, goal.id, body.route_url)
 
-    return _goal_to_response(goal)
+    rebuilt = _settle_season(db, current_user)
+    db.refresh(goal)
+    return _goal_to_response(goal, plan_rebuilt=rebuilt)
 
 
 @router.post("/{goal_id}/gpx", response_model=GoalEventResponse)
@@ -196,6 +206,21 @@ def delete_goal_gpx(
     return _goal_to_response(goal)
 
 
+# Declared before /{goal_id}, which would otherwise take "needs-assessment"
+# as a goal id and answer 404.
+@router.get("/needs-assessment", response_model=GoalEventListResponse)
+def list_goals_needing_assessment(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List goals that need post-event assessment."""
+    goals_list = get_goals_needing_assessment(db, current_user.id)
+    return GoalEventListResponse(
+        goals=[_goal_to_response(g) for g in goals_list],
+        total=len(goals_list),
+    )
+
+
 @router.get("/{goal_id}", response_model=GoalEventResponse)
 def get_goal_event(
     goal_id: str,
@@ -236,7 +261,9 @@ def update_goal_event(
         from app.services.route_service import fetch_route_data_bg
         background_tasks.add_task(fetch_route_data_bg, goal.id, update_data["route_url"])
 
-    return _goal_to_response(goal)
+    rebuilt = _settle_season(db, current_user)
+    db.refresh(goal)
+    return _goal_to_response(goal, plan_rebuilt=rebuilt)
 
 
 @router.post("/{goal_id}/coach-read", response_model=GoalEventResponse)
@@ -354,19 +381,6 @@ def get_race_projection(
     return projection
 
 
-@router.get("/needs-assessment", response_model=GoalEventListResponse)
-def list_goals_needing_assessment(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """List goals that need post-event assessment."""
-    goals_list = get_goals_needing_assessment(db, current_user.id)
-    return GoalEventListResponse(
-        goals=[_goal_to_response(g) for g in goals_list],
-        total=len(goals_list),
-    )
-
-
 @router.post("/{goal_id}/assessment", response_model=GoalEventResponse)
 def submit_goal_assessment(
     goal_id: str,
@@ -384,7 +398,9 @@ def submit_goal_assessment(
     except ValueError as e:
         raise BadRequestException(detail=str(e))
 
-    return _goal_to_response(goal)
+    rebuilt = _settle_season(db, current_user)
+    db.refresh(goal)
+    return _goal_to_response(goal, plan_rebuilt=rebuilt)
 
 
 @router.get("/{goal_id}/assessment")
@@ -446,3 +462,4 @@ def delete_goal_event(
     if not goal:
         raise NotFoundException(detail="Goal not found")
     delete_goal(db, goal)
+    _settle_season(db, current_user)

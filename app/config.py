@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     outreach_enabled: bool = True
     outreach_interval: int = 3600
 
+    # The season keeper: ends plans past their date and gives a rider between
+    # goals a base block (app/services/season_service.py). Hourly, and after
+    # every goal write. SEASON_KEEPER_ENABLED=false stops both; the plan then
+    # changes only when the rider uses Build my season (or the goals page
+    # builds one for a new goal), as before the keeper existed.
+    season_keeper_enabled: bool = True
+    season_keeper_interval: int = 3600
+
     # OpenWeatherMap One Call 3.0 (ride conditions + briefing forecasts).
     openweather_api_key: str = ""
 

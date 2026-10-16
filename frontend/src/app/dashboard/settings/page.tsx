@@ -197,6 +197,22 @@ export default function SettingsPage() {
     },
   });
 
+  // A goal saved or deleted here can rebuild or end the plan on the server
+  // (the base block gives way to a plan for the new goal), so the plan and
+  // the sessions on Today and Goal are read again, not only the goals.
+  const refreshAfterGoal = () => {
+    for (const key of [
+      "goals",
+      "plans",
+      "plan-detail",
+      "workouts-week",
+      "today-workouts",
+      "today-workout-detail",
+    ]) {
+      queryClient.invalidateQueries({ queryKey: [key] });
+    }
+  };
+
   const saveGoal = useMutation({
     mutationFn: () => {
       const data: Record<string, unknown> = {
@@ -217,7 +233,7 @@ export default function SettingsPage() {
       return goalsApi.create(data as Parameters<typeof goalsApi.create>[0]);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["goals"] });
+      refreshAfterGoal();
       setShowGoalForm(false);
       setEditingGoalId(null);
       setGoalForm(emptyGoalForm);
@@ -227,7 +243,7 @@ export default function SettingsPage() {
   const deleteGoal = useMutation({
     mutationFn: (id: string) => goalsApi.delete(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["goals"] });
+      refreshAfterGoal();
     },
   });
 

@@ -16,6 +16,7 @@ import { formatDuration, formatDate, cn, localISODate } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
 import { ZONE_BLOCKS, ZONES, SERIES } from "@/lib/palette";
 import { restLine } from "@/lib/voice";
+import { currentPlan, nextGoalAsk, seasonState } from "@/lib/season";
 import { Button, Arrow, buttonVariants } from "@/components/ui/button";
 import { Kicker } from "@/components/ui/kicker";
 import { DataTile } from "@/components/ui/data-tile";
@@ -151,8 +152,11 @@ export default function TrainingPage() {
     queryFn: () => goals.list(),
   });
 
-  // The plans list omits phases; fetch the active plan's detail for the timeline.
-  const activePlanId = plans?.plans.find((p) => p.status === "active")?.id;
+  // The plans list omits phases; fetch the current plan's detail for the
+  // timeline. A plan past its last day is over, even before the season
+  // keeper marks it so.
+  const activePlan = currentPlan(plans?.plans);
+  const activePlanId = activePlan?.id;
   const { data: planDetail } = useQuery({
     queryKey: ["plan-detail", activePlanId],
     queryFn: () => training.getPlan(activePlanId!),
@@ -175,8 +179,16 @@ export default function TrainingPage() {
     ?.filter((g) => g.status === "upcoming" && g.days_until != null && g.days_until >= 0)
     ?.sort((a, b) => (a.days_until ?? 0) - (b.days_until ?? 0))?.[0];
 
-  const activePlan = plans?.plans.find((p) => p.status === "active");
   const hasActivePlan = !!activePlan;
+  // No goal ahead and one behind: the masthead asks for the race report, or
+  // for the next goal, instead of asking what we are chasing from scratch.
+  // Only for a rider who has had a plan, as on the server: one who never has
+  // gets the empty state below, whose Build a 12-week block starts them off.
+  const season = seasonState(goalsData?.goals);
+  const lastGoal =
+    season.betweenGoals && (plans?.plans.length ?? 0) > 0
+      ? season.lastGoal
+      : undefined;
 
   // Forma's honest read on the goal, requested from the masthead.
   const coachReadMutation = useMutation({
@@ -456,6 +468,89 @@ export default function TrainingPage() {
             </div>
           </div>
         </section>
+      ) : lastGoal && season.needsDebrief ? (
+        <section className="bg-[#101012] px-5 py-5 text-white md:px-8 md:py-6">
+          <p className="f-kicker line-clamp-2 text-vb-red">
+            {formatDate(lastGoal.event_date)} · {lastGoal.event_name}
+          </p>
+          <p className="f-display mt-1 text-lg leading-tight sm:text-xl md:text-2xl">
+            How did it go?
+          </p>
+          <p className="mt-2 max-w-md text-sm text-white/60">
+            {hasActivePlan ? (
+              <>
+                Tell me the result and how it felt, and I’ll propose the next
+                goal from it. Your sessions carry on in the&nbsp;meantime.
+              </>
+            ) : (
+              <>
+                Tell me the result and how it felt, and I’ll propose the next
+                goal from&nbsp;it.
+              </>
+            )}
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
+            <Link
+              href={`/dashboard/goals/${lastGoal.id}/assess`}
+              className={buttonVariants({
+                variant: "flamme",
+                size: "lg",
+                className: "w-full sm:w-auto",
+              })}
+            >
+              File the race report
+              <Arrow />
+            </Link>
+          </div>
+        </section>
+      ) : lastGoal ? (
+        <section className="bg-[#101012] px-5 py-5 text-white md:px-8 md:py-6">
+          <p className="f-kicker line-clamp-2 text-vb-red">
+            After {lastGoal.event_name}
+          </p>
+          <p className="f-display mt-1 text-lg leading-tight sm:text-xl md:text-2xl">
+            What are we chasing&nbsp;next?
+          </p>
+          <p className="mt-2 max-w-md text-sm text-white/60">
+            {activePlan && !activePlan.goal_event_id && (
+              <>
+                Until then you’re on a {activePlan.total_weeks}-week base block,
+                building the aerobic engine the next goal will need, so every
+                week has its sessions.{" "}
+              </>
+            )}
+            {hasActivePlan ? (
+              <>
+                I’ll propose the next goal from how you’ve been riding and
+                rebuild the plan around&nbsp;it.
+              </>
+            ) : (
+              <>
+                I’ll propose the next goal from how you’ve been riding and build
+                the season around&nbsp;it.
+              </>
+            )}
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
+            <Link
+              href={coachHref(nextGoalAsk(lastGoal))}
+              className={buttonVariants({
+                variant: "flamme",
+                size: "lg",
+                className: "w-full sm:w-auto",
+              })}
+            >
+              Find it with {coachName}
+              <Arrow />
+            </Link>
+            <Link
+              href="/dashboard/goals?new=1"
+              className="f-kicker text-white/60 transition-colors hover:text-white"
+            >
+              Set the goal myself →
+            </Link>
+          </div>
+        </section>
       ) : (
         <section className="bg-[#101012] px-5 py-5 text-white md:px-8 md:py-6">
           <p className="f-kicker text-vb-red">The plan bends. The goal holds.</p>
@@ -551,7 +646,11 @@ export default function TrainingPage() {
           </h1>
           {!hasActivePlan && (
             <p className="mt-1 text-sm text-vb-text-dim">
-              No plan yet. Let&apos;s build one around your goal.
+              {nextUpcomingGoal
+                ? "No plan yet. Let’s build one around your\u00a0goal."
+                : plans?.plans.length
+                  ? "Your last plan has ended. Let’s build the next\u00a0block."
+                  : "No plan yet. Let’s build your first\u00a0block."}
             </p>
           )}
         </div>
@@ -591,8 +690,9 @@ export default function TrainingPage() {
         </CoachNote>
       )}
 
-      {/* Prompt: user has no active plan and no upcoming goal */}
-      {!hasActivePlan && !nextUpcomingGoal && !showGenerate && (
+      {/* Prompt: user has no active plan and no upcoming goal. Between
+          goals the masthead already carries the one ask. */}
+      {!hasActivePlan && !nextUpcomingGoal && !lastGoal && !showGenerate && (
         <EmptyState
           kicker="No plan yet"
           title="What are we aiming at?"
@@ -1066,7 +1166,11 @@ export default function TrainingPage() {
             <div>
               <Kicker className="mb-1">The season</Kicker>
               <h2 className="f-display text-xl text-vb-text">
-                The road to {nextUpcomingGoal?.event_name ?? "race day"}
+                {activePlan.goal_event_id ? (
+                  `The road to ${nextUpcomingGoal?.event_name ?? "race day"}`
+                ) : (
+                  <>The road to the next&nbsp;goal</>
+                )}
               </h2>
             </div>
             <p className="f-data text-xs text-vb-text-muted">

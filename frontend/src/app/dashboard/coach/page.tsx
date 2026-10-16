@@ -61,6 +61,7 @@ const lastActive = (s: ChatSession) =>
     Calobra Sub-30 Preparati..."), so the list cleans them on the way in. */
 function chatTitle(title: string | null | undefined, fallback = "Chat"): string {
   const clean = (title || "")
+    .replace(/^Chat - /, "Chat · ")
     .replace(/^\s*#{1,6}\s+/, "")
     .replace(/\*+|__|`/g, "")
     .replace(/(\d)\s*[\u2013\u2014]\s*(?=\d)/g, "$1-")
@@ -84,6 +85,21 @@ function CoachPageInner() {
   const goalId = searchParams.get("goal_id");
 
   const isDebrief = searchParams.get("debrief") === "true";
+
+  // Everything a coach tool can change: sessions, the plan itself (a goal
+  // filed in chat can rebuild it) and the goals.
+  const refreshPlan = () => {
+    for (const key of [
+      "workouts-week",
+      "today-workouts",
+      "today-workout-detail",
+      "plans",
+      "plan-detail",
+      "goals",
+    ]) {
+      queryClient.invalidateQueries({ queryKey: [key] });
+    }
+  };
 
   // Handoffs from briefings and other surfaces arrive as ?ask=... and
   // prefill the input; the rider presses send, nothing is sent for them.
@@ -318,10 +334,9 @@ function CoachPageInner() {
             }
           } else if (chunk.type === "plan_updated") {
             // The coach changed the plan: refresh the calendar and Today,
-            // which otherwise holds its session for five minutes.
-            queryClient.invalidateQueries({ queryKey: ["workouts-week"] });
-            queryClient.invalidateQueries({ queryKey: ["today-workouts"] });
-            queryClient.invalidateQueries({ queryKey: ["today-workout-detail"] });
+            // which otherwise holds its session for five minutes. A goal it
+            // filed can rebuild the whole plan, so the plan and goals too.
+            refreshPlan();
           }
         }
       } catch (error) {
@@ -673,10 +688,9 @@ function CoachPageInner() {
           });
         } else if (chunk.type === "plan_updated") {
           // The coach changed the plan: refresh the calendar and Today,
-          // which otherwise holds its session for five minutes.
-          queryClient.invalidateQueries({ queryKey: ["workouts-week"] });
-          queryClient.invalidateQueries({ queryKey: ["today-workouts"] });
-          queryClient.invalidateQueries({ queryKey: ["today-workout-detail"] });
+          // which otherwise holds its session for five minutes. A goal it
+          // filed can rebuild the whole plan, so the plan and goals too.
+          refreshPlan();
         }
       }
     } catch (error) {
@@ -907,7 +921,7 @@ function CoachPageInner() {
           <span className="text-sm font-medium text-vb-text-dim">
             {chatTitle(
               sessions?.find((s) => s.id === activeSessionId)?.title,
-              "Coach Forma"
+              `Coach ${coach}`
             )}
           </span>
         </div>

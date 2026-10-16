@@ -28,7 +28,9 @@ from app.models.training import (
     WorkoutStatus, WorkoutStep, WorkoutType,
 )
 from app.models.user import User
-from app.services import coach_service, plan_compliance_service, plan_service
+from app.services import (
+    coach_service, onboarding_service, plan_compliance_service, plan_service, season_service,
+)
 from app.services.coach_service import _build_rider_context, _calendar_block, _execute_tool, _run_tool
 from app.services.plan_review_service import apply_proposal
 from app.services.plan_service import build_steps, get_workouts_by_date, steps_load
@@ -52,7 +54,7 @@ class _Friday(date):
 @pytest.fixture
 def friday(monkeypatch):
     """Friday 16 October 2026, the day of the incident."""
-    for module in (coach_service, plan_service, plan_compliance_service):
+    for module in (coach_service, plan_service, plan_compliance_service, season_service, onboarding_service):
         monkeypatch.setattr(module, "date", _Friday)
     return date(2026, 10, 16)
 
@@ -572,3 +574,140 @@ def test_a_tool_crash_in_the_chat_loop_reaches_the_coach_as_an_error(db_session,
     assert not any('"plan_updated"' in c for c in chunks)
     assert any("All set." in c for c in chunks)  # the turn carries on to an answer
     assert db_session.query(Workout).count() == 0
+
+
+def test_the_last_round_cannot_call_a_tool_so_the_rider_hears_the_result(db_session, friday, monkeypatch):
+    """Five model rounds a turn. A booking asked for in the fifth used to run
+    with no round after it: the reply ended on "I'll put it straight into
+    your training plan" and nothing said whether it had gone in. The last
+    round now may not call a tool, so the coach speaks to the results it has."""
+    gareth = _gareth(db_session)
+    lookups = [
+        SimpleNamespace(stop_reason="tool_use", usage=None, content=[
+            SimpleNamespace(type="text", text="Putting it in."),
+            SimpleNamespace(type="tool_use", id=f"t{n}", name="add_workout", input={
+                "scheduled_date": "2026-10-31", "title": "PB reps", "workout_type": "threshold",
+            }),
+        ])
+        for n in range(4)
+    ]
+    calls = []
+
+    @contextmanager
+    def fake_stream(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("tool_choice") == {"type": "none"}:
+            # The model obeys: words only, about the refusal it was handed.
+            yield _FakeStream(SimpleNamespace(stop_reason="end_turn", usage=None, content=[
+                SimpleNamespace(type="text", text="The 31st is past the fortnight, so it is not booked yet."),
+            ]))
+        elif len(calls) <= len(lookups):
+            yield _FakeStream(lookups[len(calls) - 1])
+        else:
+            yield _FakeStream(SimpleNamespace(stop_reason="tool_use", usage=None, content=[
+                SimpleNamespace(type="text", text="I'll put it straight into your training plan."),
+                SimpleNamespace(type="tool_use", id="t5", name="add_workout", input={
+                    "scheduled_date": "2026-10-19", "title": "PB reps", "workout_type": "threshold",
+                }),
+            ]))
+
+    monkeypatch.setattr(forma_core, "stream", fake_stream)
+    monkeypatch.setattr(forma_core, "call", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(coach_service, "_relevant_memories", lambda *a: None)
+    monkeypatch.setattr(coach_service, "_dossier_block", lambda *a: "")
+    session = ChatSession(user_id=gareth.id, title="Sa Calobra Sub-30 Preparation")
+    db_session.add(session)
+    db_session.commit()
+
+    async def run():
+        return [c async for c in coach_service.stream_response(db_session, gareth, session, "Book it in")]
+
+    chunks = asyncio.run(run())
+
+    assert len(calls) == coach_service.MAX_TOOL_ROUNDS
+    assert [c.get("tool_choice") for c in calls] == [None] * 4 + [{"type": "none"}]
+    assert all(c["tools"] for c in calls)  # the tools stay visible, only the call is off
+    said = "".join(json.loads(c[6:])["content"] for c in chunks if '"type": "text"' in c)
+    assert said.rstrip().endswith("so it is not booked yet.")
+    assert db_session.query(Workout).count() == 0
+
+
+def test_forma_core_passes_tool_choice_only_with_tools(monkeypatch):
+    seen = []
+
+    class _Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get_final_message(self):
+            return SimpleNamespace(usage=None)
+
+    class _Messages:
+        def stream(self, **kwargs):
+            seen.append(kwargs)
+            return _Stream()
+
+    monkeypatch.setattr(forma_core, "_client", lambda: SimpleNamespace(messages=_Messages()))
+    monkeypatch.setattr(forma_core, "_log", lambda *a, **k: None)
+    for tools in ([{"name": "add_workout"}], None):
+        with forma_core.stream(user_id="u", task="chat", system="s", messages=[],
+                               tools=tools, tool_choice={"type": "none"}, enforce_budget=False):
+            pass
+
+    assert seen[0]["tool_choice"] == {"type": "none"} and seen[0]["tools"]
+    assert "tool_choice" not in seen[1] and "tools" not in seen[1]
+
+
+def test_a_day_past_the_fortnight_is_not_swapped_for_another(db_session, friday):
+    """The refusal used to end "take the date from the dated calendar and
+    call again", which invites booking the 30th when the rider asked for the
+    31st."""
+    gareth = _gareth(db_session)
+
+    result = _execute_tool(db_session, gareth, "add_workout", {
+        "scheduled_date": "2026-10-31", "title": "Reps", "workout_type": "threshold",
+    })
+
+    assert "after Friday 30 October, it cannot be booked yet" in result
+    assert "do not book another day instead" in result
+
+
+def test_a_session_the_coach_rewrote_survives_a_new_goal(db_session, friday, monkeypatch):
+    """On the base block the coach rewrote Saturday as the PB session and said
+    it was ready for Ride mode. Filing the next goal, as the season note asks,
+    rebuilt the plan and put a generated long ride back on Saturday."""
+    gareth = _gareth(db_session)
+    _plan(db_session, gareth, date(2026, 8, 24), date(2026, 10, 4))
+    plan_service.generate_plan(db_session, gareth, name="Building to the next goal")
+    saturday = date(2026, 10, 17)
+    [generated] = get_workouts_by_date(db_session, gareth.id, target_date=saturday)
+    updated = _execute_tool(db_session, gareth, "update_workout", {
+        "workout_id": generated.id, "title": "The Honest Hour", "workout_type": "threshold",
+        "steps": PB_SHAPE,
+    })
+    assert updated.startswith("Updated.")
+
+    filed = _execute_tool(db_session, gareth, "create_goal", {
+        "event_name": "Mallorca 312", "event_date": "2027-04-24",
+        "event_type": "gran_fondo", "priority": "a_race",
+    })
+
+    assert "rebuilt around it" in filed
+    on_the_day = get_workouts_by_date(db_session, gareth.id, target_date=saturday)
+    assert [w.id for w in on_the_day] == [generated.id]
+    assert len(on_the_day[0].steps) == len(PB_SHAPE)
+    assert on_the_day[0].phase_id is None  # its own now, like a booking
+
+    # And when the rider presses Build my season the next day, it still stands.
+    class _Saturday(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 10, 17)
+
+    for module in (coach_service, plan_service, plan_compliance_service, season_service):
+        monkeypatch.setattr(module, "date", _Saturday)
+    plan_service.generate_plan(db_session, gareth)
+    assert [w.id for w in get_workouts_by_date(db_session, gareth.id, target_date=saturday)] == [generated.id]
