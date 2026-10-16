@@ -24,7 +24,8 @@ from app.core.formulas import rider_profile_scores, rider_type_profile, w_per_kg
 from app.core.session_naming import session_display_name, workout_type_label
 from app.core.workout_templates import estimate_tss, get_template
 from app.models.chat import ChatMessage, ChatRole, ChatSession
-from app.models.training import Workout, WorkoutStatus, WorkoutType
+from app.models.onboarding import GoalEvent
+from app.models.training import TrainingPlan, Workout, WorkoutStatus, WorkoutType
 from app.models.user import User
 from app.services.metrics_service import (
     get_all_time_power_profile,
@@ -110,6 +111,11 @@ When a rider has recently completed a goal event, proactively offer to debrief:
 - Identify 2-3 actionable takeaways for next time
 - Discuss recovery plan and what's next
 - Process disappointment constructively: it's data, not failure
+
+When the context carries `season`, the rider has no goal ahead. Follow its
+note: if the result is not recorded, the debrief comes first; then propose the
+next goal yourself and file it with create_goal once they agree. Say what the
+plan did only as the tool result states it.
 
 ## Response Format
 
@@ -506,6 +512,9 @@ def _build_rider_context(
     try:
         plans = get_plans(db, user.id)
         active_plans = [p for p in plans if p.status == "active"]
+        # The plan running today first; one past its end date only until the
+        # season keeper ends it, and then said plainly.
+        active_plans.sort(key=lambda p: p.end_date < today)
         if active_plans:
             plan = active_plans[0]
             context["training_plan"] = {
@@ -514,6 +523,15 @@ def _build_rider_context(
                 "end_date": str(plan.end_date),
                 "model": plan.periodization_model,
             }
+            if plan.goal_event_id is None:
+                context["training_plan"]["kind"] = (
+                    "base block, aimed at no goal: it runs until a goal is set, "
+                    "then the plan is rebuilt around the goal"
+                )
+            if plan.end_date < today:
+                context["training_plan"]["ended"] = (
+                    f"on {plan.end_date}; nothing of it is scheduled after that"
+                )
 
             # Current phase
             for phase in plan.phases:
@@ -686,6 +704,10 @@ def _build_rider_context(
                     goal_info["becoming"] = g.becoming
                 if g.event_date >= today:
                     goal_info["days_until"] = (g.event_date - today).days
+                elif not g.status or g.status == "upcoming":
+                    # Past, and the race report has not been filed.
+                    goal_info["date_passed"] = True
+                    goal_info["result_recorded"] = False
                 # Assessment data for completed goals
                 if hasattr(g, "status") and g.status and g.status != "upcoming":
                     goal_info["status"] = g.status
@@ -732,6 +754,24 @@ def _build_rider_context(
                 context["goal_events"].append(goal_info)
     except Exception:
         pass
+
+    # ── 13b. Between goals ──
+    # No goal ahead: the coach says what comes next rather than waiting to be
+    # asked, and knows the block that keeps the weeks full in the meantime.
+    try:
+        from app.services.season_service import season_note, season_state
+
+        season = season_state(db, user, today)
+        note = season_note(season)
+        if note:
+            context["season"] = {
+                "state": "between_goals",
+                "last_goal": season["last_goal"],
+                "current_plan": season["current_plan"],
+                "note": note,
+            }
+    except Exception:
+        logger.exception("Season state failed for %s", user.id)
 
     # ── 14. Files the rider attached to this message ──
     attachments = _attachments_context(db, user, attachment_ids)
@@ -1320,6 +1360,63 @@ def _ridden(w: Workout, verb: str) -> str:
     )
 
 
+def _plan_after_goal(
+    db: Session, user: User, goal, moved_from: date | None = None
+) -> str:
+    """Run the season keeper after a goal tool, and say exactly what the
+    plan did, so the coach never promises a rebuild that did not happen."""
+    from app.services.season_service import season_state, try_ensure_season
+
+    outcome = try_ensure_season(db, user)
+    plan = season_state(db, user)["current_plan"]
+    if outcome is None:
+        return (
+            "The plan was NOT rebuilt: that step failed. Tell the rider the goal "
+            "is filed, and that they can rebuild the plan from Goal, then Build "
+            "my season."
+        )
+    if outcome == "goal_plan" and plan:
+        return (
+            f"The plan has been rebuilt around it: '{plan['name']}', "
+            f"{_say_day(plan['start'])} to {_say_day(plan['end'])} {plan['end'].year}. "
+            "It is on Goal (the plan page), and each session shows on Today when "
+            "its date comes round."
+        )
+    if outcome == "block" and plan:
+        return (
+            f"The rider has no goal ahead, so they are now on '{plan['name']}', a "
+            f"{plan['weeks']}-week base block, {_say_day(plan['start'])} to "
+            f"{_say_day(plan['end'])} {plan['end'].year}, on Goal (the plan page)."
+        )
+    if not plan:
+        return (
+            "No plan has been built yet. The rider builds it from Goal, then "
+            "Build my season; do not say it exists."
+        )
+    aimed_at = None
+    current = db.get(TrainingPlan, plan["id"])
+    if current is not None and current.goal_event_id:
+        aimed_at = db.get(GoalEvent, current.goal_event_id)
+    if (
+        moved_from is not None
+        and goal.event_date != moved_from
+        and aimed_at is not None
+        and aimed_at.id == goal.id
+    ):
+        return (
+            f"The plan, '{plan['name']}', was built for the old date and still "
+            f"runs to {_say_day(plan['end'])}; its sessions are unchanged. Tell "
+            "the rider to rebuild it from Goal, then Build my season, so it "
+            "peaks on the new day."
+        )
+    if aimed_at is not None:
+        return (
+            f"The current plan, '{plan['name']}', still aims at "
+            f"{aimed_at.event_name}; its sessions are unchanged."
+        )
+    return f"The current plan, '{plan['name']}', is unchanged."
+
+
 def _run_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> str:
     """_execute_tool, with a crash turned into an honest result.
 
@@ -1569,9 +1666,11 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
         except ValueError as e:
             return f"Error: {e}"
         return (
-            f"Filed the goal '{goal.event_name}' on {goal.event_date} "
-            f"(ID: {goal.id}). The rider can add a GPX route on the Goal page "
-            f"for wind-aware race-day briefings; mention this if a route exists."
+            f"Filed the goal '{goal.event_name}' for {_say_day(goal.event_date)} "
+            f"{goal.event_date.year} (ID: {goal.id}). "
+            + _plan_after_goal(db, user, goal)
+            + " The rider can add a GPX route on the Goal page for wind-aware "
+            "race-day briefings; mention this if a route exists."
         )
 
     elif tool_name == "update_goal":
@@ -1595,11 +1694,15 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
                 return "Error: event_date must be YYYY-MM-DD."
         if not updates:
             return "Error: Nothing to update."
+        old_date = goal.event_date
         try:
             goal = update_goal(db, goal, updates)
         except ValueError as e:
             return f"Error: {e}"
-        return f"Updated the goal '{goal.event_name}' ({', '.join(updates)})."
+        return (
+            f"Updated the goal '{goal.event_name}' ({', '.join(updates)}). "
+            + _plan_after_goal(db, user, goal, moved_from=old_date)
+        )
 
     elif tool_name == "analyse_ride":
         from app.models.ride import Ride

@@ -61,15 +61,17 @@ Forma titles each ride (2 to 6 words) with a one-sentence story. Rename: open th
 
 A goal has a name, date, type (Road Race, Criterium, Time Trial, Gran Fondo, Sportive, Gravel, MTB, Hill Climb, Stage Race, Charity Ride, Century), priority (A race, B race, C race), optional target time in minutes, route URL, notes and GPX file, plus a why and a becoming written with the coach. You can create or update a goal in chat when the rider asks.
 
-In the app: Goal, then All goals, then Craft it with Forma (chat) or Know the details already? Quick add (form), then Create goal. That builds a new plan automatically. Adding at Settings, then Goals, then + Add goal does not.
+In the app: Goal, then All goals, then Craft it with Forma (chat) or Know the details already? Quick add (form), then Create goal. That builds a new plan around all the rider's goals automatically. A goal added any other way (Settings, then Goals, then + Add goal, or filed by you in chat) rebuilds the plan when the current plan is aimed at no goal (the base block, or a 12-week block built with no goal) or a plan has ended with nothing after it; otherwise the current plan keeps its target until the rider uses Build my season. A new rider's first plan is always built with Build my season.
 
 The goal detail page (tap the name) holds Edit, Delete, Why this one, The coach's read (Get the read), Course profile (Upload GPX file), Fitness readiness (On Track, Needs Work, At Risk) and, given FTP, weight and a GPX, The projection.
 
-After the date the goal shows Race report pending with File the report: The result (Completed, DNF or DNS, time, position), The ride file, Gut check, Under the skin, For the record, then File the race report. Debrief then opens chat with the result typed.
+After the date the goal shows Race report pending with File the report: The result (Completed, DNF or DNS, time, position), The ride file, Gut check, Under the skin, For the record, then File the race report. Until it is filed, Today shows So, how did it go?, and when no goal is ahead Goal shows How did it go? as well; Tell me how it went opens the same report. Once it is filed, Find the next goal opens chat to talk the result through and choose what comes next.
+
+Between goals. When no goal is ahead, the plan never runs dry: a plan ends on its last day (its weeks stay on the calendar) and the rider is put on a 12-week base block called Building to the next goal, built the same way as a plan with no goal. Goal and Today ask what we are chasing next, with Find it with [coach] and Set the goal myself. The moment a goal is set, by any route, the block is replaced by a plan built around it.
 
 ## The plan
 
-Build or rebuild: Goal, then + Build my season, then Periodisation model (Traditional, Polarised, Sweet Spot), then Generate. Building cancels the current plan. It runs from today to the A race (12 weeks with no goal, never under 4) through base, build, peak and a race week. Every third week (beginner) or fourth (otherwise) is a recovery week at 60 percent. Rest days are never scheduled; hard days carry intensity.
+Build or rebuild: Goal, then + Build my season, then Periodisation model (Traditional, Polarised, Sweet Spot), then Generate. Building ends the current plan; its past weeks stay on the calendar. It runs from today to the A race (12 weeks with no goal, never under 4) through base, build, peak and a race week. Every third week (beginner) or fourth (otherwise) is a recovery week at 60 percent. Rest days are never scheduled; hard days carry intensity.
 
 Change hard and rest days: Goal, then Adjust availability, tap each day (Easy, Rest, Hard), Save schedule, then rebuild.
 

@@ -12,7 +12,7 @@ from app.models.onboarding import (
     OnboardingResponse,
     PrimaryGoal,
 )
-from app.models.training import Workout, WorkoutStatus
+from app.models.training import PlanStatus, TrainingPlan, Workout, WorkoutStatus
 from app.models.user import ExperienceLevel
 
 
@@ -225,7 +225,22 @@ def _skip_workouts_on_date(db: Session, user_id: str, event_date: date) -> None:
 
 
 def delete_goal(db: Session, goal: GoalEvent) -> None:
-    """Delete a goal event."""
+    """Delete a goal event.
+
+    Plans built for it lose the link first: the foreign key has no ON DELETE,
+    so Postgres refused to delete any goal a plan had ever been built for. The
+    current plan, if it was aimed at this goal, is ended with it, because it
+    was building to a day that is no longer happening; the season keeper,
+    which the goals API runs next, gives the rider the plan they need now.
+    """
+    from app.services.plan_service import retire_plan
+
+    today = date.today()
+    for plan in db.query(TrainingPlan).filter(TrainingPlan.goal_event_id == goal.id).all():
+        if plan.status == PlanStatus.active:
+            retire_plan(db, plan, today)
+        plan.goal_event_id = None
+    db.flush()
     db.delete(goal)
     db.commit()
 

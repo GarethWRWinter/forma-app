@@ -136,6 +136,9 @@ class GoalEventResponse(BaseModel):
     assessment_data: dict | None = None
     assessment_completed_at: datetime | None = None
     needs_assessment: bool = False
+    # True when saving this goal rebuilt the plan on the server, so the
+    # client does not build a second one.
+    plan_rebuilt: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

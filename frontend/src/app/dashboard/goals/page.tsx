@@ -166,7 +166,13 @@ function GoalsPageInner() {
       // Auto-regenerate a unified training plan that considers ALL goals.
       // The backend auto-detects the primary (highest-priority A-race),
       // builds the macro periodization toward it, and accommodates B/C races.
-      if (!editingGoalId && goal?.id) {
+      // Skipped when saving the goal already rebuilt the plan on the server
+      // (a rider coming off the base block), so it is built once.
+      if (goal?.plan_rebuilt) {
+        queryClient.invalidateQueries({ queryKey: ["plans"] });
+        queryClient.invalidateQueries({ queryKey: ["workouts-week"] });
+        queryClient.invalidateQueries({ queryKey: ["today-workouts"] });
+      } else if (!editingGoalId && goal?.id) {
         try {
           setPlanGenerating(true);
           await trainingApi.generatePlan({
@@ -192,6 +198,10 @@ function GoalsPageInner() {
     mutationFn: (id: string) => goalsApi.delete(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["goals"] });
+      // The plan built for a deleted goal ends with it and is replaced.
+      queryClient.invalidateQueries({ queryKey: ["plans"] });
+      queryClient.invalidateQueries({ queryKey: ["workouts-week"] });
+      queryClient.invalidateQueries({ queryKey: ["today-workouts"] });
     },
   });
 

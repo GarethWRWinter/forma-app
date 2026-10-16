@@ -12,7 +12,7 @@ Generates truly personalised training plans based on:
 from datetime import date, timedelta
 from math import ceil, sqrt
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.llm_utils import humanize
@@ -411,7 +411,8 @@ def generate_plan(
     """
     today = date.today()
 
-    # ── 1. Cancel any existing active plans ──
+    # ── 1. End any existing active plans ──
+    # Ended, not cancelled: the weeks already ridden stay on the calendar.
     existing_active = (
         db.query(TrainingPlan)
         .filter(
@@ -421,7 +422,7 @@ def generate_plan(
         .all()
     )
     for old_plan in existing_active:
-        old_plan.status = PlanStatus.cancelled
+        retire_plan(db, old_plan, today)
     if existing_active:
         db.flush()
 
@@ -587,6 +588,26 @@ def generate_plan(
     db.commit()
     db.refresh(plan)
     return plan
+
+
+def retire_plan(db: Session, plan: TrainingPlan, today: date) -> None:
+    """End a plan and keep what the rider already rode on the calendar.
+
+    A plan that has run for at least a day is completed, ending yesterday at
+    the latest, so its past weeks stay where they were ridden and nothing of
+    it lies on today or after. One that started today has no past to keep and
+    is cancelled. Rebuilding used to cancel outright, which blanked every past
+    week of the old plan. Its unanswered proposals go with it: they argue with
+    a plan that no longer exists.
+    """
+    from app.services.plan_review_service import _supersede_pending
+
+    if plan.start_date < today:
+        plan.status = PlanStatus.completed
+        plan.end_date = min(plan.end_date, today - timedelta(days=1))
+    else:
+        plan.status = PlanStatus.cancelled
+    _supersede_pending(db, plan.user, plan.id)
 
 
 def _generate_adaptive_workouts(
@@ -1306,11 +1327,13 @@ def get_plan_workouts(
 def visible_workouts(db: Session, user_id: str):
     """Every session the rider can see, as a query to narrow further.
 
-    One rule: a session is visible when it belongs to the active plan, or to
-    no plan at all. A session the coach books in chat has no phase, so it
-    outlives a rebuild. The calendar used to inner join through phases, and
-    every session the coach had ever booked was invisible (16 Oct 2026).
-    Sessions of a cancelled plan stay hidden.
+    One rule: a session is visible when it belongs to the active plan, to an
+    ended (completed) plan on or before its last day, or to no plan at all. A
+    session the coach books in chat has no phase, so it outlives a rebuild.
+    The calendar used to inner join through phases, and every session the
+    coach had ever booked was invisible (16 Oct 2026). An ended plan keeps the
+    weeks the rider rode, and nothing after them. Sessions of a cancelled
+    plan stay hidden.
     """
     return (
         db.query(Workout)
@@ -1318,7 +1341,14 @@ def visible_workouts(db: Session, user_id: str):
         .outerjoin(TrainingPlan, TrainingPhase.plan_id == TrainingPlan.id)
         .filter(
             Workout.user_id == user_id,
-            or_(Workout.phase_id.is_(None), TrainingPlan.status == PlanStatus.active),
+            or_(
+                Workout.phase_id.is_(None),
+                TrainingPlan.status == PlanStatus.active,
+                and_(
+                    TrainingPlan.status == PlanStatus.completed,
+                    Workout.scheduled_date <= TrainingPlan.end_date,
+                ),
+            ),
         )
     )
 

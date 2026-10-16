@@ -85,6 +85,21 @@ function CoachPageInner() {
 
   const isDebrief = searchParams.get("debrief") === "true";
 
+  // Everything a coach tool can change: sessions, the plan itself (a goal
+  // filed in chat can rebuild it) and the goals.
+  const refreshPlan = () => {
+    for (const key of [
+      "workouts-week",
+      "today-workouts",
+      "today-workout-detail",
+      "plans",
+      "plan-detail",
+      "goals",
+    ]) {
+      queryClient.invalidateQueries({ queryKey: [key] });
+    }
+  };
+
   // Handoffs from briefings and other surfaces arrive as ?ask=... and
   // prefill the input; the rider presses send, nothing is sent for them.
   const askParam = searchParams.get("ask");
@@ -308,10 +323,9 @@ function CoachPageInner() {
             }
           } else if (chunk.type === "plan_updated") {
             // The coach changed the plan: refresh the calendar and Today,
-            // which otherwise holds its session for five minutes.
-            queryClient.invalidateQueries({ queryKey: ["workouts-week"] });
-            queryClient.invalidateQueries({ queryKey: ["today-workouts"] });
-            queryClient.invalidateQueries({ queryKey: ["today-workout-detail"] });
+            // which otherwise holds its session for five minutes. A goal it
+            // filed can rebuild the whole plan, so the plan and goals too.
+            refreshPlan();
           }
         }
       } catch (error) {
@@ -662,10 +676,9 @@ function CoachPageInner() {
           });
         } else if (chunk.type === "plan_updated") {
           // The coach changed the plan: refresh the calendar and Today,
-          // which otherwise holds its session for five minutes.
-          queryClient.invalidateQueries({ queryKey: ["workouts-week"] });
-          queryClient.invalidateQueries({ queryKey: ["today-workouts"] });
-          queryClient.invalidateQueries({ queryKey: ["today-workout-detail"] });
+          // which otherwise holds its session for five minutes. A goal it
+          // filed can rebuild the whole plan, so the plan and goals too.
+          refreshPlan();
         }
       }
     } catch (error) {

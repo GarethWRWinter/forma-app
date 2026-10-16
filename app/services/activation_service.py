@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.models.chat import ChatMessage, ChatSession
 from app.models.integration import DropboxToken, StravaToken, WahooToken
-from app.models.onboarding import GoalEvent, GoalStatus
+from app.models.onboarding import GoalEvent
 from app.models.ride import Ride
 from app.models.training import PlanStatus, TrainingPlan
 from app.models.user import User
@@ -108,11 +108,11 @@ def derive_stage(f: Facts) -> str:
 
 def collect_facts(db: Session, user: User, now: datetime | None = None) -> Facts:
     now = now or datetime.utcnow()
+    # Any goal ever set. A rider whose race is behind them has done this step;
+    # sending them back to "set the goal" also sent them setup emails meant
+    # for a rider who never started. Between goals is the season keeper's.
     has_goal = (
-        db.query(GoalEvent.id)
-        .filter(GoalEvent.user_id == user.id, GoalEvent.status == GoalStatus.upcoming)
-        .first()
-        is not None
+        db.query(GoalEvent.id).filter(GoalEvent.user_id == user.id).first() is not None
     )
     wahoo = db.query(WahooToken).filter(WahooToken.user_id == user.id).first()
     wahoo_ok = wahoo is not None and not wahoo.needs_reauth

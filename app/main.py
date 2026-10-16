@@ -85,6 +85,16 @@ async def lifespan(app: FastAPI):
     start_purge()
     logger.info("Daily account purge scheduled")
 
+    # Plans end on their date and a rider between goals gets a base block,
+    # so nobody is left with an empty calendar (16 Oct 2026).
+    if settings.season_keeper_enabled:
+        from app.services.season_service import start_season_keeper
+
+        start_season_keeper(settings.season_keeper_interval)
+        logger.info("Season keeper enabled (every %ds)", settings.season_keeper_interval)
+    else:
+        logger.info("Season keeper disabled")
+
     # Resume any Strava backfills that were interrupted by a previous restart.
     # Runs in background so we don't block startup.
     asyncio.create_task(resume_incomplete_backfills())
