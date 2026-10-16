@@ -19,10 +19,13 @@ the coach would then say two different things about one file.
 
 import gzip
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy.orm import Session
+from sqlalchemy import or_
+from sqlalchemy.orm import Session, defer
 
+from app.models.chat import ChatMessage, ChatRole, ChatSession
 from app.models.chat_attachment import ChatAttachment
 from app.models.ride import Ride
 from app.models.user import User
@@ -175,14 +178,17 @@ def _build_analysis(
     elapsed = streams["elapsed"]
 
     # The device's own threshold beats the profile's, same order of
-    # preference as the import path uses.
+    # preference as the import path uses. Which one it was is kept, because
+    # the profile figure is today's FTP, not the FTP on the ride date.
     device_ftp = session_summary.get("threshold_power")
-    ftp = int(device_ftp) if device_ftp and device_ftp > 0 else (user.ftp or None)
+    from_file = bool(device_ftp and device_ftp > 0)
+    ftp = int(device_ftp) if from_file else (user.ftp or None)
 
     result: dict = {
         "available": True,
         "samples": len(records),
         "ftp_used": ftp,
+        "ftp_source": "file" if from_file else "profile",
         "has_power": bool(power),
         "has_gps": _has_gps(records),
     }
@@ -284,6 +290,123 @@ def get_attachments(
             ChatAttachment.id.in_(attachment_ids),
         )
         .all()
+    )
+
+
+# How many of a chat's files the coach holds open in full. Older ones are
+# named only, so the coach can say a file has dropped off rather than guess.
+CHAT_FILES_IN_FULL = 6
+
+
+def bind_to_session(
+    db: Session, user_id: str, session_id: str, attachment_ids: list[str] | None
+) -> int:
+    """Tie files to the chat they were sent in. Returns how many were tied.
+
+    Runs when the message carrying them is sent, because the client uploads
+    before a new chat exists. The first chat a file is sent in keeps it. A
+    later send of the same file into another chat still reaches the coach
+    there, through that message's record of what it carried. Only the
+    rider's own files, and only into the rider's own chat.
+    """
+    ids = list(dict.fromkeys(i for i in attachment_ids or [] if i))
+    if not ids:
+        return 0
+    own_chat = (
+        db.query(ChatSession.id)
+        .filter(ChatSession.id == session_id, ChatSession.user_id == user_id)
+        .first()
+    )
+    if not own_chat:
+        return 0
+    tied = (
+        db.query(ChatAttachment)
+        .filter(
+            ChatAttachment.user_id == user_id,
+            ChatAttachment.id.in_(ids),
+            ChatAttachment.session_id.is_(None),
+        )
+        .update({ChatAttachment.session_id: session_id}, synchronize_session=False)
+    )
+    db.commit()
+    return tied
+
+
+def same_file_key(attachment: ChatAttachment) -> tuple:
+    """Two uploads of one file parse to the same name, start and sample
+    count, so a file attached again shows once."""
+    summary = attachment.summary or {}
+    return (attachment.filename, summary.get("start_time"), summary.get("samples"))
+
+
+@dataclass
+class ChatFiles:
+    """The files a chat holds, as the coach is shown them."""
+
+    # The newest CHAT_FILES_IN_FULL files, oldest first.
+    in_full: list[ChatAttachment] = field(default_factory=list)
+    # Older files, oldest first, which the coach knows by name only.
+    named_only: list[ChatAttachment] = field(default_factory=list)
+    # attachment id -> when the rider's message that carried it was sent.
+    shared_at: dict[str, datetime] = field(default_factory=dict)
+    # Every file the chat's messages carried, repeats included: id -> filename.
+    names: dict[str, str] = field(default_factory=dict)
+
+
+def chat_files(db: Session, user_id: str, session_id: str) -> ChatFiles:
+    """Every file shared in one chat: the ones tied to it, plus every id its
+    rider messages carried, and only ever the rider's own.
+
+    The order is fixed (upload time, then id) so the coach's view is the same
+    bytes from turn to turn. A file attached twice shows once, as the copy
+    shared most recently, so a later "save it" reaches that copy.
+    """
+    sent_with: dict[str, datetime] = {}
+    for snapshot, created_at in (
+        db.query(ChatMessage.context_snapshot, ChatMessage.created_at)
+        .filter(ChatMessage.session_id == session_id, ChatMessage.role == ChatRole.user)
+        .order_by(ChatMessage.created_at, ChatMessage.id)
+    ):
+        ids = snapshot.get("attachment_ids") if isinstance(snapshot, dict) else None
+        for aid in ids if isinstance(ids, list) else []:
+            if isinstance(aid, str):
+                sent_with[aid] = created_at
+
+    in_this_chat = ChatAttachment.session_id == session_id
+    if sent_with:
+        in_this_chat = or_(in_this_chat, ChatAttachment.id.in_(list(sent_with)))
+    rows = (
+        db.query(ChatAttachment)
+        .options(defer(ChatAttachment.raw_file))
+        .filter(ChatAttachment.user_id == user_id, in_this_chat)
+        .order_by(ChatAttachment.created_at, ChatAttachment.id)
+        .all()
+    )
+
+    newest: dict[tuple, ChatAttachment] = {}
+    for a in rows:  # oldest first, so a later copy replaces an earlier one
+        newest[same_file_key(a)] = a
+    kept = sorted(newest.values(), key=lambda a: (a.created_at, a.id))
+    cut = max(len(kept) - CHAT_FILES_IN_FULL, 0)
+
+    return ChatFiles(
+        in_full=kept[cut:],
+        named_only=kept[:cut],
+        shared_at={a.id: sent_with[a.id] for a in rows if a.id in sent_with},
+        names={a.id: a.filename for a in rows},
+    )
+
+
+def delete_session_files(db: Session, user_id: str, session_id: str) -> int:
+    """Delete the files tied to one of the rider's chats, raw bytes and all.
+    A ride already saved from one keeps its ride. The caller commits."""
+    return (
+        db.query(ChatAttachment)
+        .filter(
+            ChatAttachment.user_id == user_id,
+            ChatAttachment.session_id == session_id,
+        )
+        .delete(synchronize_session=False)
     )
 
 

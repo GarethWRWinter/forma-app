@@ -154,7 +154,8 @@ def delete_chat_session(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Delete a chat session and its messages. Permanent."""
+    """Delete a chat session, its messages and the files first sent in it.
+    Permanent."""
     session = get_session(db, session_id, current_user.id)
     if not session:
         raise NotFoundException(detail="Chat session not found")
@@ -276,6 +277,11 @@ async def send_message(
         raise NotFoundException(detail="Chat session not found")
 
     _verify_attachments(db, current_user, body.attachment_ids)
+    # The files now belong to this chat, so every later turn of it can read
+    # them without the rider sending them again.
+    attachment_service.bind_to_session(
+        db, current_user.id, session.id, body.attachment_ids
+    )
 
     return StreamingResponse(
         stream_response(
@@ -349,6 +355,10 @@ async def send_voice_message(
         raise NotFoundException(detail="Chat session not found")
 
     _verify_attachments(db, current_user, body.attachment_ids)
+    # Same as a typed message: the files now belong to this chat.
+    attachment_service.bind_to_session(
+        db, current_user.id, session.id, body.attachment_ids
+    )
 
     return StreamingResponse(
         stream_voice_response(

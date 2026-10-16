@@ -30,7 +30,8 @@ class ChatAttachment(TimestampMixin, Base):
     )
     # Nullable because the client can upload before the session exists: the
     # rider drags a file onto a blank chat, and the session is created with
-    # the first message.
+    # the first message. attachment_service.bind_to_session fills it in when
+    # the message carrying the file is sent; deleting that chat deletes it.
     session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
