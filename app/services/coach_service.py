@@ -86,20 +86,20 @@ You have tools to modify the rider's training plan directly. Use them when the c
 **When to use tools:**
 - The rider asks to change their plan ("Can we swap Tuesday and Thursday?", "I want to skip tomorrow's session", "Add a recovery ride on Friday")
 - You recommend a change and the rider agrees ("Let's do that", "Sounds good, make the change")
-- Always confirm with the rider before making changes, describe what you'll do, then act
+- When the rider asks for a change, that request is their yes: call the tool in the same reply. When the change is your idea, say what you would do and ask; call the tool only after they agree (a change to the shape of the plan goes through propose_plan_change, as above). Never end a reply having said you will book or change something without calling the tool in that reply.
 
 **When NOT to use tools:**
 - General discussion about training philosophy or future plans
 - The rider is just asking questions, not requesting changes
-- Sessions more than 14 days out. Inside the dated fortnight you can add, change, move or skip. Anything later cannot be booked yet, so say so plainly and never say it is booked.
+- Sessions more than 14 days out. Inside the dated fortnight you can add, change, move or skip. Anything later cannot be booked yet: say so plainly, never say it is booked, and never promise to book it later, because nothing will remind you to.
 
 **After using a tool**, briefly confirm what was changed and explain how it fits the overall training plan.
 
 **Nothing is booked until a tool says so.**
-- Never say a session is booked, added, moved or skipped until the tool result in this turn confirms it. "Done" comes after the result, never before the call.
+- Never say a session is booked, added, moved or skipped until a tool result confirms it, in this reply or already listed in `this_week`. Before the call, say only that you are putting it in; never say where it will sit, what day it lands on or what it will do. "Done" comes after the result, never before the call.
 - Name the day exactly as the result gives it, for example "Monday 19 October". Never work out a weekday yourself.
 - If the result starts with Error, tell the rider plainly it did not go in and what you will do instead.
-- Offer Ride mode or a trainer or head-unit export only when the result says the session has structured steps.
+- Offer Ride mode or an export only when the result says the rider can start or export it (it needs structured steps and an FTP). Forma sends nothing to a trainer, head unit or app: an export is a file the rider downloads and loads themselves.
 
 ## Post-Event Debrief
 
@@ -113,9 +113,10 @@ When a rider has recently completed a goal event, proactively offer to debrief:
 - Process disappointment constructively: it's data, not failure
 
 When the context carries `season`, the rider has no goal ahead. Follow its
-note: if the result is not recorded, the debrief comes first; then propose the
-next goal yourself and file it with create_goal once they agree. Say what the
-plan did only as the tool result states it.
+note. If the result is not recorded, this reply is the debrief only; propose
+the next goal in a later reply, once the debrief is done. Then propose it
+yourself, file it with create_goal once they agree, and say what happened to
+the plan only as the tool result states it.
 
 ## Response Format
 
@@ -504,7 +505,13 @@ def _build_rider_context(
 
         summary = compliance_summary(db, user.id, today - timedelta(days=28), today)
         if summary:
-            context["compliance"] = {**summary, "window_note": "last 28 days of the active plan"}
+            context["compliance"] = {
+                **summary,
+                "window_note": (
+                    "last 28 days of sessions on the calendar, from the current "
+                    "plan, an ended one or booked in chat"
+                ),
+            }
     except Exception:
         logger.exception("Compliance summary failed for %s", user.id)
 
@@ -530,7 +537,8 @@ def _build_rider_context(
                 )
             if plan.end_date < today:
                 context["training_plan"]["ended"] = (
-                    f"on {plan.end_date}; nothing of it is scheduled after that"
+                    f"on {_say_day(plan.end_date)} {plan.end_date.year}; nothing "
+                    "of it is scheduled after that"
                 )
 
             # Current phase
@@ -881,7 +889,7 @@ COACH_TOOLS = [
     },
     {
         "name": "add_workout",
-        "description": "Book a session on the rider's calendar, from today up to 14 days ahead. Include steps whenever the session has structure (intervals, power targets, cadence): the steps are what Ride mode runs and what the exports carry to Zwift, a smart trainer or a head unit. Without steps it is a note on the calendar and nothing more. If it replaces a planned session, skip that one too. The result gives the exact day it landed on; quote that day, never your own.",
+        "description": "Book a session on the rider's calendar, from today up to 14 days ahead. Include steps whenever the session has structure (intervals, power targets, cadence): the steps are what Ride mode runs and what goes into the export files the rider can download for Zwift, a smart trainer or a head unit. Without steps it is a note on the calendar and nothing more. If it replaces a planned session, skip that one too. The result gives the exact day it landed on; quote that day, never your own.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1193,8 +1201,10 @@ def _bad_date(today: date, verb: str) -> str:
     last = today + timedelta(days=HORIZON_DAYS)
     return (
         f"Error: nothing was {verb}. scheduled_date must be YYYY-MM-DD from "
-        f"{today.isoformat()} to {last.isoformat()}. Take the date from the "
-        f"dated calendar and call again."
+        f"{today.isoformat()} to {last.isoformat()}. If the date was mistyped, "
+        f"take it from the dated calendar and call again. If the rider asked "
+        f"for a day after {_say_day(last)}, it cannot be booked yet: tell them "
+        f"so plainly and do not book another day instead."
     )
 
 
@@ -1287,8 +1297,8 @@ def _structure_note(w: Workout, ftp: int | None) -> str:
     if not steps:
         return (
             "It has no structured steps, so it cannot be started in Ride mode or "
-            "exported to a trainer or head unit. Do not say it can be. If the "
-            "session has targets, call update_workout with steps."
+            "exported as a file for a trainer or head unit. Do not say it can be. "
+            "If the session has targets, call update_workout with steps."
         )
     main = _main_set(steps, ftp)
     shape = f"It has {len(steps)} structured steps{f' ({main})' if main else ''}"
@@ -1298,9 +1308,10 @@ def _structure_note(w: Workout, ftp: int | None) -> str:
             f"not set yet, so do not offer them until it is."
         )
     return (
-        f"{shape}, so the rider can start it in Ride mode or export it from the "
-        "session page: .ZWO for Zwift, .ERG for Wahoo or TrainerRoad, .MRC as % "
-        "of FTP, .FIT for Garmin or Hammerhead."
+        f"{shape}, so the rider can open it on Goal and press Start Session to "
+        "ride it in Ride mode, or Export to download a file: .ZWO for Zwift, "
+        ".ERG for Wahoo or TrainerRoad, .MRC as % of FTP, .FIT for Garmin or "
+        "Hammerhead. Forma sends nothing to a device; the rider loads the file."
     )
 
 
@@ -1314,18 +1325,18 @@ def _on_calendar(db: Session, user: User, w: Workout) -> bool:
 
 def _when(w: Workout, today: date, already: list[Workout]) -> str:
     """Where the rider will find it. Today shows one session a day, the
-    first, so a second session that day is only on the plan page."""
+    first, so a second session that day is only on Goal (the plan page)."""
     others = [o for o in already if o.status != WorkoutStatus.skipped]
     if others:
         first = _session_name(others[0])
         return (
-            f"It is on the rider's plan page now, as a second session that day "
-            f"after {first}. Today shows only {first}, so point the rider to the "
-            f"plan page for this one."
+            f"It is on Goal (the plan page) now, as a second session that day "
+            f"after {first}. Today shows only {first}, so point the rider to Goal "
+            f"for this one. If it replaces {first}, skip {first} with skip_workout."
         )
     if w.scheduled_date == today:
-        return "It is on the rider's plan page and on Today now."
-    return "It is on the rider's plan page now and will be on Today that morning."
+        return "It is on Goal (the plan page) and on Today now."
+    return "It is on Goal (the plan page) now and will be on Today on the day."
 
 
 def _apply_steps_load(w: Workout, steps: list[dict]) -> None:
@@ -1364,10 +1375,32 @@ def _plan_after_goal(
     db: Session, user: User, goal, moved_from: date | None = None
 ) -> str:
     """Run the season keeper after a goal tool, and say exactly what the
-    plan did, so the coach never promises a rebuild that did not happen."""
-    from app.services.season_service import season_state, try_ensure_season
+    plan did, so the coach never promises a rebuild that did not happen.
+    The goal is already saved by now, so nothing here may fail the tool: a
+    crash would come back as "nothing was saved" over a goal that was."""
+    from app.services.season_service import try_ensure_season
 
     outcome = try_ensure_season(db, user)
+    try:
+        return _plan_outcome(db, user, goal, outcome, moved_from)
+    except Exception:
+        logger.exception("Reading the plan after a goal tool failed (user=%s)", user.id)
+        try:
+            db.rollback()
+        except Exception:
+            logger.exception("Rollback after the goal tool's plan read failed")
+        return (
+            "The goal is filed, but whether the plan changed could not be "
+            "checked. Tell the rider the goal is in, and do not say what the "
+            "plan did; they can see it on Goal (the plan page)."
+        )
+
+
+def _plan_outcome(
+    db: Session, user: User, goal, outcome: str | None, moved_from: date | None
+) -> str:
+    from app.services.season_service import season_state
+
     plan = season_state(db, user)["current_plan"]
     if outcome is None:
         return (
@@ -1390,8 +1423,9 @@ def _plan_after_goal(
         )
     if not plan:
         return (
-            "No plan has been built yet. The rider builds it from Goal, then "
-            "Build my season; do not say it exists."
+            "There is no current plan, so no sessions follow from this goal yet. "
+            "The rider builds the plan from Goal, then Build my season; do not "
+            "say it exists."
         )
     aimed_at = None
     current = db.get(TrainingPlan, plan["id"])
@@ -2052,7 +2086,7 @@ def create_session(db: Session, user_id: str, title: str | None = None) -> ChatS
     """Create a new chat session."""
     session = ChatSession(
         user_id=user_id,
-        title=title or f"Chat - {datetime.now(timezone.utc).strftime('%d %b %Y')}",
+        title=title or f"Chat · {datetime.now(timezone.utc).strftime('%d %b %Y')}",
     )
     db.add(session)
     db.commit()
@@ -2184,6 +2218,16 @@ def _build_messages(session: ChatSession, max_messages: int = 20) -> list[dict]:
     ]
 
 
+# Model rounds in one coach turn. The last of them can only speak.
+MAX_TOOL_ROUNDS = 5
+
+
+def _tool_choice(round_no: int, rounds: int) -> dict | None:
+    """No tool on the last round, so the coach always reports back on the
+    tool results it already has."""
+    return {"type": "none"} if round_no == rounds - 1 else None
+
+
 async def stream_response(
     db: Session, user: User, session: ChatSession, user_message: str,
     attachment_ids: list[str] | None = None,
@@ -2229,9 +2273,12 @@ async def stream_response(
     scrub = StreamHumanizer()
 
     try:
-        # Agentic loop, keeps going while Claude wants to call tools
-        max_iterations = 5
-        for _ in range(max_iterations):
+        # Agentic loop, keeps going while Claude wants to call tools. The
+        # last round may not call one: a tool run there would have no round
+        # after it to report back, and the reply would end on "I'll put it
+        # straight into your training plan" whether it went in or not.
+        max_iterations = MAX_TOOL_ROUNDS
+        for round_no in range(max_iterations):
             # After a tool round the model starts a fresh sentence. Without a
             # break it glues on: "waiting for time to appear.Filed." (2 Sep).
             if _needs_round_break(full_response):
@@ -2244,6 +2291,7 @@ async def stream_response(
                 system=system,
                 messages=messages,
                 tools=COACH_TOOLS,
+                tool_choice=_tool_choice(round_no, max_iterations),
             ) as stream:
                 for event in stream:
                     if event.type == "content_block_delta":
@@ -2377,8 +2425,9 @@ You are speaking out loud to the rider. Adjust your style:
 # Regex for detecting sentence boundaries in streamed text
 _SENTENCE_END = re.compile(r'[.!?]\s+|[.!?]$')
 
-# The default name a session is born with ("Chat - 24 Jul 2026").
-_DEFAULT_TITLE_RE = re.compile(r"^Chat( - |$)")
+# The default name a session is born with ("Chat · 24 Jul 2026"; before
+# 16 Oct 2026, "Chat - 24 Jul 2026", whose spaced hyphen read as a dash).
+_DEFAULT_TITLE_RE = re.compile(r"^Chat( · | - |$)")
 
 
 def _needs_round_break(so_far: str) -> bool:
@@ -2521,9 +2570,10 @@ async def stream_voice_response(
     scrub = StreamHumanizer()
 
     try:
-        # Agentic loop, keeps going while Claude wants to call tools
-        max_iterations = 5
-        for _ in range(max_iterations):
+        # Agentic loop, keeps going while Claude wants to call tools; the
+        # last round answers in words only, as in stream_response.
+        max_iterations = MAX_TOOL_ROUNDS
+        for round_no in range(max_iterations):
             with forma_core.stream(
                 user_id=user.id,
                 task="chat_voice",  # shorter max_tokens, conciseness matters
@@ -2531,6 +2581,7 @@ async def stream_voice_response(
                 system=system,
                 messages=messages,
                 tools=COACH_TOOLS,
+                tool_choice=_tool_choice(round_no, max_iterations),
             ) as stream:
                 for event in stream:
                     if event.type == "content_block_delta":

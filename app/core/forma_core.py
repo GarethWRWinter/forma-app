@@ -307,11 +307,14 @@ def stream(
     messages: list,
     surface: str | None = None,
     tools: list | None = None,
+    tool_choice: dict | None = None,
     max_tokens: int | None = None,
     enforce_budget: bool = True,
 ):
     """One streaming Forma call. Yields the anthropic MessageStream;
     usage is logged from the final message when the block exits.
+    tool_choice is passed on only alongside tools ({"type": "none"} lets the
+    model see the tools without calling one).
 
     Raises BudgetExceededError (before opening the stream) when the rider is
     over their monthly cap and enforce_budget is left on."""
@@ -321,6 +324,8 @@ def stream(
     kwargs = {}
     if tools:
         kwargs["tools"] = tools
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
     t0 = time.monotonic()
     try:
         with _client().messages.stream(

@@ -13,8 +13,15 @@ The rule, kept here and nowhere else:
   plan generator, named BLOCK_NAME, so every week has sessions until the next
   goal is set.
 - A rider with a goal ahead and no current plan, or a current plan aimed at no
-  goal (the block), has the plan rebuilt around the goal. That is how the
-  block gives way, by whatever route the goal arrived.
+  goal (the block) or at a goal no longer ahead, has the plan rebuilt around
+  the goal. That is how the block gives way, by whatever route the goal
+  arrived. A plan still aimed at a goal that was filed as not started, moved
+  into the past or passed while a later goal kept the plan going is replaced
+  the same way: by the block when nothing is ahead, by a plan for the next
+  goal when one is.
+- A plan built within a week of an A or B race opens with a recovery week
+  (plan_service.generate_plan decides), so nobody is handed intensity the
+  morning after their race.
 - Only riders who have been on a plan before, and who have access, are
   touched. A rider still in setup (even one whose only goal is in the past)
   is left to the setup steps, which build the first plan with them.
@@ -34,6 +41,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.onboarding import GoalEvent, GoalStatus
 from app.models.training import PlanStatus, TrainingPlan
 from app.models.user import User
@@ -46,11 +54,14 @@ BLOCK_NAME = "Building to the next goal"
 @dataclass
 class _Snapshot:
     future: list[GoalEvent]  # upcoming and dated today or later, soonest first
+    held: set[str]  # ids of the goals a plan may still aim at: ahead, or raced today
     race_day: bool
     last_goal: GoalEvent | None  # the most recent goal no longer ahead
-    current: TrainingPlan | None  # active and not past its end date
+    current: TrainingPlan | None  # active and not past its end date, the newest
     expired: list[TrainingPlan]  # active, but past their end date
+    extra: list[TrainingPlan]  # current too, but older than `current`
     ever_planned: bool
+    last_model: str | None  # the periodisation of the newest plan
 
 
 def _status(goal: GoalEvent) -> str:
@@ -80,13 +91,18 @@ def _read(db: Session, user: User, today: date) -> _Snapshot:
         .all()
     )
     active = [p for p in plans if p.status == PlanStatus.active]
+    running = [p for p in active if p.end_date >= today]
+    model = plans[0].periodization_model if plans else None
     return _Snapshot(
         future=future,
+        held={g.id for g in future} | {g.id for g in goals if g.event_date == today},
         race_day=race_day,
         last_goal=last_goal,
-        current=next((p for p in active if p.end_date >= today), None),
+        current=running[0] if running else None,
         expired=[p for p in active if p.end_date < today],
+        extra=running[1:],
         ever_planned=bool(plans),
+        last_model=getattr(model, "value", model),
     )
 
 
@@ -109,18 +125,29 @@ def _eligible(user: User, snap: _Snapshot) -> bool:
     return has_access(user)
 
 
+def _replaceable(snap: _Snapshot) -> bool:
+    """No current plan, or one aimed at no goal ahead: the block, or a plan
+    whose goal was filed as not started, moved into the past, deleted or
+    already ridden while a later goal kept the plan running."""
+    if snap.current is None or snap.current.goal_event_id is None:
+        return True
+    # A goal raced today still holds its plan until tomorrow, even once its
+    # result is filed, so nothing is rebuilt on race day itself.
+    return snap.current.goal_event_id not in snap.held
+
+
 def _action(user: User, snap: _Snapshot, today: date) -> str | None:
     """What the keeper would build now: "block", "goal_plan" or nothing."""
-    if not _eligible(user, snap):
+    if not _eligible(user, snap) or not _replaceable(snap):
         return None
     if snap.future or snap.race_day:
         # A goal dated today is raced, not planned for.
-        if any(g.event_date > today for g in snap.future) and (
-            snap.current is None or snap.current.goal_event_id is None
-        ):
+        if any(g.event_date > today for g in snap.future):
             return "goal_plan"
         return None
-    return "block" if snap.current is None else None
+    if snap.current is not None and snap.current.goal_event_id is None:
+        return None  # already on the block
+    return "block"
 
 
 def season_state(db: Session, user: User, today: date | None = None) -> dict:
@@ -131,8 +158,13 @@ def season_state(db: Session, user: User, today: date | None = None) -> dict:
         "state": _state(snap),
         "last_goal": None,
         "current_plan": None,
-        # Whether a goal filed now rebuilds the plan by itself.
-        "rebuilds": _eligible(user, snap),
+        # Whether a goal filed now rebuilds the plan by itself: the same
+        # rule ensure_season acts on, so the coach never promises otherwise.
+        "rebuilds": (
+            settings.season_keeper_enabled
+            and _eligible(user, snap)
+            and _replaceable(snap)
+        ),
     }
     if snap.last_goal is not None:
         g = snap.last_goal
@@ -157,6 +189,11 @@ def season_state(db: Session, user: User, today: date | None = None) -> dict:
     return out
 
 
+def _say_date(d: date) -> str:
+    """The date as the coach should say it ("Sunday 20 December 2026")."""
+    return f"{d:%A} {d.day} {d:%B} {d.year}"
+
+
 def season_note(state: dict, in_chat: bool = True) -> str | None:
     """What the coach is told when the rider has no goal ahead, or None.
     in_chat: the coach can file the goal itself (the morning note cannot)."""
@@ -171,12 +208,12 @@ def season_note(state: dict, in_chat: bool = True) -> str | None:
         # Dated ahead, but already settled (a DNS filed early).
         parts = [
             f"No goal is set beyond today. Their last goal, {last['event_name']}, "
-            f"set for {last['event_date'].isoformat()}, is recorded as {last['status']}."
+            f"set for {_say_date(last['event_date'])}, is recorded as {last['status']}."
         ]
     if not last["result_recorded"]:
         parts.append(
             "Its result is not recorded yet: ask how it went first, and send them "
-            "to Goal, then Tell me how it went, which opens the race report."
+            "to Goal, then File the race report."
         )
     plan = state.get("current_plan")
     if plan and plan["goal_less"]:
@@ -185,7 +222,7 @@ def season_note(state: dict, in_chat: bool = True) -> str | None:
             "their base, so every week has sessions until a new goal is set."
         )
     elif plan:
-        parts.append(f"They are on '{plan['name']}' until {plan['end'].isoformat()}.")
+        parts.append(f"They are on '{plan['name']}' until {_say_date(plan['end'])}.")
     else:
         parts.append("They have no current plan, so only the sessions in this_week are booked.")
     if in_chat:
@@ -198,19 +235,26 @@ def season_note(state: dict, in_chat: bool = True) -> str | None:
             "riding; do not ask whether they want one. When they agree, file it "
             f"with create_goal and {then}"
         )
+    elif not last["result_recorded"]:
+        # The morning message has one question, and it goes on the race.
+        parts.append(
+            "Spend the one question on how the race went. The next goal comes "
+            "after the report is filed; do not propose it here."
+        )
     else:
         parts.append(
             "Propose the next goal yourself from what you know of them and their "
-            "riding, and spend the question on settling it. They answer on the "
-            "Coach page."
+            "riding, and make the one question the one that settles it, such as "
+            "the event or the date. They answer on the Coach page."
         )
     return " ".join(parts)
 
 
-def _lock(db: Session, user: User) -> None:
-    """Serialise the keeper and a request for the same rider. Postgres holds
-    the row until the next commit; SQLite ignores FOR UPDATE, which is fine
-    for tests."""
+def lock_rider(db: Session, user: User) -> None:
+    """Serialise plan building for one rider: the keeper, goal writes and
+    Build my season. Postgres holds the row until the next commit, so a
+    second build waits and then sees the first one's plan; SQLite ignores
+    FOR UPDATE, which is fine for tests."""
     db.query(User.id).filter(User.id == user.id).with_for_update().first()
 
 
@@ -222,21 +266,25 @@ def ensure_season(db: Session, user: User, today: date | None = None) -> str:
     from app.services.plan_service import generate_plan, retire_plan
 
     today = today or date.today()
-    _lock(db, user)
+    lock_rider(db, user)
     snap = _read(db, user, today)
-    for plan in snap.expired:
+    # Expired plans end, and so does any older plan still running beside the
+    # newest (two builds that raced each other before the lock existed).
+    ended = snap.expired + snap.extra
+    for plan in ended:
         retire_plan(db, plan, today)
     db.flush()
     action = _action(user, snap, today)
     if action is None:
         db.commit()
-        return "retired" if snap.expired else "unchanged"
+        return "retired" if ended else "unchanged"
     # generate_plan ends any other active plan and commits, which also
-    # releases the lock.
+    # releases the lock. The rider's periodisation carries over.
+    model = snap.last_model or "traditional"
     if action == "block":
-        generate_plan(db, user, name=BLOCK_NAME)
+        generate_plan(db, user, periodization_model=model, name=BLOCK_NAME)
     else:
-        generate_plan(db, user)
+        generate_plan(db, user, periodization_model=model)
     logger.info("Season keeper: %s for user %s", action, user.id)
     return action
 
@@ -244,7 +292,10 @@ def ensure_season(db: Session, user: User, today: date | None = None) -> str:
 def try_ensure_season(db: Session, user: User) -> str | None:
     """ensure_season for a request that has already done its own work (a goal
     filed, a report saved). A failure here is logged and rolled back, never
-    allowed to undo or hide what the rider just did."""
+    allowed to undo or hide what the rider just did. With the keeper switched
+    off (SEASON_KEEPER_ENABLED=false) it does nothing at all."""
+    if not settings.season_keeper_enabled:
+        return "unchanged"
     try:
         return ensure_season(db, user)
     except Exception:
@@ -269,7 +320,7 @@ def ensure_all(db: Session, today: date | None = None, dry_run: bool = False) ->
             if dry_run:
                 snap = _read(db, user, today)
                 action = _action(user, snap, today)
-                outcome = action or ("retired" if snap.expired else "unchanged")
+                outcome = action or ("retired" if snap.expired or snap.extra else "unchanged")
                 if outcome != "unchanged":
                     logger.info("[dry run] %s for user %s", outcome, user.id)
             else:

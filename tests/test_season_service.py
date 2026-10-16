@@ -351,7 +351,7 @@ def test_the_coach_knows_the_rider_is_between_goals(db_session, clock):
     assert season["last_goal"]["result_recorded"] is False
     note = season["note"]
     assert "Sa Calobra Mallorca sub 30, was 12 days ago" in note
-    assert "Tell me how it went" in note
+    assert "File the race report" in note
     assert f"'{BLOCK_NAME}', a 12-week block" in note
     assert "do not ask whether they want one" in note
     assert "the plan is rebuilt around it at once" in note
@@ -369,7 +369,7 @@ def test_the_coach_knows_the_rider_is_between_goals(db_session, clock):
     )
     context = json.loads(_build_rider_context(db_session, gareth))
     assert context["season"]["last_goal"]["result_recorded"] is True
-    assert "Tell me how it went" not in context["season"]["note"]
+    assert "File the race report" not in context["season"]["note"]
     entry = next(g for g in context["goal_events"] if g["goal_id"] == goal.id)
     assert "date_passed" not in entry and entry["status"] == "completed"
 
@@ -379,7 +379,7 @@ def test_an_ended_plan_the_keeper_has_not_reached_is_said_plainly(db_session, cl
 
     context = json.loads(_build_rider_context(db_session, gareth))
 
-    assert "2026-10-04" in context["training_plan"]["ended"]
+    assert "Sunday 4 October 2026" in context["training_plan"]["ended"]
     assert "no current plan" in context["season"]["note"]
 
 
@@ -468,3 +468,339 @@ def test_a_rider_between_goals_is_not_sent_back_to_set_up(db_session, clock):
 def test_needs_assessment_is_not_swallowed_by_the_goal_id_route():
     paths = [r.path for r in goals_api.router.routes if "GET" in getattr(r, "methods", set())]
     assert paths.index("/goals/needs-assessment") < paths.index("/goals/{goal_id}")
+
+
+# ── Review findings, 16 Oct 2026 ─────────────────────────────────────────────
+
+
+def _ride_on(db, user, day, title="Ride", if_=0.7, tss=60):
+    from app.models.ride import Ride, RideSource
+
+    ride = Ride(
+        user_id=user.id, source=RideSource.wahoo, title=title,
+        ride_date=datetime.combine(day, datetime.min.time()) + timedelta(hours=8),
+        duration_seconds=3600, moving_time_seconds=3600, intensity_factor=if_, tss=tss,
+    )
+    db.add(ride)
+    db.commit()
+    return ride
+
+
+def _block_after_the_race(db, clock):
+    """Sa Calobra raced on Sunday 4 October; the keeper runs on the Monday."""
+    gareth, goal, old = _incident(db)
+    clock(date(2026, 10, 5))
+    assert ensure_season(db, gareth) == "block"
+    return gareth, goal, old
+
+
+def test_a_ride_that_syncs_after_the_plan_ended_still_links(db_session, clock):
+    """Race-week rides that sync late found nothing once the plan had ended,
+    because only the active plan's window was searched: the session stayed
+    planned and read as missed."""
+    gareth, _, old = _block_after_the_race(db_session, clock)
+    [race_day] = [w for w in get_workouts_by_date(db_session, gareth.id, target_date=SA_CALOBRA)]
+
+    ride = _ride_on(db_session, gareth, SA_CALOBRA, title="Sa Calobra")
+    linked = plan_compliance_service.link_ride(db_session, ride)
+
+    assert linked is not None and linked.id == race_day.id
+    assert ride.workout_id == race_day.id
+
+    # The backfill finds the same session for a ride that missed the import.
+    thursday = date(2026, 10, 1)
+    late = _ride_on(db_session, gareth, thursday)
+    assert plan_compliance_service.classify_unlinked_rides(db_session, gareth.id)["linked"] == 1
+    db_session.refresh(late)
+    assert late.workout_id is not None
+
+
+def test_the_morning_after_the_race_the_coach_still_sees_race_week(db_session, clock):
+    """The block starts the morning after the race, and the 28 days the coach
+    reads were clipped to the block: build-up and race week vanished on the
+    very day the coach is told to debrief."""
+    gareth, _, _ = _block_after_the_race(db_session, clock)
+    plan_compliance_service.link_ride(db_session, _ride_on(db_session, gareth, SA_CALOBRA))
+
+    summary = plan_compliance_service.compliance_summary(
+        db_session, gareth.id, date(2026, 10, 5) - timedelta(days=28), date(2026, 10, 5)
+    )
+
+    assert summary is not None
+    # From the ended plan's first session (1 October), not from the block's
+    # first day.
+    assert summary["window"]["start"] == "2026-10-01"
+    assert summary["planned_sessions"] >= 2  # 1 and 4 October, from the ended plan
+    assert summary["as_prescribed"] + summary["deviated"] == 1
+    assert summary["missed"] == 1  # 1 October, with no ride against it
+    assert summary["plan"] == BLOCK_NAME
+    # Nothing before the rider's first session counts as riding off-plan.
+    early = plan_compliance_service.compliance_summary(
+        db_session, gareth.id, date(2026, 7, 1), date(2026, 8, 1)
+    )
+    assert early is None
+
+
+def test_the_block_after_an_a_race_opens_with_a_recovery_week(db_session, clock):
+    """The block once opened with 75 minutes of tempo the morning after the
+    A race. Its first seven days are now recovery and easy endurance."""
+    gareth, _, _ = _block_after_the_race(db_session, clock)
+
+    first_week = [
+        w for w in get_workouts_by_date(db_session, gareth.id, week_start=date(2026, 10, 5))
+        if w.phase_id is not None and w.phase.plan.name == BLOCK_NAME
+    ]
+    assert first_week
+    assert {str(getattr(w.workout_type, "value", w.workout_type)) for w in first_week} <= {
+        "recovery", "endurance",
+    }
+    week_two = [
+        w for w in get_workouts_by_date(db_session, gareth.id, week_start=date(2026, 10, 12))
+        if w.phase_id is not None
+    ]
+    assert sum(w.planned_tss or 0 for w in first_week) < sum(w.planned_tss or 0 for w in week_two)
+
+
+@pytest.mark.parametrize("built_on, priority, status, recovers", [
+    (date(2026, 10, 5), EventPriority.b_race, GoalStatus.upcoming, True),
+    (date(2026, 10, 12), EventPriority.a_race, GoalStatus.completed, False),  # 8 days on
+    (date(2026, 10, 5), EventPriority.c_race, GoalStatus.completed, False),  # a training race
+    (date(2026, 10, 5), EventPriority.a_race, GoalStatus.dns, False),  # never ridden
+])
+def test_only_a_plan_straight_after_an_a_or_b_race_starts_with_recovery(
+    db_session, clock, built_on, priority, status, recovers,
+):
+    gareth = _gareth(db_session)
+    goal = _goal(db_session, gareth, SA_CALOBRA, priority=priority, status=status)
+    _old_plan(db_session, gareth, goal)
+    clock(built_on)
+
+    assert ensure_season(db_session, gareth) == "block"
+
+    first_seven = [
+        w for w in get_workouts_by_date(db_session, gareth.id, week_start=built_on)
+        if w.phase_id is not None and w.phase.plan.name == BLOCK_NAME
+    ]
+    types = {str(getattr(w.workout_type, "value", w.workout_type)) for w in first_seven}
+    assert first_seven
+    assert (types <= {"recovery", "endurance"}) is recovers
+
+
+def test_a_plan_aimed_at_a_goal_filed_as_not_started_gives_way(db_session, clock):
+    """The plan aimed at Race A (25 Oct); A was filed as DNS early. The coach
+    was told a new goal would rebuild the plan at once, and then the keeper
+    left the rider tapering for a race they are not riding."""
+    gareth = _gareth(db_session)
+    race_a = _goal(db_session, gareth, date(2026, 10, 25), name="Race A")
+    clock(date(2026, 9, 1))
+    generate_plan(db_session, gareth)
+    clock(FRIDAY)
+    race_a.status = GoalStatus.dns
+    db_session.commit()
+
+    state = season_state(db_session, gareth)
+    assert state["state"] == "between_goals" and state["rebuilds"] is True
+    assert "rebuilt around it at once" in season_note(state)
+
+    filed = _execute_tool(db_session, gareth, "create_goal", {
+        "event_name": "Race B", "event_date": "2027-03-01",
+        "event_type": "road_race", "priority": "a_race",
+    })
+
+    assert "The plan has been rebuilt around it: 'Plan for Race B'" in filed
+    [plan] = _active(db_session, gareth)
+    assert plan.name == "Plan for Race B"
+
+
+def test_the_hourly_pass_replaces_a_plan_aimed_at_a_race_not_ridden(db_session, clock):
+    gareth = _gareth(db_session)
+    race_a = _goal(db_session, gareth, date(2026, 10, 25), name="Race A")
+    clock(date(2026, 9, 1))
+    generate_plan(db_session, gareth)
+    clock(FRIDAY)
+    race_a.status = GoalStatus.dns
+    db_session.commit()
+
+    assert ensure_season(db_session, gareth) == "block"
+    assert [p.name for p in _active(db_session, gareth)] == [BLOCK_NAME]
+    assert ensure_season(db_session, gareth) == "unchanged"
+
+
+def test_a_goal_moved_into_the_past_does_not_leave_its_plan_running(db_session, clock):
+    """Moved from 1 November to 4 October: on the 16th the plan still ran to
+    1 November, peaking for a race already ridden."""
+    gareth = _gareth(db_session)
+    goal = _goal(db_session, gareth, date(2026, 11, 1), name="Sa Calobra")
+    clock(date(2026, 9, 1))
+    generate_plan(db_session, gareth)
+    goal.event_date = SA_CALOBRA
+    db_session.commit()
+    clock(FRIDAY)
+
+    assert ensure_season(db_session, gareth) == "block"
+    [block] = _active(db_session, gareth)
+    assert block.name == BLOCK_NAME
+
+
+def test_the_day_after_an_a_race_a_later_goal_gets_its_own_plan(db_session, clock):
+    """A plan aimed at the A race runs on to a C race after it. On race day
+    nothing moves, even once the result is filed; the next morning the plan
+    is rebuilt for the C race, starting with a recovery week."""
+    gareth = _gareth(db_session)
+    a_race = _goal(db_session, gareth, date(2026, 10, 18), name="Race A")
+    _goal(db_session, gareth, date(2026, 11, 15), name="Club hill climb",
+          priority=EventPriority.c_race)
+    clock(date(2026, 9, 1))
+    generate_plan(db_session, gareth)
+    [plan] = _active(db_session, gareth)
+    assert plan.goal_event_id == a_race.id and plan.end_date == date(2026, 11, 15)
+
+    clock(date(2026, 10, 18))
+    a_race.status = GoalStatus.completed
+    db_session.commit()
+    assert ensure_season(db_session, gareth) == "unchanged"
+
+    clock(date(2026, 10, 19))
+    assert ensure_season(db_session, gareth) == "goal_plan"
+    [rebuilt] = _active(db_session, gareth)
+    assert rebuilt.name == "Plan for Club hill climb"
+    first_week = [
+        w for w in get_workouts_by_date(db_session, gareth.id, week_start=date(2026, 10, 19))
+        if w.phase_id is not None and w.phase.plan_id == rebuilt.id
+    ]
+    assert first_week and {
+        str(getattr(w.workout_type, "value", w.workout_type)) for w in first_week
+    } <= {"recovery", "endurance"}
+    assert ensure_season(db_session, gareth) == "unchanged"
+
+
+def test_a_session_ridden_today_survives_an_evening_goal(db_session, clock):
+    """The block's Friday session was ridden and matched. Filing a goal that
+    evening hid it and laid a fresh planned session on today, which would
+    count as missed tomorrow."""
+    gareth, _, _ = _incident(db_session)
+    ensure_season(db_session, gareth)
+    [todays] = get_workouts_by_date(db_session, gareth.id, target_date=FRIDAY)
+    ride = _ride_on(db_session, gareth, FRIDAY)
+    assert plan_compliance_service.link_ride(db_session, ride).id == todays.id
+
+    _new_goal(db_session, gareth)
+
+    shown = list_workouts(target_date=FRIDAY, week=None, current_user=gareth, db=db_session)
+    assert [w.id for w in shown] == [todays.id]
+    assert str(getattr(shown[0].status, "value", shown[0].status)) == "completed"
+    context = json.loads(_build_rider_context(db_session, gareth))
+    today_entries = [e for e in context["this_week"] if e["date"] == FRIDAY.isoformat()]
+    assert [e["id"] for e in today_entries] == [todays.id]
+
+
+def test_a_new_plan_leaves_today_clear_after_an_unplanned_ride(db_session, clock):
+    gareth, _, _ = _incident(db_session)
+    _ride_on(db_session, gareth, FRIDAY, title="Coffee ride")
+
+    ensure_season(db_session, gareth)
+
+    assert get_workouts_by_date(db_session, gareth.id, target_date=FRIDAY) == []
+    assert get_workouts_by_date(db_session, gareth.id, week_start=date(2026, 10, 12))
+
+
+def test_two_running_plans_are_put_right(db_session, clock):
+    """Two builds that raced each other left two active plans; the keeper only
+    ever ended expired ones, so both sets of sessions showed for 12 weeks."""
+    gareth, _, _ = _incident(db_session)
+    ensure_season(db_session, gareth)
+    [first] = _active(db_session, gareth)
+    second = TrainingPlan(
+        user_id=gareth.id, name=BLOCK_NAME, start_date=FRIDAY,
+        end_date=FRIDAY + timedelta(weeks=12), status=PlanStatus.active,
+        periodization_model=PeriodizationModel.traditional,
+        created_at=datetime.utcnow() + timedelta(seconds=5),
+    )
+    db_session.add(second)
+    db_session.commit()
+
+    assert ensure_season(db_session, gareth) == "retired"
+    assert [p.id for p in _active(db_session, gareth)] == [second.id]
+    db_session.refresh(first)
+    assert first.status == PlanStatus.cancelled  # started today: no past to keep
+
+
+def test_the_riders_periodisation_carries_into_the_block(db_session, clock):
+    gareth, _, old = _incident(db_session)
+    old.periodization_model = PeriodizationModel.polarized
+    db_session.commit()
+
+    ensure_season(db_session, gareth)
+
+    [block] = _active(db_session, gareth)
+    assert str(getattr(block.periodization_model, "value", block.periodization_model)) == "polarized"
+
+
+def test_switched_off_the_keeper_does_nothing_on_a_goal_write_either(db_session, clock, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "season_keeper_enabled", False)
+    gareth, goal, old = _incident(db_session)
+
+    state = season_state(db_session, gareth)
+    assert state["rebuilds"] is False
+    assert "Build my season" in season_note(state)
+    goals_api.submit_goal_assessment(
+        goal.id, GoalAssessmentSubmit(status="completed", overall_satisfaction=8),
+        current_user=gareth, db=db_session,
+    )
+    filed = _execute_tool(db_session, gareth, "create_goal", {
+        "event_name": "Mallorca 312", "event_date": "2027-05-30",
+        "event_type": "gran_fondo", "priority": "a_race",
+    })
+
+    db_session.refresh(old)
+    assert old.status == PlanStatus.active  # untouched
+    assert db_session.query(TrainingPlan).count() == 1
+    assert "rebuilt" not in filed
+
+
+def test_the_morning_note_spends_its_one_question_on_the_race(db_session, clock):
+    gareth, goal, _ = _incident(db_session)
+    ensure_season(db_session, gareth)
+
+    owed = season_note(season_state(db_session, gareth), in_chat=False)
+    assert "Spend the one question on how the race went" in owed
+    assert "Propose the next goal" not in owed
+
+    goal.status = GoalStatus.completed
+    db_session.commit()
+    filed = season_note(season_state(db_session, gareth), in_chat=False)
+    assert "Propose the next goal yourself" in filed and "how the race went" not in filed
+    assert not any(d in owed + filed for d in DASHES)
+
+
+def test_dates_in_the_season_note_are_in_words(db_session, clock):
+    gareth = _gareth(db_session)
+    race = _goal(db_session, gareth, date(2026, 10, 25), name="Race A", status=GoalStatus.dns)
+    plan = _old_plan(db_session, gareth, race, start=date(2026, 9, 1), end=date(2026, 12, 20))
+
+    note = season_note(season_state(db_session, gareth))
+
+    assert "set for Sunday 25 October 2026" in note
+    assert "until Sunday 20 December 2026" in note
+    assert "2026-" not in note
+    assert plan.id
+
+
+def test_a_goal_tool_whose_plan_read_fails_still_says_the_goal_is_filed(db_session, clock, monkeypatch):
+    gareth, _, _ = _incident(db_session)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(season_service, "season_state", broken)
+
+    filed = coach_service._run_tool(db_session, gareth, "create_goal", {
+        "event_name": "Mallorca 312", "event_date": "2027-05-30",
+        "event_type": "gran_fondo", "priority": "a_race",
+    })
+
+    assert filed.startswith("Filed the goal 'Mallorca 312'")
+    assert "The goal is filed, but whether the plan changed could not be checked" in filed
+    assert db_session.query(GoalEvent).filter(GoalEvent.event_name == "Mallorca 312").count() == 1

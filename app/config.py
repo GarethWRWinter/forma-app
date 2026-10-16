@@ -79,9 +79,10 @@ class Settings(BaseSettings):
     outreach_interval: int = 3600
 
     # The season keeper: ends plans past their date and gives a rider between
-    # goals a base block (app/services/season_service.py). Hourly. Set
-    # SEASON_KEEPER_ENABLED=false to stop the hourly pass; goal writes still
-    # run it for that rider.
+    # goals a base block (app/services/season_service.py). Hourly, and after
+    # every goal write. SEASON_KEEPER_ENABLED=false stops both; the plan then
+    # changes only when the rider uses Build my season (or the goals page
+    # builds one for a new goal), as before the keeper existed.
     season_keeper_enabled: bool = True
     season_keeper_interval: int = 3600
 

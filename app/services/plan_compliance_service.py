@@ -6,7 +6,7 @@ the Wahoo path. Every Wahoo ride since the plan began was invisible to the
 plan, so the coach read "zero of 39 completed" against a rider who had ridden
 twelve of the last seventeen days (17 Sep 2026).
 
-Three honest answers for any day inside the active plan:
+Three honest answers for any day with a session on the rider's calendar:
   as prescribed   a ride linked to that day's session, close to the prescription
   deviated        linked, but a different type, intensity or length
   off-plan        a ride on a day with nothing planned, or a second ride
@@ -18,18 +18,18 @@ Source does not matter: Wahoo, a file upload, a Strava archive all land here.
 import logging
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import or_
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.ride import Ride, RideData
 from app.models.training import (
     PlanStatus,
-    TrainingPhase,
     TrainingPlan,
     Workout,
     WorkoutStatus,
     WorkoutType,
 )
+from app.services.plan_service import visible_workouts
 from app.services.workout_assessment_service import WORKOUT_TYPE_IF_BAND, score_execution
 
 logger = logging.getLogger(__name__)
@@ -88,18 +88,13 @@ def _active_plan(db: Session, user_id: str) -> TrainingPlan | None:
     )
 
 
-def _in_scope(plan: TrainingPlan | None):
-    """The sessions that count: the plan's, and any booked in chat (no
-    phase, so they belong to no plan and show whatever plan is active)."""
-    booked = Workout.phase_id.is_(None)
-    return booked if plan is None else or_(booked, TrainingPhase.plan_id == plan.id)
-
-
-def _planned_on(db: Session, user_id: str, plan: TrainingPlan | None, day: date) -> list[Workout]:
+def _planned_on(db: Session, user_id: str, day: date) -> list[Workout]:
+    """The sessions on the rider's calendar that day, by the calendar's own
+    rule (visible_workouts): the active plan's, an ended plan's up to its
+    last day, and any booked in chat."""
     return (
-        db.query(Workout)
-        .outerjoin(TrainingPhase, Workout.phase_id == TrainingPhase.id)
-        .filter(Workout.user_id == user_id, Workout.scheduled_date == day, _in_scope(plan))
+        visible_workouts(db, user_id)
+        .filter(Workout.scheduled_date == day)
         .order_by(Workout.sort_order)
         .all()
     )
@@ -108,21 +103,20 @@ def _planned_on(db: Session, user_id: str, plan: TrainingPlan | None, day: date)
 def link_ride(db: Session, ride: Ride) -> Workout | None:
     """Attach a ride to the session it most plausibly was, and score it.
 
-    Same day, not already satisfied: the active plan's sessions inside its
-    window, and a session booked in chat on any day, with or without a plan.
-    With more than one candidate the type wins, then the closest intensity
-    band. A recovery spin and a VO2 session on the same day no longer get
-    confused. The score is the deterministic one (no model call), so this is
-    safe to run on every import, including a thousand-ride backfill.
+    Same day, not already satisfied, and on the calendar: the same rule the
+    Strava linker and the plan page use. A ride that synced the day after a
+    plan ended used to find nothing, because only the active plan's window
+    was searched, and race week then read as missed. With more than one
+    candidate the type wins, then the closest intensity band. A recovery
+    spin and a VO2 session on the same day no longer get confused. The score
+    is the deterministic one (no model call), so this is safe to run on
+    every import, including a thousand-ride backfill.
     """
     if not ride.ride_date or ride.workout_id:
         return None
-    plan = _active_plan(db, ride.user_id)
     day = ride.ride_date.date() if hasattr(ride.ride_date, "date") else ride.ride_date
-    if plan is not None and not (plan.start_date <= day <= plan.end_date):
-        plan = None  # outside the plan, only a booked session can match
     candidates = [
-        w for w in _planned_on(db, ride.user_id, plan, day)
+        w for w in _planned_on(db, ride.user_id, day)
         if w.actual_ride_id is None
         and w.status in (WorkoutStatus.planned, WorkoutStatus.modified)
         and w.workout_type != WorkoutType.rest.value
@@ -156,20 +150,37 @@ def link_ride(db: Session, ride: Ride) -> Workout | None:
     return workout
 
 
+def _open_span(db: Session, user_id: str) -> tuple[date, date] | None:
+    """First and last day of the calendar's sessions still waiting on a ride."""
+    first, last = (
+        visible_workouts(db, user_id)
+        .filter(
+            Workout.actual_ride_id.is_(None),
+            Workout.status.in_([WorkoutStatus.planned, WorkoutStatus.modified]),
+        )
+        .with_entities(func.min(Workout.scheduled_date), func.max(Workout.scheduled_date))
+        .one()
+    )
+    return (first, last) if first else None
+
+
 def classify_unlinked_rides(db: Session, user_id: str, since: date | None = None) -> dict:
-    """Run link_ride over every ride in the active plan's window that has not
-    been matched yet. Idempotent. Returns counts."""
-    plan = _active_plan(db, user_id)
-    if plan is None:
-        return {"linked": 0, "checked": 0, "reason": "no active plan"}
-    start = max(plan.start_date, since) if since else plan.start_date
+    """Run link_ride over every unmatched ride on a day that still has a
+    session waiting on the calendar, from any plan, ended or not. Idempotent.
+    Returns counts."""
+    span = _open_span(db, user_id)
+    if span is None:
+        return {"linked": 0, "checked": 0, "reason": "no session waiting on a ride"}
+    start, end = span
+    if since:
+        start = max(start, since)
     rides = (
         db.query(Ride)
         .filter(
             Ride.user_id == user_id,
             Ride.workout_id.is_(None),
             Ride.ride_date >= datetime.combine(start, datetime.min.time()),
-            Ride.ride_date <= datetime.combine(plan.end_date, datetime.max.time()),
+            Ride.ride_date <= datetime.combine(end, datetime.max.time()),
         )
         .order_by(Ride.ride_date)
         .all()
@@ -204,29 +215,39 @@ def _deviation(workout: Workout, ride: Ride) -> str:
 def compliance_summary(
     db: Session, user_id: str, start: date, end: date, include_rides: bool = True
 ) -> dict | None:
-    """The three-way read for a date window inside the active plan.
+    """The three-way read for a date window, over the sessions on the
+    rider's calendar: the active plan's, an ended plan's up to its last day,
+    and any booked in chat. The window used to stop at the active plan's
+    edges, so the morning after a race, once the base block had started that
+    day, the build-up and race week vanished from what the coach could see.
+    The window starts no earlier than the rider's first session ever, so the
+    months before their first plan are not counted as off-plan riding.
 
-    Returns None when there is no active plan (nothing to comply with)."""
-    plan = _active_plan(db, user_id)
-    if plan is None:
+    Returns None when nothing was planned in the window (nothing to comply
+    with)."""
+    first = (
+        visible_workouts(db, user_id)
+        .with_entities(func.min(Workout.scheduled_date))
+        .scalar()
+    )
+    if first is None:
         return None
-    start = max(start, plan.start_date)
-    end = min(end, plan.end_date)
+    start = max(start, first)
     if start > end:
         return None
 
     workouts = (
-        db.query(Workout)
-        .outerjoin(TrainingPhase, Workout.phase_id == TrainingPhase.id)
+        visible_workouts(db, user_id)
         .filter(
-            Workout.user_id == user_id,
-            _in_scope(plan),
             Workout.scheduled_date >= start,
             Workout.scheduled_date <= end,
         )
         .order_by(Workout.scheduled_date, Workout.sort_order)
         .all()
     )
+    if not workouts:
+        return None
+    plan = _active_plan(db, user_id)
     rides = (
         db.query(Ride)
         .filter(
@@ -277,7 +298,7 @@ def compliance_summary(
 
     total_planned = len([w for w in workouts if str(w.workout_type).split(".")[-1] != WorkoutType.rest.value])
     summary = {
-        "plan": plan.name,
+        "plan": plan.name if plan else None,
         "window": {"start": str(start), "end": str(end)},
         "planned_sessions": total_planned,
         "as_prescribed": len(as_prescribed),

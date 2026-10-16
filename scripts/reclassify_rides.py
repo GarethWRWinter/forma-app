@@ -18,7 +18,7 @@ from app.services.plan_compliance_service import classify_unlinked_rides, compli
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--email", required=True)
-    ap.add_argument("--since", help="YYYY-MM-DD (default: plan start)")
+    ap.add_argument("--since", help="YYYY-MM-DD (default: the first session still waiting on a ride)")
     args = ap.parse_args()
     db = SessionLocal()
     try:
@@ -31,7 +31,7 @@ def main() -> None:
         today = date.today()
         cs = compliance_summary(db, user.id, today - timedelta(days=28), today)
         if not cs:
-            print("no active plan"); return
+            print("nothing planned in the last 28 days"); return
         for k in ("plan", "planned_sessions", "as_prescribed", "deviated", "missed", "skipped", "off_plan_rides", "off_plan_on_rest_days"):
             print(f"  {k}: {cs[k]}")
         for d in cs.get("deviations", []):
