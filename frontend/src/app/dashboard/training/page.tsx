@@ -516,8 +516,8 @@ export default function TrainingPage() {
           <p className="mt-2 max-w-md text-sm text-white/60">
             {activePlan && !activePlan.goal_event_id && (
               <>
-                Your base block keeps the weeks ticking over gently
-                meanwhile.{" "}
+                Your base block is running, so the sessions are there when
+                you want them.{" "}
               </>
             )}
             No new goal needed yet. When you’re ready, we can talk it&nbsp;through.

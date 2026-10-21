@@ -3891,12 +3891,32 @@ _FILE_NOT_SAVED = ("Nothing was saved", "Not saved", "The save failed")
 
 # A confirmation that opens a sentence after a tool call: "Done, that
 # session's skipped", "Confirmed: your account's on a full hold".
-_CONFIRM_LEAD_RX = re.compile(
-    r"^\W*(?:all done|done and dusted|done|sorted|that's done|that's sorted|that's "
+_CONFIRM_WORDS = (
+    r"all done|done and dusted|done|sorted|that's done|that's sorted|that's "
     r"in|confirmed|ok(?:ay)?,? done|right,? done|all set|there we go|there you go|"
-    r"hold applied|applied|that's applied|great,? done|perfect,? done)\b[,.:;!]*\s*",
-    re.I,
+    r"hold applied|applied|that's applied|great,? done|perfect,? done"
 )
+_CONFIRM_LEAD_RX = re.compile(r"^\W*(?:" + _CONFIRM_WORDS + r")\b[,.:;!]*\s*", re.I)
+# A sentence that is nothing but a confirmation, in the words above or the
+# plan tools' own ("Booked."), matched on _norm(sentence).strip(). It names
+# nothing, so it is only true when a plan change went in this turn and
+# nothing else happened (_CheckedReply._release_confirmation).
+_BARE_CONFIRM_RX = re.compile(
+    r"\W*(?:" + _CONFIRM_WORDS + r"|(?:all |that's |it's )?(?:booked|added|skipped|"
+    r"swapped|moved|updated)(?: in)?)\b[^\w:]*"
+)
+
+
+def _plan_went_in(name: str, result: str) -> bool:
+    """A tool result saying the plan changed, read as ReplyGuard reads it: a
+    plan tool's success, or a goal tool that rebuilt the plan."""
+    if name in safety_screen._PLAN_TOOLS:
+        return result.startswith(safety_screen._PLAN_DONE)
+    return name in safety_screen._GOAL_TOOLS and any(
+        line in result for line in safety_screen._PLAN_REBUILT
+    )
+
+
 # A word the model opens a fresh message with after a tool call.
 _INTERJECTION_RX = re.compile(
     r"^\W*(?:(?:ah+|oh|hmm+)\b[,.!:;]*|(?:ok(?:ay)?|right|alright|so|got it|perfect|"
@@ -4279,7 +4299,8 @@ class _CheckedReply(safety_screen.ReplyGuard):
         confirmations after a tool ("Done, that session's skipped",
         "Confirmed: ...") are taken out, a fresh message's "Ah," goes, and a
         sentence after a tool call that only repeats one already sent is
-        dropped;
+        dropped; a bare "Done." goes out only as the reply's last words after
+        a plan change that went in (_release_confirmation);
       - a sentence said word for word a second time goes (live round 2: "Are
         you safe right now?" twice, R16 and L11);
       - "I'm skipping Tuesday's session" waits for the tool, like "I've
@@ -4338,6 +4359,14 @@ class _CheckedReply(safety_screen.ReplyGuard):
         # skipping Tuesday's session"), when it would say it twice.
         self._change_done = False
         self._change_said = False
+        # A sentence that is only a confirmation ("Done.", "All set."),
+        # held until the reply ends: what follows it says the change better,
+        # and with nothing after it, it is the reply (_release_confirmation).
+        self._held_confirm = ""
+        # A tool this turn was refused, or did something other than change
+        # the plan (a hold, a flag, a proposal, a file, a goal with no plan
+        # rebuilt): a bare "Done." would then claim more than happened.
+        self._done_overclaims = False
 
     def absorb(self, screen) -> None:
         """Take in the turn's red flags again after a late verdict added to
@@ -4406,6 +4435,10 @@ class _CheckedReply(safety_screen.ReplyGuard):
             and not (result or "").startswith(_CHANGED_NOTHING + _FILE_NOT_SAVED)
             for name, result in results
         )
+        self._done_overclaims = self._done_overclaims or any(
+            name not in _RIDE_LOOKUP_TOOLS and not _plan_went_in(name, result or "")
+            for name, result in results
+        )
         return out
 
     def finish_body(self) -> str:
@@ -4414,7 +4447,29 @@ class _CheckedReply(safety_screen.ReplyGuard):
         out = self._take(self._buf) if self._buf.strip() else ""
         self._buf = ""
         self._drop_dangling_colon()
-        return out + self._resolve(final=True)
+        out += self._resolve(final=True)
+        return out + self._release_confirmation()
+
+    def _release_confirmation(self) -> str:
+        """A bare confirmation nothing followed is the reply's last word on
+        the change. Always dropped, it left a booked session under the
+        no-reply apology. It goes out only when a plan tool's change went in
+        this turn, nothing was refused or done besides, and the reply did not
+        already say the change before the call. Before any tool, after a
+        refusal, a hold or a lookup alone, it is a claim nothing backs, and
+        goes. Never in a turn with a red flag: there a reply of nothing but
+        "Done." gets the whole fixed reply instead (finish_tail), as it
+        always has."""
+        held, self._held_confirm = self._held_confirm, ""
+        if not held.strip():
+            return ""
+        if (
+            not self._plan_done or self._done_overclaims or self._change_said
+            or self.kinds
+        ):
+            self._drop(held, "a confirmation no plan change backs")
+            return ""
+        return self._emit(held)
 
     def finish_tail(self) -> str:
         """The whole fixed reply if nothing reached the rider in a safety
@@ -4499,6 +4554,12 @@ class _CheckedReply(safety_screen.ReplyGuard):
         if _NARRATION_RX.search(low) or _FILLER_RX.fullmatch(low):
             self._drop(segment, "tool narration")
             return None
+        if _BARE_CONFIRM_RX.fullmatch(low):
+            # Held, in any round: one written before the tool waits for it.
+            if self._held_confirm.strip():
+                self._drop(self._held_confirm, "a confirmation said twice")
+            self._held_confirm = segment
+            return None
         if self._round == 0:
             return segment
         m = _CONFIRM_LEAD_RX.match(segment)
@@ -4538,6 +4599,11 @@ class _CheckedReply(safety_screen.ReplyGuard):
     def _emit(self, text: str) -> str:
         if not text:
             return ""
+        if self._held_confirm and self._own_words and text.strip():
+            # The coach went on: its words say what is now true, and the
+            # "Done." goes, as a leading "Done," does.
+            self._drop(self._held_confirm, "a confirmation with words after it")
+            self._held_confirm = ""
         if self._break and text[:1] in (" ", "\t"):
             text = text.lstrip(" \t")
             if not text:
@@ -5889,6 +5955,7 @@ def _child_reply_after(guard: "safety_screen.ReplyGuard", scrub: StreamHumanizer
     guard._buf = ""
     guard._pending = []
     guard._colon = ""
+    guard._held_confirm = ""
     return _child_reply(guard)
 
 

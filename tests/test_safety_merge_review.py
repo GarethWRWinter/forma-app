@@ -268,6 +268,124 @@ def test_a_short_confirmation_after_a_booking_reaches_the_rider(
     assert db_session.query(Workout).count() == 1
 
 
+BARE = ["Done.", "All set.", "Booked."]
+
+
+@pytest.mark.parametrize("voice", [False, True], ids=["chat", "voice"])
+@pytest.mark.parametrize("confirmation", BARE)
+def test_a_bare_confirmation_after_a_booking_reaches_the_rider(
+    db_session, rider, scripted_model, voice, confirmation
+):
+    """A whole reply of "Done." after add_workout said "Booked." was dropped
+    as narration: nothing was left, and the rider was told the coach could
+    not answer over a session that was booked. Main sends it as it is."""
+    scripted_model.append(([], [_booking(scripted_model.tool_use, "endurance")]))
+    scripted_model.append(([confirmation], ()))
+
+    chunks, said, stored = _send(db_session, rider, "Book me an easy ride on Monday", voice)
+
+    assert scripted_model.calls[1]["messages"][-1]["content"][0]["content"].startswith("Booked.")
+    assert said.strip() == confirmation
+    assert any(c["type"] == "plan_updated" for c in chunks)
+    assert not (stored.context_snapshot or {}).get("fallback")
+    assert db_session.query(Workout).count() == 1
+
+
+@pytest.mark.parametrize("confirmation", BARE)
+def test_a_bare_confirmation_after_a_refused_booking_is_dropped(
+    db_session, rider, scripted_model, confirmation
+):
+    _injured(db_session, rider)
+    scripted_model.append(([], [_booking(scripted_model.tool_use)]))
+    scripted_model.append(([confirmation], ()))
+
+    chunks, said, _ = _send(db_session, rider, "Can you add a threshold session on Tuesday?")
+
+    assert scripted_model.calls[1]["messages"][-1]["content"][0]["content"].startswith(
+        "Not changed"
+    )
+    assert confirmation not in said
+    assert not any(c["type"] == "plan_updated" for c in chunks)
+    assert db_session.query(Workout).count() == 0
+
+
+@pytest.mark.parametrize("confirmation", BARE)
+@pytest.mark.parametrize("lookup", [False, True], ids=["no tool", "a lookup only"])
+def test_a_bare_confirmation_with_no_plan_tool_behind_it_is_dropped(
+    db_session, rider, scripted_model, confirmation, lookup
+):
+    if lookup:
+        scripted_model.append(([], [scripted_model.tool_use("find_ride", {"query": "yesterday"})]))
+    scripted_model.append(([confirmation], ()))
+
+    _, said, stored = _send(db_session, rider, "Book me an easy ride on Monday")
+
+    assert confirmation not in said
+    assert said.strip() == coach_service._NO_REPLY_FALLBACK
+    assert stored.context_snapshot["fallback"] is True
+    assert db_session.query(Workout).count() == 0
+
+
+def test_a_bare_confirmation_after_a_change_announced_before_the_tool_is_dropped(
+    db_session, rider, scripted_model
+):
+    announced = "I'm booking you an easy ride on Monday."
+    scripted_model.append(([announced], [_booking(scripted_model.tool_use, "endurance")]))
+    scripted_model.append((["Done."], ()))
+
+    _, said, _ = _send(db_session, rider, "Book me an easy ride on Monday")
+
+    assert said.strip() == announced
+    assert db_session.query(Workout).count() == 1
+
+
+def _plain_guard():
+    return coach_service._CheckedReply(None, "GB", lambda: None)
+
+
+BOOKED = ("add_workout", "Booked. 'Easy spin' (60 min) is on Monday 19 October.")
+
+
+def test_a_bare_confirmation_is_the_last_word_or_none():
+    """It goes out after a booking only when nothing follows it, so "Done.
+    It's on Monday." still loses its "Done"; one written before the tool
+    waits for the tool, and goes only if the booking went in."""
+    guard = _plain_guard()
+    guard.feed("Easy it is.")
+    guard.before_tools()
+    guard.after_tools([BOOKED])
+    assert guard.round_break() + guard.feed("Done.") + guard.finish_body() == "\n\nDone."
+
+    guard = _plain_guard()
+    guard.before_tools()
+    guard.after_tools([BOOKED])
+    out = guard.feed("Done. It's on Monday 19 October.") + guard.finish_body()
+    assert out == "It's on Monday 19 October."
+
+    guard = _plain_guard()
+    assert guard.feed("All set. ") + guard.before_tools() == ""
+    assert guard.after_tools([BOOKED]) == ""
+    assert guard.finish_body() == "All set. "
+
+    guard = _plain_guard()
+    guard.feed("All set. ")
+    guard.before_tools()
+    guard.after_tools([BOOKED, ("add_workout", "Not changed: an injury hold is open.")])
+    assert guard.finish_body() == "" and "All set." in guard.dropped
+
+    guard = _plain_guard()
+    guard.before_tools()
+    guard.after_tools([BOOKED, ("apply_safety_hold", "Hold applied now.")])
+    assert guard.feed("Done.") + guard.finish_body() == ""
+
+    # A red-flag turn keeps its whole fixed reply over a bare "Done.".
+    guard = _plain_guard()
+    guard.kinds = {"injury"}
+    guard.before_tools()
+    guard.after_tools([BOOKED])
+    assert guard.feed("Done.") + guard.finish_body() == ""
+
+
 @pytest.mark.parametrize("claim", [
     "I'm booking you a threshold session on Tuesday.",
     "I'm putting a threshold session in on Tuesday.",

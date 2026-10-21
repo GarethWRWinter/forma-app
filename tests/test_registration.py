@@ -268,6 +268,17 @@ def test_the_allowlist_is_the_uk_only_matching_the_terms():
     assert "available to people who live in the United Kingdom" in terms
 
 
+def test_the_coach_says_who_can_join_as_the_server_does():
+    """Product knowledge told the coach a rider in an EU country could sign
+    up, while the server and the terms let in the UK only."""
+    knowledge = (Path(app_config.__file__).parent / "core" / "product_knowledge.md").read_text(
+        encoding="utf-8"
+    )
+    assert app_config.DEFAULT_ALLOWED_COUNTRIES == ("GB",)
+    assert "Where you live (only the UK for now;" in knowledge
+    assert "EU country" not in knowledge
+
+
 @pytest.mark.parametrize("code", sorted(EU_MEMBER_STATES))
 def test_eu_countries_are_refused_until_the_terms_cover_them(api, code):
     client, db, sent, _ = api

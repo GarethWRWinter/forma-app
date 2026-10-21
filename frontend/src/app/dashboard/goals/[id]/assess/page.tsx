@@ -450,10 +450,11 @@ export default function AssessPage() {
           <h2 className="f-display text-xl text-vb-text">{filed.heading}</h2>
           <p className="mt-1 text-xs text-vb-text-dim">
             {filed.sub}
-            {/* Filing it can put the rider on the base block, which opens
-                with an easy week after a DNF or DNS (season_service). */}
+            {/* Filing it can put the rider on the base block. It opens with
+                an easy week only after a DNF or DNS the body caused
+                (season_service), so the line promises no easy weeks. */}
             {!!plan && !plan.goal_event_id && (
-              <> Your base block keeps the weeks ticking over gently&nbsp;meanwhile.</>
+              <> Your base block is running, so the sessions are there when you want&nbsp;them.</>
             )}
           </p>
           <div className="f-stagger mt-4 grid gap-2 sm:grid-cols-2">
