@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { RefreshCw, AlertTriangle } from "lucide-react";
@@ -9,7 +9,14 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { CoachDock, useCoachDockVisible } from "@/components/coach/coach-dock";
 import { auth, billing } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { profileConsentDue } from "@/lib/profileConsent";
 import { useStravaAutoSync } from "@/hooks/useStravaAutoSync";
+import { HoldBanner } from "@/components/safety/HoldBanner";
+import { useSafetyState } from "@/components/safety/useSafetyState";
+import { isMinorHeld } from "@/lib/accountExits";
+import { ReacceptTermsModal } from "@/components/safety/ReacceptTermsModal";
+import { RescreenPrompt } from "@/components/dashboard/rescreen-prompt";
+import { RebuildPlanOffer } from "@/components/dashboard/rebuild-plan-offer";
 import { cn } from "@/lib/utils";
 
 function VerifyEmailBanner() {
@@ -44,7 +51,9 @@ function VerifyEmailBanner() {
     hasn't joined. Without it, an unpaid rider met the paywall as errors:
     the coach said "send that again" and uploads failed with no reason
     (launch audit, 4 Oct 2026). Shares its query with the Membership card, so
-    it disappears the moment Stripe confirms the payment. */
+    it disappears the moment Stripe confirms the payment. Never for an
+    account held as under 18: checkout refuses it, and the hold banner
+    already says why. */
 function MembershipBanner() {
   const [error, setError] = useState("");
   const [opening, setOpening] = useState(false);
@@ -52,7 +61,10 @@ function MembershipBanner() {
     queryKey: ["billing-status"],
     queryFn: () => billing.getStatus(),
   });
+  // The hold banner's cache entry, so this adds no request.
+  const { data: safetyState } = useSafetyState();
   if (!status?.configured || !status.required || status.has_access) return null;
+  if (isMinorHeld(safetyState)) return null;
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-vb-border-subtle bg-vb-surface px-4 py-3 sm:px-8">
       <p className="max-w-2xl text-sm text-vb-text-dim">
@@ -89,6 +101,11 @@ export default function DashboardLayout({
 }) {
   const { user, loading } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
+  // The dashboard carries the full hold card at its top, and the session
+  // player is ride mode, which gates held sessions itself. Everywhere else
+  // an open hold runs across the top of the page.
+  const showHoldStrip = pathname !== "/dashboard" && !pathname.includes("/session");
   // When the dock holds the bottom corner, the sync toast stacks above it.
   const dockVisible = useCoachDockVisible();
 
@@ -124,6 +141,8 @@ export default function DashboardLayout({
       <Sidebar />
       <main className="flex-1 overflow-y-auto bg-vb-bg pt-14 md:pt-0">
         {user.email_verified === false && <VerifyEmailBanner />}
+        {showHoldStrip && <HoldBanner variant="strip" />}
+        {showHoldStrip && <RebuildPlanOffer variant="strip" />}
         <MembershipBanner />
         {/* flex column at min-h-full so a page can opt into filling the exact
             remaining height with flex-1, instead of guessing it with a vh calc
@@ -136,6 +155,22 @@ export default function DashboardLayout({
       {/* Forma is always one tap away. Hidden where the coach already owns
           the surface (the coach page, the carbon session player). */}
       <CoachDock />
+
+      {/* Terms changed since this rider last agreed (or they never did), or
+          the account has no date of birth or country (the beta riders,
+          needs_profile_consent): nothing else in the app works until they
+          agree again and give both. It carries its own ways out (Manage
+          billing, Download my data, Delete my account, Log out), since it
+          covers Settings, and an account held as under 18 sees only the
+          adults-only message and those. */}
+      <ReacceptTermsModal />
+
+      {/* Then the health questions, while they are due: never answered (the
+          beta accounts), a new question set, a year old, or a red flag
+          since. Blocking like the terms, never over ride mode. Not until the
+          server knows the rider's age: an under-18's health answers are
+          never asked for. */}
+      {!profileConsentDue(user) && <RescreenPrompt />}
 
       {/* Auto-sync toast, editorial chip with red accent on errors. */}
       {(syncing || (lastSyncedCount != null && lastSyncedCount > 0) || lastError) && (

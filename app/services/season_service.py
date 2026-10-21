@@ -62,6 +62,7 @@ class _Snapshot:
     extra: list[TrainingPlan]  # current too, but older than `current`
     ever_planned: bool
     last_model: str | None  # the periodisation of the newest plan
+    minor_held: bool = False  # held as possibly under 18: nothing is built
 
 
 def _status(goal: GoalEvent) -> str:
@@ -93,6 +94,13 @@ def _read(db: Session, user: User, today: date) -> _Snapshot:
     active = [p for p in plans if p.status == PlanStatus.active]
     running = [p for p in active if p.end_date >= today]
     model = plans[0].periodization_model if plans else None
+    try:
+        from app.services.plan_review_service import minor_hold_open
+
+        minor_held = minor_hold_open(db, user)
+    except Exception:
+        logger.exception("Checking for an under-18 hold failed (user=%s)", user.id)
+        minor_held = True  # fail closed: nothing is built for a child
     return _Snapshot(
         future=future,
         held={g.id for g in future} | {g.id for g in goals if g.event_date == today},
@@ -103,6 +111,7 @@ def _read(db: Session, user: User, today: date) -> _Snapshot:
         extra=running[1:],
         ever_planned=bool(plans),
         last_model=getattr(model, "value", model),
+        minor_held=minor_held,
     )
 
 
@@ -115,10 +124,11 @@ def _state(snap: _Snapshot) -> str:
 
 
 def _eligible(user: User, snap: _Snapshot) -> bool:
-    """Riders the keeper may build for: past setup, and members."""
+    """Riders the keeper may build for: past setup, and members. Never an
+    account held as possibly under 18: nothing about them is generated."""
     from app.services.billing_service import has_access
 
-    if not user.is_active or user.deleted_at is not None:
+    if not user.is_active or user.deleted_at is not None or snap.minor_held:
         return False
     if not snap.ever_planned:
         return False
@@ -225,15 +235,31 @@ def season_note(state: dict, in_chat: bool = True) -> str | None:
         parts.append(f"They are on '{plan['name']}' until {_say_date(plan['end'])}.")
     else:
         parts.append("They have no current plan, so only the sessions in this_week are booked.")
+    # After a DNF or DNS the debrief law in the education leads: no pitch for
+    # a new target unless the rider asks, and never "how did it go".
+    setback = last["status"] in (GoalStatus.dnf.value, GoalStatus.dns.value)
     if in_chat:
         then = (
             "the plan is rebuilt around it at once." if state.get("rebuilds")
             else "they build the plan from Goal, then Build my season."
         )
+        if setback:
+            parts.append(
+                f"It ended as {last['status'].upper()}, so the debrief law for a DNF "
+                "or DNS leads: do not propose a new goal unless they ask for one or "
+                "say this one still stands. When they do, file it with create_goal "
+                f"and {then}"
+            )
+        else:
+            parts.append(
+                "Propose the next goal yourself from what you know of them and their "
+                "riding; do not ask whether they want one. When they agree, file it "
+                f"with create_goal and {then}"
+            )
+    elif setback:
         parts.append(
-            "Propose the next goal yourself from what you know of them and their "
-            "riding; do not ask whether they want one. When they agree, file it "
-            f"with create_goal and {then}"
+            f"It ended as {last['status'].upper()}: do not propose a new goal and "
+            "do not ask how the race went. Spend the one question on how they are."
         )
     elif not last["result_recorded"]:
         # The morning message has one question, and it goes on the race.

@@ -30,13 +30,18 @@ def db_session():
 def _no_real_model_provider(monkeypatch):
     """No test reaches the real model provider, whatever key is in the
     environment: the one provider client (forma_core._client) refuses, so an
-    unfaked call fails as if the provider were down."""
+    unfaked call fails as if the provider were down. The chat's safety
+    classifier is off unless a test brings it in by setting
+    coach_service._load_classifier itself, so it never takes a scripted
+    reply meant for the coach."""
     from app.core import forma_core
+    from app.services import coach_service
 
     def refuse():
         raise RuntimeError("a test tried to reach the real model provider")
 
     monkeypatch.setattr(forma_core, "_client", refuse)
+    monkeypatch.setattr(coach_service, "_load_classifier", lambda: None)
 
 
 @pytest.fixture(autouse=True)
@@ -181,4 +186,5 @@ def scripted_model(monkeypatch):
     monkeypatch.setattr(coach_service, "_dossier_block", lambda *a, **k: "")
     monkeypatch.setattr("app.services.memory_service.extract_memories", lambda *a, **k: None)
     monkeypatch.setattr("app.services.voice_service.is_voice_enabled", lambda: False)
+    monkeypatch.setattr("app.services.safety_screen.alert_founder", lambda *a, **k: None)
     return script

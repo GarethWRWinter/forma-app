@@ -229,7 +229,9 @@ def test_a_chat_without_files_has_no_files_block(db_session, gareth, model):
     chat = _chat(db_session, gareth, "s-empty")
     _send(db_session, gareth, chat, "How was my week?")
     assert _files_text(model[0]) is None
-    assert len(model[0]["system"]) == 2
+    # Two cached blocks, education and rider context. The uncached block
+    # after them is this turn's notes (the first reply's AI disclosure).
+    assert sum("cache_control" in b for b in model[0]["system"]) == 2
 
 
 def test_history_says_which_message_carried_which_file(db_session, gareth, model):

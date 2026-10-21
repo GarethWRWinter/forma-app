@@ -128,22 +128,60 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
 3. [x] Founding price DECIDED (11 Aug 2026): £14.99/mo locked for as long as
        they stay; £19.99 list. Stripe: create the £14.99 recurring price and
        point STRIPE_PRICE_ID at it for the founding cohort.
-4. [~] **Company, bank, Stripe.** FORMA CYCLING LTD is registered at Companies
+4. [x] **Company, bank, Stripe.** FORMA CYCLING LTD is registered at Companies
        House (formed via 1st Formations Privacy package, with registered office and
        director's service address, Sep 2026). Starling Business account open and
-       the £100 share capital paid in (Oct 2026). Stripe sandbox wired and
-       VERIFIED 1 Oct 2026 end to end on a test rider: checkout session, customer
-       link, test-card subscription, webhook 200, account active with renewal date,
-       billing portal, cancellation recorded. Remaining: Gareth's own click-through
-       with the 4242 test card; then live mode (account verification, live product
-       and £14.99 price, live webhook to the same URL, live customer portal saved,
-       live keys on Railway). REQUIRE_SUBSCRIPTION=true only on the day doors open.
+       the £100 share capital paid in (Oct 2026). **Stripe LIVE 13 Oct 2026**, proven
+       with a real card: £14.99 charged (statement RIDEWITHFORMA.COM, fee 42p),
+       webhook 200, account active, portal cancellation recorded, full refund.
+       Live price price_1ULnnHQ23IT5B7Ec0G5SwWwW; webhook "Forma backend" (4 events,
+       API 2026-08-26.dahlia); portal saved (cancel at period end with reasons,
+       name and address only); key "Forma backend" is full access except sensitive
+       operations (rotated once on 13 Oct after it showed on screen). Sandbox
+       customer links cleared from all accounts.
+       Ships with the next backend deploy: migration b8t9g0h1u2z3 (pending
+       cancellation date, because the portal now cancels via cancel_at), then
+       run scripts/backfill_subscription_cancel_at.py (dry run, then --commit).
+       Before doors open: portal privacy and terms links once the pages are live;
+       check Stripe customer emails (successful payments, refunds) are on.
+       To refund a rider: cancel the subscription Immediately with a refund of the
+       last payment, in one step. REQUIRE_SUBSCRIPTION=true only on the day doors open.
 5. [~] Legal pages (privacy incl. "founder reviews conversations", "coach emails you";
        terms) + ICO registration. Monitoring is done (Sentry + UptimeRobot).
        DRAFTED 4 Oct 2026: prd/legal/privacy-policy.md and terms.md, with CONFIRM
        and DECIDE marks for Gareth. Publish at ridewithforma.com/privacy and /terms
        (the register page already links there). Health-data consent is live at
        registration.
+5f. [ ] **LAUNCH GATE: Safety system (built 8 Oct 2026):** red team re-run with
+       the live model and no reply rated unsafe; Kickr test of ERG cap, sprint
+       release, pause and stop; FORMA_EDGE_SECRET set on Vercel and Railway;
+       ip-check confirmed on a real request. The build was tested with the model
+       mocked, so the red team runs again against the production model, every
+       reply read and rated. On the Kickr, in ride mode: ERG never holds above
+       130% of FTP (or the rider's lower safety cap), a sprint above it runs with
+       ERG released, Pause eases the trainer to 40% of FTP, and Stop releases it
+       at once. Without the edge secret, a direct call to Railway with a forged
+       x-vercel-id picks its own address and gets round every rate limit
+       (registration, invite codes, the waitlist). Use 32 or more random
+       characters, the same value on both. Set it on Vercel and redeploy the
+       frontend first, then on Railway: the other order puts every rider in
+       Vercel's one bucket until the frontend catches up. Then the ip-check:
+       open https://app.ridewithforma.com/api/v1/auth/ip-check in a browser
+       and client_ip must be your own address with via_edge true; the same path
+       called straight at Railway must show via_edge false. If client_ip is one
+       of Vercel's addresses, every rider shares one bucket: doors stay shut
+       until it's fixed. Before the secret is set on Railway, ip-check always
+       shows client_ip null and via_edge null: that is by design, not a fault,
+       so run it only after the secret is on both. The red team run also puts
+       the round 4 sweep (303 ordinary and 84 red-flag messages:
+       ROUND4_ORDINARY and ROUND4_MISSED in tests/test_safety_screen.py)
+       through the live safety classifier and
+       checks its latency in forma_calls (task safety_classify): until the
+       Anthropic account has credit, every classifier call fails and the regex
+       check runs alone. From the day doors open, the daily routine is
+       prd/legal/safeguarding-protocol.md: the review list every morning and
+       every alert checked within 24 hours. Doors do not open with any of the
+       four unchecked.
 5e. [x] **Backups (7 Oct 2026).** Railway's scheduled backups need the Pro plan,
        so they run free instead: nightly encrypted dumps by GitHub Actions in the
        private repo GarethWRWinter/forma-db-backups (5 days kept), plus a weekly
@@ -151,6 +189,9 @@ Trigger: 100+ signals on the list, Stripe live, legal pages up.
        Postgres login forma_backup. Restore drill passed: 34/34 tables,
        3,375,452 rows, every count matching production. Passphrase and URL in the
        Mac's Keychain (forma-db-backup-passphrase, forma-db-backup-url).
+5f. [x] **ICO registration done 8 Oct 2026:** Forma Cycling Ltd, reference ZC269008,
+       expires 7 Oct 2027 (renew annually; certificate in Forma /Admin). Number is in
+       the privacy policy.
 5d. [x] **LAUNCH GATE: Wahoo app in Production mode, webhook token set.** Done
        7 Oct 2026: app is Production and Approved; WAHOO_WEBHOOK_TOKEN set and
        token-less events now refused (403). Sandbox

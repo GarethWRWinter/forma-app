@@ -48,6 +48,10 @@ class WaitlistEntry(Base):
     )
     # The answer to the one question the page asks: which ride is this for.
     goal: Mapped[str | None] = mapped_column(String(280), nullable=True)
+    # ISO country code, when the rider gave one. The register page sends it
+    # for riders Forma can't take yet (the US and Canada), so they can be
+    # told apart from the founding queue. Null from the landing page form.
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )

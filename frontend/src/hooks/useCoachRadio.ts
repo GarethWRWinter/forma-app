@@ -8,7 +8,11 @@ import {
 } from "@/lib/coachMessages";
 import { getZoneFromPct } from "@/lib/trainingZones";
 import { chat } from "@/lib/api";
-import type { SessionStep, SessionStatus } from "@/hooks/useTrainingSession";
+import type {
+  EaseOffEvent,
+  SessionStep,
+  SessionStatus,
+} from "@/hooks/useTrainingSession";
 
 interface UseCoachRadioOptions {
   status: SessionStatus;
@@ -22,6 +26,19 @@ interface UseCoachRadioOptions {
   ftp: number;
   livePower: number;
   enabled: boolean;
+  /** Any step at or above 105% of FTP, or a VO2max or sprint session. */
+  hardSession: boolean;
+  /** The trainer is connected and taking ERG targets, so pausing really
+      does take the resistance off. */
+  trainerControlled: boolean;
+  /** Sprint above the ERG cap: the number is the rider's to chase, so no
+      "too hot" or "too low" calls. */
+  ergReleased: boolean;
+  /** The current step eases off on its own when power drops, so the
+      low-power call comes from that instead of the deviation check. */
+  easeOffEligible: boolean;
+  /** Latest ease-off; a new id plays the low-power cue once. */
+  easeOff: EaseOffEvent | null;
 }
 
 export interface UseCoachRadioReturn {
@@ -50,6 +67,11 @@ export function useCoachRadio(options: UseCoachRadioOptions): UseCoachRadioRetur
     ftp,
     livePower,
     enabled,
+    hardSession,
+    trainerControlled,
+    ergReleased,
+    easeOffEligible,
+    easeOff,
   } = options;
 
   const [currentMessage, setCurrentMessage] = useState<string | null>(null);
@@ -67,6 +89,7 @@ export function useCoachRadio(options: UseCoachRadioOptions): UseCoachRadioRetur
   const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const prevStatus = useRef<SessionStatus>("idle");
+  const lastEaseOffId = useRef(0);
 
   // Power deviation tracking (3-second rolling average)
   const powerReadings = useRef<number[]>([]);
@@ -82,11 +105,12 @@ export function useCoachRadio(options: UseCoachRadioOptions): UseCoachRadioRetur
   }, []);
 
   const showMessage = useCallback(
-    (trigger: CoachTrigger, context: CoachContext) => {
+    (trigger: CoachTrigger, context: CoachContext, priority = false) => {
       const now = Date.now();
 
-      // Anti-spam: minimum gap between messages
-      if (now - lastMessageTime.current < MIN_MESSAGE_GAP) return;
+      // Anti-spam: minimum gap between messages. Safety calls (pause, ease
+      // off) explain what the trainer just did, so they never wait.
+      if (!priority && now - lastMessageTime.current < MIN_MESSAGE_GAP) return;
 
       const msg = selectMessage(trigger, context, recentTemplates.current);
       if (!msg) return;
@@ -125,7 +149,7 @@ export function useCoachRadio(options: UseCoachRadioOptions): UseCoachRadioRetur
             });
           })
           .catch(() => {
-            // ElevenLabs unavailable — fail silently, text still shows
+            // ElevenLabs unavailable: fail silently, text still shows
           });
       }
 
@@ -178,7 +202,7 @@ export function useCoachRadio(options: UseCoachRadioOptions): UseCoachRadioRetur
     ftp,
   ]);
 
-  // === Trigger: workout_start ===
+  // === Trigger: workout_start (hard sessions get their own pool), pause ===
   useEffect(() => {
     if (
       status === "running" &&
@@ -187,11 +211,28 @@ export function useCoachRadio(options: UseCoachRadioOptions): UseCoachRadioRetur
       enabled
     ) {
       workoutStartFired.current = true;
+      const trigger: CoachTrigger = hardSession ? "workout_start_hard" : "workout_start";
       // Small delay so UI settles
-      setTimeout(() => showMessage("workout_start", buildContext()), 1500);
+      setTimeout(() => showMessage(trigger, buildContext()), 1500);
+    }
+    if (
+      status === "paused" &&
+      prevStatus.current === "running" &&
+      trainerControlled &&
+      enabled
+    ) {
+      showMessage("pause", buildContext(), true);
     }
     prevStatus.current = status;
-  }, [status, enabled, showMessage, buildContext]);
+  }, [status, enabled, hardSession, trainerControlled, showMessage, buildContext]);
+
+  // === Trigger: ease off (power below 70% of target for 20s on a work step) ===
+  useEffect(() => {
+    if (!enabled || !easeOff || easeOff.id === lastEaseOffId.current) return;
+    lastEaseOffId.current = easeOff.id;
+    // Name the number they couldn't hold, not the recovery it dropped to.
+    showMessage("power_too_low", { ...buildContext(), targetWatts: easeOff.fromWatts }, true);
+  }, [easeOff, enabled, showMessage, buildContext]);
 
   // === Trigger: workout_complete ===
   useEffect(() => {
@@ -213,7 +254,7 @@ export function useCoachRadio(options: UseCoachRadioOptions): UseCoachRadioRetur
       deviationStart.current = null;
       powerReadings.current = [];
 
-      // Fire step_start (skip for very first step — workout_start covers it)
+      // Fire step_start (skip for the very first step: workout_start covers it)
       if (workoutStartFired.current) {
         showMessage("step_start", buildContext());
       }
@@ -263,8 +304,8 @@ export function useCoachRadio(options: UseCoachRadioOptions): UseCoachRadioRetur
       showMessage("long_effort_check", buildContext());
     }
 
-    // Power deviation tracking
-    if (livePower > 0 && currentTargetWatts > 0) {
+    // Power deviation tracking (not on a released sprint: it's all theirs)
+    if (!ergReleased && livePower > 0 && currentTargetWatts > 0) {
       powerReadings.current.push(livePower);
       // Keep last 12 readings (~3s at 4Hz update rate)
       if (powerReadings.current.length > 12) {
@@ -291,7 +332,11 @@ export function useCoachRadio(options: UseCoachRadioOptions): UseCoachRadioRetur
           deviationStart.current = null;
           const trigger: CoachTrigger =
             ratio > 1 ? "power_too_high" : "power_too_low";
-          showMessage(trigger, buildContext());
+          // Low power on a work step is the ease-off's call, made once, with
+          // the trainer already backing off. No nagging before it.
+          if (trigger === "power_too_high" || !easeOffEligible) {
+            showMessage(trigger, buildContext());
+          }
         }
       } else {
         deviationStart.current = null;
@@ -305,6 +350,8 @@ export function useCoachRadio(options: UseCoachRadioOptions): UseCoachRadioRetur
     nextStep,
     livePower,
     currentTargetWatts,
+    ergReleased,
+    easeOffEligible,
     showMessage,
     buildContext,
   ]);

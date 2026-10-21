@@ -13,6 +13,8 @@ import { CoachInvite } from "@/components/dashboard/coach-invite";
 import { ActivationCard } from "@/components/dashboard/activation-card";
 import { SeasonCard } from "@/components/dashboard/season-card";
 import { currentPlan, seasonState } from "@/lib/season";
+import { HoldBanner } from "@/components/safety/HoldBanner";
+import { RebuildPlanOffer } from "@/components/dashboard/rebuild-plan-offer";
 import { Kicker } from "@/components/ui/kicker";
 import { SectionHeader } from "@/components/ui/section-header";
 import { DataTile } from "@/components/ui/data-tile";
@@ -250,9 +252,13 @@ export default function DashboardPage() {
   // Goal, so a rider on a long base block still hears from the coach. Only
   // for a rider who has had a plan: one who never has is still in setup,
   // and the setup card is what builds their first.
+  // After a DNF or DNS the coach pitches no next goal unless the rider asks
+  // (the debrief law in coach_skills), so the ask stays off Today.
   const season = seasonState(goalsData?.goals);
+  const setback =
+    season.lastGoal?.status === "dnf" || season.lastGoal?.status === "dns";
   const seasonAsks =
-    season.freshFromRace && (plans?.plans.length ?? 0) > 0;
+    season.freshFromRace && (plans?.plans.length ?? 0) > 0 && !setback;
 
   // Something the coach wants to raise. Held back until we know no proposal is
   // waiting and the between-goals ask is not taking the slot, so it never
@@ -414,6 +420,15 @@ export default function DashboardPage() {
           {greeting}, {firstName}.
         </h1>
       </header>
+
+      {/* ============ SAFETY HOLD ============
+          Above everything the coach wants to say: while a hold is open,
+          this is the most important thing on the page. */}
+      <HoldBanner variant="card" />
+      {/* Once a clearance or a lifted hold leaves nothing holding the rider
+          back, a plan written while riding was kept easy is offered a
+          rebuild at full strength. */}
+      <RebuildPlanOffer variant="card" />
 
       {/* ============ FINISH SETUP ============
           The only way back into the wizard. It sits above the coach

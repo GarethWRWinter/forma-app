@@ -227,6 +227,63 @@ export class CadenceCalculator {
   }
 }
 
+// === ERG Safety Limits ===
+// The last line of defence: whatever the session, the page or a bug asks
+// for, no Set Target Power command leaves this file above the ceiling.
+
+/** ERG never holds a trainer above this multiple of FTP. Steps above it
+    (sprints) run with ERG released, against the rider's own resistance. */
+export const ERG_CAP_PCT = 1.3;
+
+/** Absolute ceiling for any ERG target, FTP or no FTP. */
+export const ERG_ABSOLUTE_MAX_WATTS = 1000;
+
+let ergCeilingWatts: number | null = null;
+
+/** The ERG ceiling in watts for this FTP. A cap above ERG_CAP_PCT is ignored. */
+export function ergCeilingFor(ftp: number, capPct: number = ERG_CAP_PCT): number {
+  const pct = Number.isFinite(capPct) ? Math.min(capPct, ERG_CAP_PCT) : ERG_CAP_PCT;
+  return Math.floor(Math.max(0, ftp || 0) * pct);
+}
+
+/** Ride mode sets this from the rider's FTP; null falls back to the absolute
+    ceiling. */
+export function setErgCeiling(watts: number | null): void {
+  ergCeilingWatts =
+    watts === null || !Number.isFinite(watts) ? null : Math.max(0, Math.floor(watts));
+}
+
+export function getErgCeiling(): number | null {
+  return ergCeilingWatts;
+}
+
+/** A target the trainer may be given: whole watts, 0 or more, never above
+    the ceiling (or the absolute ceiling). */
+export function clampErgWatts(
+  watts: number,
+  ceiling: number | null = ergCeilingWatts
+): number {
+  if (!Number.isFinite(watts) || watts <= 0) return 0;
+  const limit = Math.min(ceiling ?? ERG_ABSOLUTE_MAX_WATTS, ERG_ABSOLUTE_MAX_WATTS);
+  return Math.max(0, Math.min(Math.round(watts), Math.floor(limit)));
+}
+
+/**
+ * Runs trainer commands one at a time, in the order given. Web Bluetooth
+ * rejects a write while another is in flight on the same characteristic, so
+ * a pause sent mid-write would otherwise be dropped and the trainer left
+ * holding the old target. A failed command never blocks the ones after it.
+ */
+export function createCommandQueue(): (cmd: () => Promise<void>) => Promise<void> {
+  let tail: Promise<void> = Promise.resolve();
+  return (cmd) => {
+    tail = tail.then(cmd).catch((e) => {
+      console.error("Trainer command failed:", e);
+    });
+    return tail;
+  };
+}
+
 // === FTMS Control Point Commands ===
 
 export function ftmsRequestControl(): Uint8Array {
@@ -253,7 +310,7 @@ export function ftmsSetTargetPower(watts: number): Uint8Array {
   const buf = new ArrayBuffer(3);
   const view = new DataView(buf);
   view.setUint8(0, 0x05); // Set Target Power opcode
-  view.setInt16(1, Math.round(watts), true);
+  view.setInt16(1, clampErgWatts(watts), true); // never above the ERG ceiling
   return new Uint8Array(buf);
 }
 

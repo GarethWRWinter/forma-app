@@ -156,3 +156,80 @@ def test_round_break_only_when_text_runs_on():
     assert not _needs_round_break("")
     assert not _needs_round_break("ends with newline\n")
     assert not _needs_round_break("ends with space ")
+
+
+def test_a_logged_dns_gets_one_check_in_after_three_quiet_days(db_session, monkeypatch):
+    """A rider who logged a DNS and ticked the box hears from the coach once,
+    three days on, only if they haven't ridden, and never about setup."""
+    from datetime import datetime, timedelta
+
+    from app.models.onboarding import GoalEvent
+    from app.models.ride import Ride
+
+    user = User(email="dns@example.com", hashed_password="x", full_name="Sam Rider",
+                is_active=True, email_verified=True)
+    db_session.add(user)
+    db_session.commit()
+    now = datetime.utcnow()
+    goal = GoalEvent(
+        user_id=user.id, event_name="Fred Whitton", event_type="sportive", priority="a_race",
+        event_date=(now - timedelta(days=5)).date(), status="dns",
+        assessment_completed_at=now - timedelta(days=3, hours=1),
+        assessment_data={"dns_reason": "illness", "dns_next": "same_event", "check_in": True},
+        overall_satisfaction=3,
+    )
+    db_session.add(goal)
+    db_session.commit()
+
+    monkeypatch.setattr(outreach_service, "speak_first_block", lambda db, u, training=True: None)
+    monkeypatch.setattr("app.services.billing_service.has_access", lambda u: True)
+    composed = []
+
+    def fake_setback(db, u, g):
+        composed.append(g.event_name)
+        return ("Fred Whitton", "Sam, how are you now?\n\nForma")
+
+    monkeypatch.setattr(outreach_service, "compose_setback", fake_setback)
+    monkeypatch.setattr(outreach_service, "compose", lambda *a: (_ for _ in ()).throw(AssertionError("setup nudge sent")))
+    sent = []
+
+    async def fake_send(to, subject, body, from_address=None):
+        sent.append(subject)
+        return True
+
+    monkeypatch.setattr(outreach_service.email_service, "send", fake_send)
+
+    report = asyncio.run(outreach_service.send_due(db_session, now))
+    assert len(report) == 1 and report[0]["stage"] == "setback"
+    assert composed == ["Fred Whitton"] and sent == ["Fred Whitton"]
+    # Once only.
+    assert asyncio.run(outreach_service.send_due(db_session, now + timedelta(days=1))) == []
+
+
+def test_no_check_in_without_consent_or_after_a_ride(db_session, monkeypatch):
+    from datetime import datetime, timedelta
+
+    from app.models.onboarding import GoalEvent
+    from app.models.ride import Ride
+
+    now = datetime.utcnow()
+    monkeypatch.setattr(outreach_service, "speak_first_block", lambda db, u, training=True: None)
+    monkeypatch.setattr("app.services.billing_service.has_access", lambda u: True)
+    monkeypatch.setattr(outreach_service, "activation_state", lambda db, u, n=None: {"stage": "established", "next_action": None, "quiet_days": 0})
+
+    quiet = User(email="noconsent@example.com", hashed_password="x", is_active=True, email_verified=True)
+    rode = User(email="rode@example.com", hashed_password="x", is_active=True, email_verified=True)
+    db_session.add_all([quiet, rode])
+    db_session.commit()
+    for u, consent in ((quiet, False), (rode, True)):
+        db_session.add(GoalEvent(
+            user_id=u.id, event_name="Etape", event_type="gran_fondo", priority="a_race",
+            event_date=(now - timedelta(days=6)).date(), status="dnf",
+            assessment_completed_at=now - timedelta(days=4),
+            assessment_data={"dnf_reason": "mechanical", "check_in": consent},
+        ))
+    db_session.add(Ride(user_id=rode.id, source="fit_upload", title="Easy spin", ride_date=now - timedelta(days=1),
+                        created_at=now - timedelta(days=1), duration_seconds=1800))
+    db_session.commit()
+
+    assert asyncio.run(outreach_service.send_due(db_session, now)) == []

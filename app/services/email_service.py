@@ -8,6 +8,8 @@ British English, no em dashes.
 """
 
 import logging
+import re
+from datetime import datetime
 
 import httpx
 
@@ -82,6 +84,104 @@ The link works for 24 hours. If you didn't create a Forma account, ignore this a
 
 See you on the road,
 Forma
+""",
+    )
+
+
+# The safety panel above the boxes on the sign-up page, word for word.
+SAFETY_PANEL_TEXT = (
+    "Forma is an AI coach. It can be wrong, it isn't medical advice, and nobody "
+    "watches you ride. If you have a heart condition, chest pain, fainting, a "
+    "long-term condition, or you're pregnant, talk to your doctor first. Stop "
+    "riding and get help if you feel chest pain, faintness, dizziness or unusual "
+    "breathlessness."
+)
+# The 14-day rule, as section 4 of the terms words it.
+REFUND_TEXT = (
+    "If Forma isn't for you, cancel within 14 days of first subscribing, email "
+    "gareth@ridewithforma.com, and I'll refund that first payment in full. No "
+    "questions, no forms."
+)
+PRIVACY_URL = "https://ridewithforma.com/privacy"
+
+
+def _long_date(when: datetime) -> str:
+    return f"{when.day} {when:%B %Y}"
+
+
+def plain_text(markdown: str) -> str:
+    """A published legal document as it should read in a plain-text email:
+    the words exactly as published, without the Markdown marks around them
+    (bold stars and heading hashes), and with the source's hard line wraps
+    joined up so paragraphs and list items reflow on a phone. Blank lines,
+    list items and table rows keep their own lines."""
+    lines: list[str] = []
+    joinable = False  # whether the next wrapped line continues the last one
+    for raw in markdown.strip().splitlines():
+        line = re.sub(r"^#{1,6}\s+", "", raw.strip()).replace("**", "")
+        if not line:
+            lines.append("")
+            joinable = False
+        elif line.startswith(("- ", "|")) or raw.startswith("#"):
+            lines.append(line)
+            joinable = not line.startswith("|") and not raw.startswith("#")
+        elif joinable:
+            lines[-1] = f"{lines[-1]} {line}"
+        else:
+            lines.append(line)
+            joinable = True
+    return "\n".join(lines)
+
+
+async def send_registration_welcome(
+    to: str,
+    full_name: str | None,
+    link: str,
+    terms_version: str,
+    accepted_at: datetime,
+    *,
+    terms_text: str,
+    privacy_version: str,
+) -> bool:
+    """The one email at sign-up: the confirm link first, then the rider's
+    own record of what they agreed to. This is the durable-medium
+    confirmation (CCRs reg 16, E-Commerce Regs reg 9(3)), so it carries the
+    full text of the terms they accepted, read from the published file, not
+    a link to a page that could change or go missing. Then the safety panel
+    and the 14-day refund rule.
+
+    Resend verification still uses send_verification: the record only needs
+    to arrive once."""
+    name = _first_name(full_name, to)
+    return await send(
+        to,
+        "Welcome to Forma: confirm your email",
+        f"""{name},
+
+Welcome to Forma. One click confirms this address is yours:
+
+{link}
+
+The link works for 24 hours. If you didn't create a Forma account, ignore this and nothing happens.
+
+Please keep this email. It's your record of what you agreed to when you joined.
+
+What you agreed to
+On {_long_date(accepted_at)} you accepted Forma's terms, version {terms_version}. The full terms are at the end of this email. You also agreed that Forma can use the health details you share with it to coach you, as privacy policy version {privacy_version} describes. The privacy policy explains how to withdraw that, and you can read it at {PRIVACY_URL}
+
+Before you ride
+{SAFETY_PANEL_TEXT}
+
+Your first 14 days
+{REFUND_TEXT}
+
+See you on the road,
+Gareth
+
+
+The terms you accepted, version {terms_version}
+
+{plain_text(terms_text)}
 """,
     )
 
@@ -259,5 +359,90 @@ Someone asked to reset the password on your Forma account. If that was you, this
 It works for one hour. If it wasn't you, ignore this email; your password stays as it is and your account is untouched.
 
 Forma
+""",
+    )
+
+
+SAFETY_ALERT_EXCERPT_CHARS = 500
+
+# Failures that hit every rider, not one red flag: their own subject and next
+# step, and never a rider's words (the excerpt says what failed).
+_OPS_ALERTS = {
+    "reply_failed_outage": (
+        "Forma ops alert: coach replies are failing",
+        "Check the Anthropic status page and the Railway logs. Riders with a red "
+        "flag still get the fixed safety reply.",
+    ),
+    "reply_failed_credit": (
+        "Forma ops alert: the Anthropic credit balance is empty",
+        "Top up the Anthropic account. Until then every coach reply fails; riders "
+        "with a red flag still get the fixed safety reply.",
+    ),
+}
+
+
+async def send_safety_alert(kind: str, user_email: str, user_id: str, excerpt: str) -> bool:
+    """Tell Gareth a crisis or minor red flag fired (safeguarding protocol).
+
+    Plain and internal: who, what matched, and a short excerpt, never the
+    whole conversation. He reads the rest in the app and checks the coach's
+    reply within 24 hours."""
+    excerpt = (excerpt or "").strip()
+    if len(excerpt) > SAFETY_ALERT_EXCERPT_CHARS:
+        excerpt = excerpt[: SAFETY_ALERT_EXCERPT_CHARS - 3].rstrip() + "..."
+    if kind in _OPS_ALERTS:
+        subject, todo = _OPS_ALERTS[kind]
+        return await send(
+            settings.founder_alert_email,
+            subject,
+            f"""Coach replies are failing.
+
+{excerpt or "(no detail)"}
+
+Last rider affected: {user_id}
+
+{todo}
+""",
+        )
+    if kind == "invite_abuse":
+        # Not a rider's red flag and not a failing reply: someone is guessing
+        # invite codes at sign-up. The excerpt says how many tries, from how
+        # many addresses, and what to do.
+        return await send(
+            settings.founder_alert_email,
+            "Forma ops alert: someone is guessing invite codes",
+            f"""{excerpt or "(no detail)"}
+
+Check the Railway logs for "Invite guessing alarm".
+""",
+        )
+    if kind == "reply_failed":
+        return await send(
+            settings.founder_alert_email,
+            "Forma safety alert: a red-flag reply failed",
+            f"""The coach's reply failed on a turn that raised a red flag.
+
+Rider id: {user_id}
+Rider email: {user_email}
+
+What happened:
+{excerpt or "(no detail)"}
+
+Check the conversation within 24 hours (safeguarding protocol).
+""",
+        )
+    return await send(
+        settings.founder_alert_email,
+        f"Forma safety alert: {kind}",
+        f"""A safety red flag fired in the coach chat.
+
+Kind: {kind}
+Rider id: {user_id}
+Rider email: {user_email}
+
+What they wrote:
+{excerpt or "(no text)"}
+
+Check the conversation and the coach's reply within 24 hours (safeguarding protocol).
 """,
     )

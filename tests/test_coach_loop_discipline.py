@@ -28,7 +28,7 @@ import pytest
 from app.core import forma_core
 from app.models.chat import ChatMessage, ChatRole, ChatSession
 from app.models.user import User
-from app.services import attachment_service, coach_service
+from app.services import attachment_service, coach_service, safety_screen
 from tests.test_chat_attachment_working_set import _gpx
 
 NONE = {"type": "none"}
@@ -61,8 +61,17 @@ def _send(db, user, chat, text, voice=False, ids=None) -> list[dict]:
     return [json.loads(c[len("data: "):]) for c in asyncio.run(run())]
 
 
+# The AI disclosure the first reply of every chat opens with
+# (coach_service._first_reply_intro). These tests are about what follows it.
+INTRO = "I'm Forma, your AI coach. "
+
+
+def _after_intro(text: str) -> str:
+    return text[len(INTRO):] if text.startswith(INTRO) else text
+
+
 def _said(chunks) -> str:
-    return "".join(c["content"] for c in chunks if c["type"] == "text")
+    return _after_intro("".join(c["content"] for c in chunks if c["type"] == "text"))
 
 
 def _replies(db, chat) -> list[ChatMessage]:
@@ -120,7 +129,7 @@ def test_five_rounds_of_tools_end_in_words_on_the_last(db_session, gareth, scrip
     assert {c["task"] for c in calls} == {"chat_voice" if voice else "chat"}
     assert _said(chunks).strip() == answer
     (stored,) = _replies(db_session, chat)
-    assert stored.content.strip() == answer
+    assert _after_intro(stored.content).strip() == answer
     assert "fallback" not in (stored.context_snapshot or {})
     assert ran == ["set_attachment_owner"] * 4
 
@@ -239,7 +248,7 @@ def test_a_cut_off_turn_promises_nothing_and_shows_next_turn_as_no_answer(db_ses
     for broken_promise in ("send it again", "straight to the point", "cut off"):
         assert broken_promise not in said.lower()
     (stored,) = _replies(db_session, chat)
-    assert stored.content == coach_service._NO_REPLY_FALLBACK
+    assert _after_intro(stored.content) == coach_service._NO_REPLY_FALLBACK
     assert stored.context_snapshot["fallback"] is True
 
     scripted_model.append((["The 30:47 averaged 91 rpm."], ()))
@@ -381,7 +390,7 @@ def test_the_coach_turn_line_survives_a_provider_failure(db_session, gareth, mon
 
     (line,) = _turn_lines(caplog)
     assert line["ended"] == "error" and line["fallback"] is False and line["rounds"] == 0
-    assert "didn't reach me" in _said(chunks)
+    assert safety_screen.REPLY_FAILED_MESSAGE in _said(chunks)
 
 
 # ── The funnel and the words ────────────────────────────────────────────────

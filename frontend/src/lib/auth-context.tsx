@@ -8,19 +8,13 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { auth, users, type UserProfile } from "./api";
+import { auth, users, type RegisterInput, type UserProfile } from "./api";
 
 interface AuthContextType {
   user: UserProfile | null;
   loading: boolean;
   login: (email: string, password: string, rememberMe?: boolean) => Promise<void>;
-  register: (
-    email: string,
-    password: string,
-    name?: string,
-    inviteCode?: string,
-    healthConsent?: boolean
-  ) => Promise<void>;
+  register: (input: RegisterInput) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
 }
@@ -53,15 +47,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await refreshUser();
   };
 
-  const register = async (
-    email: string,
-    password: string,
-    name?: string,
-    inviteCode?: string,
-    healthConsent: boolean = false
-  ) => {
-    await auth.register(email, password, name, inviteCode, healthConsent);
-    await auth.login(email, password);
+  // Date of birth, country and both consent boxes (with the words shown)
+  // travel with the sign-up: the server records them in consent_events.
+  const register = async (input: RegisterInput) => {
+    await auth.register(input);
+    await auth.login(input.email, input.password);
     await refreshUser();
   };
 

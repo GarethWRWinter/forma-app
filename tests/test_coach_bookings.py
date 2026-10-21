@@ -505,7 +505,7 @@ class _FakeStream:
         return self._final
 
 
-def _chat(db, monkeypatch, user, tool_input):
+def _chat(db, monkeypatch, user, tool_input, answer="All set."):
     """One coach turn: the model asks for add_workout, then answers."""
     rounds = iter([
         SimpleNamespace(stop_reason="tool_use", usage=None, content=[
@@ -513,7 +513,7 @@ def _chat(db, monkeypatch, user, tool_input):
             SimpleNamespace(type="tool_use", id="t1", name="add_workout", input=tool_input),
         ]),
         SimpleNamespace(stop_reason="end_turn", usage=None, content=[
-            SimpleNamespace(type="text", text="All set."),
+            SimpleNamespace(type="text", text=answer),
         ]),
     ])
     calls = []
@@ -566,13 +566,15 @@ def test_a_tool_crash_in_the_chat_loop_reaches_the_coach_as_an_error(db_session,
 
     monkeypatch.setattr(coach_service, "_on_calendar", explode)
 
+    # An honest answer: the reply guard drops a bare "All set." after any tool.
+    answer = "That one did not go in, so nothing is booked."
     chunks, _, tool_result = _chat(db_session, monkeypatch, gareth, {
         "scheduled_date": "2026-10-19", "title": "PB reps", "workout_type": "threshold",
-    })
+    }, answer=answer)
 
     assert tool_result.startswith("Error: that change failed and nothing was saved.")
     assert not any('"plan_updated"' in c for c in chunks)
-    assert any("All set." in c for c in chunks)  # the turn carries on to an answer
+    assert any(answer in c for c in chunks)  # the turn carries on to an answer
     assert db_session.query(Workout).count() == 0
 
 

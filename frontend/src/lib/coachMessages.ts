@@ -1,14 +1,16 @@
-// Coach Forma "Race Radio" — template-based coaching message engine
+// Race Radio: Forma's template-based coaching messages during a session
 // Directeur Sportif + spin class instructor voice
 
 export type CoachTrigger =
   | "workout_start"
+  | "workout_start_hard"
   | "pre_step_change"
   | "step_start"
   | "step_midpoint"
   | "long_effort_check"
   | "power_too_high"
   | "power_too_low"
+  | "pause"
   | "workout_complete";
 
 export interface CoachContext {
@@ -44,6 +46,11 @@ const MESSAGE_POOLS: Record<CoachTrigger, MessageTemplate[]> = {
     { text: "Here we go. Smooth pedalling, relaxed breathing, nothing heroic yet." },
     { text: "Right, to work. Every great ride starts with an easy ten minutes." },
     { text: "Roll out. Easy start, big finish. That's how the classics are won." },
+  ],
+
+  // Hard sessions: any step at or above 105% of FTP, or VO2max and sprint days.
+  workout_start_hard: [
+    { text: "Hard one today. You're in charge: if anything feels wrong, stop." },
   ],
 
   pre_step_change: [
@@ -136,7 +143,7 @@ const MESSAGE_POOLS: Record<CoachTrigger, MessageTemplate[]> = {
       stepTypes: ["interval_on"],
     },
     {
-      text: "Halfway. Your legs are talking to you, that's normal. Stay committed.",
+      text: "Halfway. Heavy legs are normal here. Chest pain or dizziness are not: stop if you feel either.",
       stepTypes: ["interval_on"],
     },
     {
@@ -168,12 +175,15 @@ const MESSAGE_POOLS: Record<CoachTrigger, MessageTemplate[]> = {
     { text: "Control it. {targetWatts}W is the number. Harder isn't better here." },
   ],
 
+  // Also the ease-off cue, when ERG drops a rider who can't hold the number
+  // to recovery. Never push: easing off is the right call, not a failure.
   power_too_low: [
-    { text: "Power is slipping. Dig in, {stepRemaining} seconds. Hold the number." },
-    { text: "Bring it back to {targetWatts}W. Find the rhythm again." },
-    { text: "Don't let it go. {targetWatts}W. Just the next 30 seconds, nothing else." },
-    { text: "I need {targetWatts}W from you. Recommit. This bit is the whole point." },
+    { text: "Power's slipping. If the legs are gone, ease off. It still counts." },
+    { text: "Can't hold {targetWatts}W today? That's fine. Ride what you can." },
+    { text: "Below target. Settle at a pace you can hold, or stop if you feel unwell." },
   ],
+
+  pause: [{ text: "Resistance off. Take your time." }],
 
   workout_complete: [
     { text: "That's done, and it counts. Recovery drink inside 30 minutes." },
@@ -202,8 +212,13 @@ export function selectMessage(
   );
   if (eligible.length === 0) return null;
 
-  // Filter out recently used (by raw template)
-  const fresh = eligible.filter((m) => !recentMessages.includes(m.text));
+  // Filter out recently used. The caller keeps what was said, which for a
+  // template with placeholders is the filled-in line, so check both.
+  const fresh = eligible.filter(
+    (m) =>
+      !recentMessages.includes(m.text) &&
+      !recentMessages.includes(interpolate(m.text, context))
+  );
   const candidates = fresh.length > 0 ? fresh : eligible; // fall back to all if all used
 
   // Pick random

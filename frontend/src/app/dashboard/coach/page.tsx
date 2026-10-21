@@ -21,6 +21,8 @@ import {
   Volume2,
   VolumeX,
   Paperclip,
+  Copy,
+  Check,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -30,7 +32,19 @@ import {
   goals as goalsApi,
   type ChatAttachmentCard,
   type ChatSession,
+  type ChatStreamChunk,
 } from "@/lib/api";
+import { AiDisclaimer } from "@/components/safety/AiDisclaimer";
+import { SAFETY_STATE_KEY } from "@/components/safety/useSafetyState";
+import { ReplySafetyCards } from "@/components/coach/reply-safety-cards";
+import {
+  NO_REPLY_YET,
+  foldReplyChunk,
+  fromStoredMessage,
+  keepStreamedDetail,
+  showReply,
+  type ThreadMessage,
+} from "@/components/coach/coach-thread";
 import { cn } from "@/lib/utils";
 import { CoachDot, CoachGlyph } from "@/components/ui/coach-glyph";
 import { CadenceSpinner } from "@/components/ui/cadence-spinner";
@@ -61,6 +75,16 @@ function sendFailureMessage(error: unknown): string {
   return "I lost the connection there. Send that again.";
 }
 
+/** One read of a chat's latest window, stamped with when it left: a card
+    choice made while it was in flight is newer than anything it brings back.
+    The page's query and the fetch after a held-back reply both use it, so
+    the cache under ["chat-session", id] always holds this shape. */
+async function readSession(id: string) {
+  const askedAt = Date.now();
+  const data = await chat.getSession(id, { limit: 60 });
+  return { data, askedAt };
+}
+
 /** When a chat last moved: its newest message, or its opening while empty. */
 const lastActive = (s: ChatSession) =>
   s.last_message_at || s.updated_at || s.created_at || "";
@@ -84,6 +108,43 @@ function chatTitle(title: string | null | undefined, fallback = "Chat"): string 
 function messageCount(n: number): string {
   if (n === 0) return "No messages yet";
   return n === 1 ? "1 message" : `${n} messages`;
+}
+
+/** Copy one message as plain text: the rider's own words as typed, the
+    coach's with the formatting marks removed. Sits in the corner of the
+    bubble; asked for by the founder on 12 Oct 2026. */
+function CopyMessage({ text, dark }: { text: string; dark?: boolean }) {
+  const [done, setDone] = useState(false);
+  const plain = text
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/__(.*?)__/g, "$1")
+    .replace(/(^|\s)[*_](.+?)[*_](?=\s|[.,;:!?]|$)/g, "$1$2")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*]\s+/gm, "- ")
+    .replace(/\[(.*?)\]\((.*?)\)/g, "$1");
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(plain);
+          setDone(true);
+          setTimeout(() => setDone(false), 1500);
+        } catch {
+          /* clipboard refused: nothing to show, nothing broke */
+        }
+      }}
+      aria-label={done ? "Copied" : "Copy message"}
+      title={done ? "Copied" : "Copy"}
+      className={cn(
+        "mt-2 flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.1em] opacity-60 transition-opacity hover:opacity-100",
+        dark ? "text-white" : "text-vb-text-dim"
+      )}
+    >
+      {done ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+      {done ? "Copied" : "Copy"}
+    </button>
+  );
 }
 
 function CoachPageInner() {
@@ -119,18 +180,15 @@ function CoachPageInner() {
   }, [askParam]);
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<
-    {
-      role: "user" | "assistant";
-      content: string;
-      id?: string;
-      created_at?: string;
-      /** filenames handed over with this message, so the thread shows the swap */
-      attachments?: string[];
-      /** the same files' ids, in the same order, so each card sits under it */
-      attachmentIds?: string[];
-    }[]
-  >([]);
+  const [messages, setMessages] = useState<ThreadMessage[]>([]);
+  // Which chat the thread on screen belongs to, and whether a reply is
+  // streaming into it. Refs, because the stream and the history fetch both
+  // read them from callbacks a render behind.
+  const threadSessionRef = useRef<string | null>(null);
+  const streamingRef = useRef(false);
+  const replyKeyRef = useRef(0);
+  // A chat whose stored copy arrived mid-reply and was held back.
+  const heldHistoryRef = useRef<string | null>(null);
   const [hasEarlier, setHasEarlier] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const resumedRef = useRef(false);
@@ -329,6 +387,128 @@ function CoachPageInner() {
     queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
   }, [queryClient]);
 
+  // Put a stored copy of a chat on screen, cards included. Over the same
+  // chat, the cards the stream showed and the filenames the rider handed
+  // over stay where the stored copy has none.
+  const applyHistory = useCallback(
+    (data: Awaited<ReturnType<typeof chat.getSession>>) => {
+      const sameThread = data.id === threadSessionRef.current;
+      const stored = data.messages.map(fromStoredMessage);
+      setMessages((prev) => (sameThread ? keepStreamedDetail(stored, prev) : stored));
+      threadSessionRef.current = data.id;
+      setHasEarlier(!!data.has_more);
+    },
+    []
+  );
+
+  // The rider's message and an empty reply go on the thread together; every
+  // chunk of the stream then finds that reply by its key, wherever the
+  // thread has moved in the meantime.
+  const startReply = (
+    sessionId: string,
+    content: string,
+    handedOver: { ids: string[]; names: string[] }
+  ): string => {
+    const replyKey = `reply-${++replyKeyRef.current}`;
+    threadSessionRef.current = sessionId;
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "user",
+        content,
+        attachments: handedOver.names.length ? handedOver.names : undefined,
+        attachmentIds: handedOver.ids.length ? handedOver.ids : undefined,
+      },
+      { role: "assistant", content: "", replyKey },
+    ]);
+    return replyKey;
+  };
+
+  // Stream one reply into the thread. A safety card can arrive at any point
+  // (first, mid-reply or just before done) and always goes to the top of
+  // this reply. When the rider has moved to another chat, the rest of the
+  // stream stays out of that chat's thread; the reply is saved and shows
+  // when they come back.
+  const streamReply = async (
+    sessionId: string,
+    replyKey: string,
+    stream: AsyncGenerator<ChatStreamChunk>,
+    onAudio?: (base64: string) => void
+  ) => {
+    let reply = NO_REPLY_YET;
+    const show = (shown: typeof reply) =>
+      setMessages((prev) =>
+        threadSessionRef.current === sessionId ? showReply(prev, replyKey, shown) : prev
+      );
+
+    streamingRef.current = true;
+    setStreaming(true);
+    try {
+      for await (const chunk of stream) {
+        if (chunk.type === "safety") {
+          reply = foldReplyChunk(reply, chunk);
+          show(reply);
+          // The hold may already be open: show the banner without waiting.
+          queryClient.invalidateQueries({ queryKey: SAFETY_STATE_KEY });
+        } else if (chunk.type === "status") {
+          setStatus(chunk.content ?? null);
+        } else if (chunk.type === "text") {
+          // Text always streams fully, never interrupted
+          setStatus(null);
+          reply = foldReplyChunk(reply, chunk);
+          show(reply);
+        } else if (chunk.type === "audio" && chunk.content) {
+          onAudio?.(chunk.content);
+        } else if (chunk.type === "plan_updated") {
+          // The coach changed the plan: refresh the calendar and Today,
+          // which otherwise holds its session for five minutes. A goal it
+          // filed can rebuild the whole plan, so the plan and goals too.
+          refreshPlan();
+        } else if (chunk.type === "files_updated") {
+          onFilesUpdated(sessionId, !!chunk.saved);
+        }
+      }
+    } catch (error) {
+      // The words give way to the failure line; the cards stay on top.
+      show({ ...reply, content: sendFailureMessage(error) });
+    } finally {
+      streamingRef.current = false;
+      setStreaming(false);
+      setStatus(null);
+      queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
+      // The saved copy of this chat now has the reply: coming back to it
+      // fetches it afresh rather than showing the copy from before. A copy
+      // held back mid-reply is fetched again now and put on screen, so the
+      // earlier history it carried still arrives, with this reply's cards
+      // kept. If that fetch fails, the thread stays as the rider saw it.
+      const held = heldHistoryRef.current === sessionId;
+      heldHistoryRef.current = null;
+      if (held) {
+        queryClient
+          .fetchQuery({
+            queryKey: ["chat-session", sessionId],
+            queryFn: () => readSession(sessionId),
+            staleTime: 0,
+          })
+          .then(({ data, askedAt }) => {
+            mergeCards(data.attachments, askedAt);
+            if (threadSessionRef.current === sessionId && !streamingRef.current) {
+              applyHistory(data);
+            }
+          })
+          .catch(() => {});
+      } else {
+        queryClient.invalidateQueries({
+          queryKey: ["chat-session", sessionId],
+          refetchType: "none",
+        });
+      }
+      // The red-flag check or the coach may have opened a hold this turn, so
+      // the hold banner refreshes after every reply, failed ones included.
+      queryClient.invalidateQueries({ queryKey: SAFETY_STATE_KEY });
+    }
+  };
+
   // Voice send handler (defined below, used by hook)
   const handleVoiceSend = useCallback(
     async (transcript: string) => {
@@ -350,74 +530,19 @@ function CoachPageInner() {
 
       const handedOver = takeAttachments();
       bumpSession(sessionId, created);
+      const replyKey = startReply(sessionId, transcript.trim(), handedOver);
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "user" as const,
-          content: transcript.trim(),
-          attachments: handedOver.names.length ? handedOver.names : undefined,
-          attachmentIds: handedOver.ids.length ? handedOver.ids : undefined,
-        },
-      ]);
-      setStreaming(true);
-
-      // Add empty assistant message
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant" as const, content: "" },
-      ]);
-
-      try {
-        let assistantContent = "";
-        for await (const chunk of chat.sendVoiceMessage(
-          sessionId,
-          transcript.trim(),
-          handedOver.ids,
-          refreshChatList
-        )) {
-          if (chunk.type === "status") {
-            setStatus(chunk.content ?? null);
-          } else if (chunk.type === "text") {
-            // Text always streams fully — never interrupted
-            setStatus(null);
-            assistantContent += chunk.content;
-            setMessages((prev) => {
-              const updated = [...prev];
-              updated[updated.length - 1] = {
-                role: "assistant",
-                content: assistantContent,
-              };
-              return updated;
-            });
-          } else if (chunk.type === "audio" && chunk.content) {
-            // Only play audio if not muted by interruption or preference
-            if (!audioMutedRef.current && !audioOffRef.current) {
-              playAudioChunk(chunk.content);
-            }
-          } else if (chunk.type === "plan_updated") {
-            // The coach changed the plan: refresh the calendar and Today,
-            // which otherwise holds its session for five minutes. A goal it
-            // filed can rebuild the whole plan, so the plan and goals too.
-            refreshPlan();
-          } else if (chunk.type === "files_updated") {
-            onFilesUpdated(sessionId, !!chunk.saved);
+      await streamReply(
+        sessionId,
+        replyKey,
+        chat.sendVoiceMessage(sessionId, transcript.trim(), handedOver.ids, refreshChatList),
+        (audio) => {
+          // Only play audio if not muted by interruption or preference
+          if (!audioMutedRef.current && !audioOffRef.current) {
+            playAudioChunk(audio);
           }
         }
-      } catch (error) {
-        setMessages((prev) => {
-          const updated = [...prev];
-          updated[updated.length - 1] = {
-            role: "assistant",
-            content: sendFailureMessage(error),
-          };
-          return updated;
-        });
-      }
-
-      setStreaming(false);
-      setStatus(null);
-      queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
+      );
       // Their cards were read at upload; a choice made since on another
       // copy of the same file is on the server, so read them again.
       if (handedOver.ids.length) void rereadCards(sessionId);
@@ -592,6 +717,7 @@ function CoachPageInner() {
     mutationFn: (id: string) => chat.deleteSession(id),
     onSuccess: (_, id) => {
       if (id === activeSessionId) {
+        threadSessionRef.current = null;
         setActiveSessionId(null);
         setMessages([]);
       }
@@ -613,15 +739,10 @@ function CoachPageInner() {
   };
 
   // Load active session messages (latest window; older pages on demand).
-  // The read carries when it left, not when it landed: a card choice made
-  // while it was in flight is newer than anything it brings back.
+  // The read carries when it left, not when it landed (readSession).
   const { data: sessionRead } = useQuery({
     queryKey: ["chat-session", activeSessionId],
-    queryFn: async () => {
-      const askedAt = Date.now();
-      const data = await chat.getSession(activeSessionId!, { limit: 60 });
-      return { data, askedAt };
-    },
+    queryFn: () => readSession(activeSessionId!),
     enabled: !!activeSessionId,
   });
   const sessionData = sessionRead?.data;
@@ -643,25 +764,24 @@ function CoachPageInner() {
     setActiveSessionId(latest.id);
   }, [sessions, activeSessionId, goalId, isDebrief]);
 
-  // When session data loads, set messages, and the cards of the files they
-  // carried
+  // When session data loads, set messages, cards included: the safety
+  // cards on the replies, and the file cards of the files the rider's
+  // messages carried. A copy of the chat a reply is streaming into is older
+  // than the thread on screen (the first message of a new chat fetches it
+  // mid-reply), so its messages are held back: applying them would wipe the
+  // reply and its card. The reply's end fetches the chat again
+  // (streamReply). Its file cards go in either way; they never touch a reply.
   useEffect(() => {
-    if (sessionData?.messages) {
-      setMessages(
-        sessionData.messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-          id: m.id,
-          created_at: m.created_at,
-          attachmentIds: m.attachment_ids?.length ? m.attachment_ids : undefined,
-        }))
-      );
-      setHasEarlier(!!sessionData.has_more);
-      mergeCards(sessionData.attachments, sessionRead?.askedAt ?? 0);
+    if (!sessionData?.messages) return;
+    mergeCards(sessionData.attachments, sessionRead?.askedAt ?? 0);
+    if (streamingRef.current && sessionData.id === threadSessionRef.current) {
+      heldHistoryRef.current = sessionData.id;
+      return;
     }
+    applyHistory(sessionData);
     // sessionData and its askedAt arrive together, as sessionRead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionRead]);
+  }, [sessionRead, applyHistory]);
 
   // Page backwards through history as the rider scrolls up
   const loadEarlier = async () => {
@@ -675,16 +795,7 @@ function CoachPageInner() {
         limit: 60,
         before: oldest.id,
       });
-      setMessages((prev) => [
-        ...older.messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-          id: m.id,
-          created_at: m.created_at,
-          attachmentIds: m.attachment_ids?.length ? m.attachment_ids : undefined,
-        })),
-        ...prev,
-      ]);
+      setMessages((prev) => [...older.messages.map(fromStoredMessage), ...prev]);
       setHasEarlier(!!older.has_more);
       mergeCards(older.attachments, askedAt);
     } finally {
@@ -753,6 +864,7 @@ function CoachPageInner() {
   const createSession = useMutation({
     mutationFn: () => chat.createSession(),
     onSuccess: (session) => {
+      threadSessionRef.current = session.id;
       setActiveSessionId(session.id);
       setMessages([]);
       queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
@@ -788,64 +900,13 @@ function CoachPageInner() {
       (handedOver.ids.length ? attachmentOnlyMessage(handedOver.ids.length) : "");
     setInput("");
     bumpSession(sessionId, created);
-    setMessages((prev) => [
-      ...prev,
-      {
-        role: "user",
-        content: userMessage,
-        attachments: handedOver.names.length ? handedOver.names : undefined,
-        attachmentIds: handedOver.ids.length ? handedOver.ids : undefined,
-      },
-    ]);
-    setStreaming(true);
+    const replyKey = startReply(sessionId, userMessage, handedOver);
 
-    // Add empty assistant message
-    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
-
-    try {
-      let assistantContent = "";
-      for await (const chunk of chat.sendMessage(
-        sessionId,
-        userMessage,
-        handedOver.ids,
-        refreshChatList
-      )) {
-        if (chunk.type === "status") {
-          setStatus(chunk.content ?? null);
-        } else if (chunk.type === "text") {
-          setStatus(null);
-          assistantContent += chunk.content;
-          setMessages((prev) => {
-            const updated = [...prev];
-            updated[updated.length - 1] = {
-              role: "assistant",
-              content: assistantContent,
-            };
-            return updated;
-          });
-        } else if (chunk.type === "plan_updated") {
-          // The coach changed the plan: refresh the calendar and Today,
-          // which otherwise holds its session for five minutes. A goal it
-          // filed can rebuild the whole plan, so the plan and goals too.
-          refreshPlan();
-        } else if (chunk.type === "files_updated") {
-          onFilesUpdated(sessionId, !!chunk.saved);
-        }
-      }
-    } catch (error) {
-      setMessages((prev) => {
-        const updated = [...prev];
-        updated[updated.length - 1] = {
-          role: "assistant",
-          content: sendFailureMessage(error),
-        };
-        return updated;
-      });
-    }
-
-    setStreaming(false);
-    setStatus(null);
-    queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
+    await streamReply(
+      sessionId,
+      replyKey,
+      chat.sendMessage(sessionId, userMessage, handedOver.ids, refreshChatList)
+    );
     // Their cards were read at upload; a choice made since on another copy
     // of the same file is on the server, so read them again.
     if (handedOver.ids.length) void rereadCards(sessionId);
@@ -1117,12 +1178,13 @@ function CoachPageInner() {
               </div>
             )}
             {messages.map((msg, i) => {
-              // A saved-empty reply renders as a ghost bubble — never show it.
-              if (
+              // A saved-empty reply renders as a ghost bubble: never show it.
+              // A safety card on an empty reply still shows, on its own.
+              const emptyReply =
                 msg.role === "assistant" &&
                 !msg.content &&
-                !(streaming && i === messages.length - 1)
-              ) {
+                !(streaming && i === messages.length - 1);
+              if (emptyReply && !msg.safety?.length) {
                 return null;
               }
               // Day divider: the thread reads like a training diary.
@@ -1160,6 +1222,9 @@ function CoachPageInner() {
                       {streaming && i === messages.length - 1 && (
                         <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-vb-forest" />
                       )}
+                      {msg.content && !(streaming && i === messages.length - 1) && (
+                        <CopyMessage text={msg.content} />
+                      )}
                     </div>
                   ) : (
                     <>
@@ -1183,6 +1248,7 @@ function CoachPageInner() {
                           ))}
                         </ul>
                       )}
+                      {msg.content && <CopyMessage text={msg.content} dark />}
                     </>
                   )}
                 </div>
@@ -1202,6 +1268,13 @@ function CoachPageInner() {
                       <span className="h-px flex-1 bg-vb-border-subtle" />
                     </div>
                   )}
+                  {/* Fixed words from the server, never the model's: the cards
+                      the rider can't miss, at the top of the coach's reply,
+                      whenever in the stream they arrived. */}
+                  {msg.role === "assistant" && (
+                    <ReplySafetyCards cards={msg.safety} country={authUser?.country} />
+                  )}
+                  {!emptyReply && (
                   <div
                     className={cn(
                       "flex gap-3",
@@ -1273,6 +1346,7 @@ function CoachPageInner() {
                       </div>
                     )}
                   </div>
+                  )}
                 </React.Fragment>
               );
             })}
@@ -1418,6 +1492,9 @@ function CoachPageInner() {
               <Send className="h-4 w-4" />
             </button>
           </div>
+
+          {/* Permanent, under the input: what Forma is and isn't. */}
+          <AiDisclaimer className="mt-2.5" />
         </div>
       </div>
     </div>
