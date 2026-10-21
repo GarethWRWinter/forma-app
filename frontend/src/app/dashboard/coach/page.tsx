@@ -39,6 +39,7 @@ import { SAFETY_STATE_KEY } from "@/components/safety/useSafetyState";
 import { ReplySafetyCards } from "@/components/coach/reply-safety-cards";
 import {
   NO_REPLY_YET,
+  debriefOpening,
   foldReplyChunk,
   fromStoredMessage,
   keepStreamedDetail,
@@ -203,6 +204,10 @@ function CoachPageInner() {
   );
   const starters = useCoachStarters(recentText);
   const [streaming, setStreaming] = useState(false);
+  // The chat the reply is streaming into. Only that thread shows the typing
+  // cursor and the pulsing dot; switch chats mid-reply and the other one
+  // reads as it is.
+  const [streamingSession, setStreamingSession] = useState<string | null>(null);
   const [goalMessagePrefilled, setGoalMessagePrefilled] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -443,6 +448,7 @@ function CoachPageInner() {
 
     streamingRef.current = true;
     setStreaming(true);
+    setStreamingSession(sessionId);
     try {
       for await (const chunk of stream) {
         if (chunk.type === "safety") {
@@ -466,6 +472,10 @@ function CoachPageInner() {
           refreshPlan();
         } else if (chunk.type === "files_updated") {
           onFilesUpdated(sessionId, !!chunk.saved);
+        } else if (chunk.type === "proposal_created") {
+          // A change the coach proposed waits on the rider: raise its card
+          // on Today and Goal now, not when the cache next goes stale.
+          queryClient.invalidateQueries({ queryKey: ["plan-proposals"] });
         }
       }
     } catch (error) {
@@ -474,6 +484,7 @@ function CoachPageInner() {
     } finally {
       streamingRef.current = false;
       setStreaming(false);
+      setStreamingSession(null);
       setStatus(null);
       queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
       // The saved copy of this chat now has the reply: coming back to it
@@ -624,31 +635,9 @@ function CoachPageInner() {
       const parts: string[] = [];
 
       if (isDebrief && goalData.assessment_completed_at) {
-        // Debrief mode — post-event conversation
-        parts.push(`I just completed ${goalData.event_name}.`);
-
-        if (goalData.finish_time_seconds) {
-          const h = Math.floor(goalData.finish_time_seconds / 3600);
-          const m = Math.floor((goalData.finish_time_seconds % 3600) / 60);
-          parts.push(`I finished in ${h}h ${m}m.`);
-        }
-
-        if (goalData.overall_satisfaction) {
-          parts.push(`I rated my satisfaction ${goalData.overall_satisfaction}/10`);
-        }
-        if (goalData.perceived_exertion) {
-          parts.push(`and effort ${goalData.perceived_exertion}/10.`);
-        }
-
-        const ad = goalData.assessment_data as Record<string, unknown> | null;
-        if (ad?.went_well) {
-          parts.push(`What went well: ${ad.went_well}.`);
-        }
-        if (ad?.to_improve) {
-          parts.push(`What to improve: ${ad.to_improve}.`);
-        }
-
-        parts.push("Can you help me debrief this event?");
+        // Debrief mode: the race report in the rider's words. A DNF or DNS
+        // says so, never that they completed it.
+        parts.push(debriefOpening(goalData));
       } else {
         // Preparation mode
         parts.push(
@@ -920,6 +909,7 @@ function CoachPageInner() {
   };
 
   const [showSessions, setShowSessions] = useState(false);
+  const replying = streaming && streamingSession === activeSessionId;
 
   return (
     // Fill whatever height the shell has left rather than computing it from
@@ -1183,7 +1173,7 @@ function CoachPageInner() {
               const emptyReply =
                 msg.role === "assistant" &&
                 !msg.content &&
-                !(streaming && i === messages.length - 1);
+                !(replying && i === messages.length - 1);
               if (emptyReply && !msg.safety?.length) {
                 return null;
               }
@@ -1219,10 +1209,10 @@ function CoachPageInner() {
                   {msg.role === "assistant" ? (
                     <div className="prose prose-sm max-w-none prose-headings:text-vb-text prose-strong:text-vb-text prose-em:text-vb-clay prose-em:not-italic prose-li:marker:text-vb-forest prose-a:text-vb-forest">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                      {streaming && i === messages.length - 1 && (
+                      {replying && i === messages.length - 1 && (
                         <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-vb-forest" />
                       )}
-                      {msg.content && !(streaming && i === messages.length - 1) && (
+                      {msg.content && !(replying && i === messages.length - 1) && (
                         <CopyMessage text={msg.content} />
                       )}
                     </div>
@@ -1285,13 +1275,13 @@ function CoachPageInner() {
                   !(
                     status &&
                     !msg.content &&
-                    streaming &&
+                    replying &&
                     i === messages.length - 1
                   ) && (
                     <span className="flex h-7 w-7 shrink-0 items-center justify-center">
                       <CoachDot
                         state={
-                          streaming && i === messages.length - 1
+                          replying && i === messages.length - 1
                             ? "pulsing"
                             : "still"
                         }
@@ -1304,7 +1294,7 @@ function CoachPageInner() {
                     just the brand's thinking state: dot + mono status line. */}
                 {msg.role === "assistant" &&
                 !msg.content &&
-                streaming &&
+                replying &&
                 i === messages.length - 1 ? (
                   status ? (
                     <div className="flex items-center gap-4 self-center py-1">

@@ -193,7 +193,22 @@ export interface FlatStepLike {
   recoveryPct?: number;
 }
 
+/** Whether Ride mode runs the step from its low to its high power
+    (useTrainingSession's calculateTargetPower). Any other step holds its
+    target, and its range is only a band to sit in. */
+function rampsThrough(step: FlatStepLike): boolean {
+  return (
+    (step.stepType === "ramp" || step.stepType === "warmup" || step.stepType === "cooldown") &&
+    step.powerLowPct !== undefined &&
+    step.powerHighPct !== undefined
+  );
+}
+
+/** The most power Ride mode asks for on this step: the top of a ramp, or
+    the target a steady step holds. A steady band that straddles the ERG cap
+    holds its target in ERG, so the target is what counts. */
 export function flatStepPeakPct(step: FlatStepLike): number {
+  if (!rampsThrough(step)) return step.powerTargetPct;
   return Math.max(step.powerTargetPct, step.powerLowPct ?? 0, step.powerHighPct ?? 0);
 }
 
@@ -278,7 +293,9 @@ export function maxErgTargetPct(steps: FlatStepLike[], ergCapPct: number): numbe
   for (const s of steps) {
     const p = flatStepPeakPct(s);
     if (p <= ergCapPct + EPS) peak = Math.max(peak, p);
-    else if ((s.powerLowPct ?? s.powerTargetPct) <= ergCapPct + EPS) peak = Math.max(peak, ergCapPct);
+    else if (rampsThrough(s) && (s.powerLowPct ?? s.powerTargetPct) <= ergCapPct + EPS) {
+      peak = Math.max(peak, ergCapPct);
+    }
   }
   return peak;
 }

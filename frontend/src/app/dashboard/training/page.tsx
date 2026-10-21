@@ -503,6 +503,45 @@ export default function TrainingPage() {
             </Link>
           </div>
         </section>
+      ) : lastGoal && season.setback ? (
+        // After a DNF or DNS the debrief leads and nothing pitches the next
+        // goal, as on Today and in the coach's season note.
+        <section className="bg-[#101012] px-5 py-5 text-white md:px-8 md:py-6">
+          <p className="f-kicker line-clamp-2 text-vb-red">
+            After {lastGoal.event_name}
+          </p>
+          <p className="f-display mt-1 text-lg leading-tight sm:text-xl md:text-2xl">
+            One easy ride, when you feel like&nbsp;it
+          </p>
+          <p className="mt-2 max-w-md text-sm text-white/60">
+            {activePlan && !activePlan.goal_event_id && (
+              <>
+                Your base block keeps the weeks ticking over gently
+                meanwhile.{" "}
+              </>
+            )}
+            No new goal needed yet. When you’re ready, we can talk it&nbsp;through.
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
+            <Link
+              href={`/dashboard/coach?goal_id=${lastGoal.id}&debrief=true`}
+              className={buttonVariants({
+                variant: "flamme",
+                size: "lg",
+                className: "w-full sm:w-auto",
+              })}
+            >
+              Talk it through
+              <Arrow />
+            </Link>
+            <Link
+              href="/dashboard/goals?new=1"
+              className="f-kicker text-white/60 transition-colors hover:text-white"
+            >
+              A next goal, when you’re ready →
+            </Link>
+          </div>
+        </section>
       ) : lastGoal ? (
         <section className="bg-[#101012] px-5 py-5 text-white md:px-8 md:py-6">
           <p className="f-kicker line-clamp-2 text-vb-red">

@@ -89,8 +89,9 @@ class AttachmentError(ValueError):
 
 class DecisionRefused(AttachmentError):
     """A card choice that cannot apply to this file as it stands. code says
-    why: someone_else, saved, part_of_ride, alongside, no_times, or
-    use_card (the coach's save of a file only its card can file)."""
+    why: someone_else, saved, part_of_ride, alongside, no_times, use_card
+    (the coach's save of a file only its card can file), or held (an account
+    held as possibly under 18)."""
 
     def __init__(self, message: str, code: str):
         super().__init__(message)
@@ -499,9 +500,12 @@ def decide(
     someone_else marks it another person's ride, used only in this chat and
     refused a save from then on. Choosing what is already chosen changes
     nothing. A save is undone by deleting the ride from Rides, never here.
+    Nothing is filed for an account held as possibly under 18.
     """
     if attachment.user_id != user.id:
         raise AttachmentError("That file is not on your account.")
+    if file_triage_service.account_held(db, user.id):
+        raise DecisionRefused("This account is on hold, so nothing can be saved to it.", "held")
     if choice not in DECISIONS:
         raise AttachmentError("Choose save, chat_only or someone_else.")
     label = clean_label(label) if choice == "someone_else" else None

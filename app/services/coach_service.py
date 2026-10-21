@@ -115,7 +115,7 @@ The plan tools obey the rider's `safety` state. Under a hold, an uncleared healt
 **After using a tool**, briefly confirm what was changed and explain how it fits the overall training plan.
 
 **Nothing is booked until a tool says so.**
-- Never say a session is booked, added, moved or skipped until a tool result confirms it, in this reply or already listed in `this_week`. Before the call, say only that you are putting it in; never say where it will sit, what day it lands on or what it will do. "Done" comes after the result, never before the call.
+- Never say a session is booked, added, moved or skipped until a tool result confirms it, in this reply or already listed in `this_week`. Say nothing about the change before the call: the tool runs before the rider reads a word, so write the reply once its result is back, and open it with what is now true, not "Done".
 - Name the day exactly as the result gives it, for example "Monday 19 October". Never work out a weekday yourself.
 - If the result starts with Error or Not changed, tell the rider plainly it did not go in and what you will do instead.
 - Offer Ride mode or an export only when the result says the rider can start or export it (it needs structured steps and an FTP). Forma sends nothing to a trainer, head unit or app: an export is a file the rider downloads and loads themselves.
@@ -1823,7 +1823,7 @@ def _files_updated(tool_name: str, tool_input: dict, result_text: str) -> str | 
         return None
     event = {
         "type": "files_updated",
-        "attachment_ids": [tool_input.get("attachment_id")],
+        "attachment_ids": [i for i in [tool_input.get("attachment_id")] if i],
         "saved": result_text.startswith("Saved"),
     }
     return f"data: {json.dumps(event)}\n\n"
@@ -2262,12 +2262,43 @@ def _plan_after_goal(
         )
 
 
+# When a goal tool would have rebuilt the plan but the safety record says to
+# wait (season_service._held_back): the goal stands, the plan does not move.
+_HELD_PLAN = {
+    "injury": (
+        "The plan was NOT rebuilt around it: an injury hold is open, and under "
+        "SAFETY LAW 2e no ride goes in the plan until it lifts. Tell the rider the "
+        "goal is in and the plan follows once the hold lifts; give no training "
+        "for it now."
+    ),
+    "restriction": (
+        "The plan was NOT rebuilt around it: under SAFETY LAW 2h nothing adds "
+        "training for 28 days after eating very little or fast weight loss came "
+        "up. Tell the rider the goal is in and the plan follows later, plainly, "
+        "with no numbers about food or weight."
+    ),
+    "wellbeing": (
+        "The plan was NOT rebuilt around it: nothing is built for the rider by "
+        "itself while their wellbeing comes first. Tell them the goal is in, and "
+        "that they can build the plan from Goal, then Build my season, whenever "
+        "they want it. Do not say why."
+    ),
+    "unknown": (
+        "The plan was NOT rebuilt: the rider's safety record could not be read. "
+        "Tell the rider the goal is in, and do not say what the plan will do."
+    ),
+}
+
+
 def _plan_outcome(
     db: Session, user: User, goal, outcome: str | None, moved_from: date | None
 ) -> str:
     from app.services.season_service import season_state
 
-    plan = season_state(db, user)["current_plan"]
+    state = season_state(db, user)
+    plan = state["current_plan"]
+    if outcome == "held":
+        return _HELD_PLAN.get(state.get("held_back") or "unknown", _HELD_PLAN["unknown"])
     if outcome is None:
         return (
             "The plan was NOT rebuilt: that step failed. Tell the rider the goal "
@@ -2879,8 +2910,9 @@ def _execute_tool(db: Session, user: User, tool_name: str, tool_input: dict) -> 
         if not tool_input.get("confirmed"):
             return (
                 "Nothing was saved. This tool only runs once the rider has "
-                "explicitly agreed to add this file to their ride history. Ask "
-                "them first, in plain language, then call it again."
+                "asked, in their own words, for this file to go into their ride "
+                "history. Do not ask them: point them at the card under their "
+                "message, which files it."
             )
 
         from app.services import attachment_service, file_triage_service
@@ -3433,13 +3465,15 @@ def _was_no_reply(msg: ChatMessage) -> bool:
 
 
 def _last_round_choice(
-    round_no: int, max_iterations: int, lookups_refused: int = 0
+    round_no: int, max_iterations: int, lookups_refused: int = 0, red_flag: bool = False
 ) -> dict | None:
     """No tools on the final round, so the loop always ends in words. A round
     after a ride lookup was refused is the final round: the refusal told the
     model to answer now, and each further round only re-bills the history
-    and adds seconds of silence before the same refusal."""
-    if round_no == max_iterations - 1 or lookups_refused:
+    and adds seconds of silence before the same refusal. Not in a red-flag
+    turn: there the coach keeps apply_safety_hold and flag_for_review until
+    the round limit, whatever it looked up first."""
+    if round_no == max_iterations - 1 or (lookups_refused and not red_flag):
         return {"type": "none"}
     return None
 
@@ -3849,6 +3883,12 @@ _FILLER_RX = re.compile(
     r"pulling (?:that|it|them) up(?: now)?|on it|let me see|let me check|looking now|"
     r"just a (?:sec|second|moment))\W*"
 )
+# Tools whose success changes nothing the rider asked for: a confirmation
+# after them is still narration. A file save that did not happen opens with
+# one of _FILE_NOT_SAVED (beside _CHANGED_NOTHING for the rest).
+_CONFIRM_NOT_A_CHANGE = {"analyse_ride", "find_ride", "apply_safety_hold", "flag_for_review"}
+_FILE_NOT_SAVED = ("Nothing was saved", "Not saved", "The save failed")
+
 # A confirmation that opens a sentence after a tool call: "Done, that
 # session's skipped", "Confirmed: your account's on a full hold".
 _CONFIRM_LEAD_RX = re.compile(
@@ -3864,13 +3904,15 @@ _INTERJECTION_RX = re.compile(
     re.I,
 )
 # A change the coach says it is making, before the tool has made it: held,
-# like "I've skipped", until a tool confirms it.
+# like "I've skipped", until a tool confirms it. "Putting" counts only with
+# "in" after it: "I'm putting it in now" names no session and goes out.
 _PLAN_NOW_RX = re.compile(
     r"\bi'm\s+(?:now\s+|also\s+|just\s+|going to\s+)?(?:skipping|skip|moving(?! on\b)|"
     r"move(?! on\b)|"
     r"swapping|swap|pulling|pull|cancelling|canceling|cancel|dropping|drop|removing|"
     r"remove|replacing|replace|changing|change|updating|update|shortening|shorten|"
-    r"rescheduling|reschedule|taking out|take out)\b[^.!?\n]{0,60}\b(?:session|ride|"
+    r"rescheduling|reschedule|taking out|take out|booking|book|adding|add|"
+    r"(?:putting|put|pencilling|penciling|pencil)(?=[^.!?\n]*\bin\b))\b[^.!?\n]{0,60}\b(?:session|ride|"
     r"workout|intervals?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"today|tomorrow|week|vo2|sweet spot|threshold|tempo)"
 )
@@ -4290,6 +4332,12 @@ class _CheckedReply(safety_screen.ReplyGuard):
         # to call the emergency number once.
         self._floor_line_tier: int | None = None
         self._when_line_used = False
+        # A tool round changed something for the rider (a booking, a goal, a
+        # file saved): "Done, it's on Monday" then loses only its "Done",
+        # unless the reply already said the change before the call ("I'm
+        # skipping Tuesday's session"), when it would say it twice.
+        self._change_done = False
+        self._change_said = False
 
     def absorb(self, screen) -> None:
         """Take in the turn's red flags again after a late verdict added to
@@ -4348,9 +4396,16 @@ class _CheckedReply(safety_screen.ReplyGuard):
         return ""
 
     def after_tools(self, results) -> str:
+        claimed = any(claim == "plan" for claim, _ in self._pending)
         out = super().after_tools(results)
+        self._change_said = self._change_said or (claimed and self._plan_done)
         self._round += 1
         self._round_start = True
+        self._change_done = self._change_done or any(
+            name not in _CONFIRM_NOT_A_CHANGE
+            and not (result or "").startswith(_CHANGED_NOTHING + _FILE_NOT_SAVED)
+            for name, result in results
+        )
         return out
 
     def finish_body(self) -> str:
@@ -4449,11 +4504,17 @@ class _CheckedReply(safety_screen.ReplyGuard):
         m = _CONFIRM_LEAD_RX.match(segment)
         if m:
             rest = segment[m.end():]
-            if not rest.strip() or (not rest.rstrip().endswith(":") and (
+            # After a change went in, "Done, it's booked for Monday 19
+            # October" keeps what it says and loses its "Done": dropped whole,
+            # a short answer left the rider with nothing but the fallback. A
+            # hold confirmation always goes, since its sentence comes from code.
+            short = (not self._change_done or self._change_said) and (
                 len(_WORD_RX.findall(_norm(rest))) <= 12
-                or _hold_talk(rest)
                 or safety_screen._PLAN_CLAIM_RX.search(_norm(rest))
-            )):
+            )
+            if not rest.strip() or (
+                not rest.rstrip().endswith(":") and (_hold_talk(rest) or short)
+            ):
                 self._drop(segment, "a confirmation after a tool call")
                 return None
             return _capitalise(rest)
@@ -7071,7 +7132,9 @@ async def _stream_chat_turn(
                     safety.changed = False
                 # The last round answers with what the tools found: a turn that
                 # ends on a tool call says nothing (16 Oct 2026).
-                tool_choice = _last_round_choice(round_no, max_iterations, turn.lookups_refused)
+                tool_choice = _last_round_choice(
+                    round_no, max_iterations, turn.lookups_refused, bool(safety.screen.hits)
+                )
                 if tool_choice:
                     _note_last_round(messages)
                 # One more try after a short pause when the call fails before
@@ -7632,7 +7695,9 @@ async def _stream_voice_turn(
                 if safety.changed:
                     system = system_now()
                     safety.changed = False
-                tool_choice = _last_round_choice(round_no, max_iterations, turn.lookups_refused)
+                tool_choice = _last_round_choice(
+                    round_no, max_iterations, turn.lookups_refused, bool(safety.screen.hits)
+                )
                 if tool_choice:
                     _note_last_round(messages)
                 # One more try when the call fails before any words arrive, as in

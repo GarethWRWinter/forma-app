@@ -23,6 +23,7 @@ import {
   easeOffPct,
   easyVersion,
   easyVersionText,
+  flatStepPeakPct,
   isEaseOffStep,
   isHardSession,
   maxErgTargetPct,
@@ -307,6 +308,25 @@ test("ease off applies to intervals and work above endurance, never to a release
     false
   );
   assert.equal(isEaseOffStep({ stepType: "interval_on", powerTargetPct: 2.0 }, 1.3), false);
+});
+
+test("a steady band across the ERG cap holds its target, so ease off still watches it", () => {
+  // Ride mode holds a steady step's target (useTrainingSession), so a band of
+  // 120 to 140% around a 130% target is held at the cap for the whole step.
+  const step = { stepType: "steady_state", powerTargetPct: 1.3, powerLowPct: 1.2, powerHighPct: 1.4 };
+  assert.equal(flatStepPeakPct(step), 1.3);
+  assert.equal(isEaseOffStep(step, 1.3), true);
+  assert.deepEqual(
+    trainerCommand({ status: "running", halted: false, targetWatts: 390, targetPct: 1.3, ftp: 300, ergCapPct: 1.3 }),
+    { kind: "erg", watts: 390, reason: "target" }
+  );
+  assert.equal(maxErgTargetPct([step], 1.3), 1.3);
+  // A steady step above the cap runs released: ERG never holds the cap for it.
+  assert.equal(maxErgTargetPct([{ stepType: "steady_state", powerTargetPct: 1.5, powerLowPct: 1.2 }], 1.3), 0);
+  // A ramp still counts its top.
+  const ramp = { stepType: "ramp", powerTargetPct: 0.5, powerLowPct: 0.5, powerHighPct: 1.5 };
+  assert.equal(flatStepPeakPct(ramp), 1.5);
+  assert.equal(isEaseOffStep(ramp, 1.3), false);
 });
 
 test("easing off drops to the step's recovery, never above 55%", () => {

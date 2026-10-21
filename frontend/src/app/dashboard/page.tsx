@@ -255,10 +255,8 @@ export default function DashboardPage() {
   // After a DNF or DNS the coach pitches no next goal unless the rider asks
   // (the debrief law in coach_skills), so the ask stays off Today.
   const season = seasonState(goalsData?.goals);
-  const setback =
-    season.lastGoal?.status === "dnf" || season.lastGoal?.status === "dns";
   const seasonAsks =
-    season.freshFromRace && (plans?.plans.length ?? 0) > 0 && !setback;
+    season.freshFromRace && (plans?.plans.length ?? 0) > 0 && !season.setback;
 
   // Something the coach wants to raise. Held back until we know no proposal is
   // waiting and the between-goals ask is not taking the slot, so it never

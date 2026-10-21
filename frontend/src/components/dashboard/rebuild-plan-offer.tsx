@@ -78,6 +78,8 @@ export function RebuildPlanOffer({ variant = "card" }: { variant?: "card" | "str
       training.generatePlan({
         goal_event_id: active?.goal_event_id ?? undefined,
         periodization_model: active?.periodization_model || undefined,
+        // A plan aimed at no goal (the base block) keeps its name.
+        name: active && !active.goal_event_id ? active.name : undefined,
       }),
     onSuccess: () => {
       setDonePath(pathname);

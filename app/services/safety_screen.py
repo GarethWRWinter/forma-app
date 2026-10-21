@@ -6867,7 +6867,8 @@ _PLAN_CLAIM_RX = re.compile(
     r"\b(?:i've|i have)\s+(?:now\s+|just\s+|already\s+|also\s+|gone ahead and\s+)?"
     r"(?:pulled|swapped|moved|skipped|changed|replaced|added|removed|dropped|cut|"
     r"rescheduled|updated|turned|marked|switched|taken out|shortened|cancelled|canceled|"
-    r"rebuilt|scrapped|booked)\b[^.!?\n]{0,60}\b(?:session|ride|workout|intervals?|plan|"
+    r"rebuilt|scrapped|booked|(?:put|pencill?ed)(?=[^.!?\n]*\bin\b))\b[^.!?\n]{0,60}\b(?:"
+    r"session|ride|workout|intervals?|plan|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|week|"
     r"calendar|vo2|sweet spot|threshold|tempo)"
 )
@@ -7076,6 +7077,11 @@ _PLAN_TOOLS = frozenset({"update_workout", "swap_workout_date", "add_workout", "
 # How each plan tool's result opens when the change went in (add_workout
 # says "Booked."); a refusal opens "Error" or "Not changed".
 _PLAN_DONE = ("Updated", "Swapped", "Added", "Booked", "Skipped")
+# A goal tool rebuilds the whole plan when the season keeper acts on the new
+# goal, and says so in one of these (coach_service._plan_outcome). Only
+# then is "I've rebuilt your plan" true.
+_GOAL_TOOLS = frozenset({"create_goal", "update_goal"})
+_PLAN_REBUILT = ("The plan has been rebuilt around it", "they are now on '")
 
 # ── The lines a safety reply can't go without ──────────────────────────────
 
@@ -8431,6 +8437,8 @@ class ReplyGuard:
                 self._plan_tried = True
                 if text.startswith(_PLAN_DONE):
                     self._plan_done = True
+            if name in _GOAL_TOOLS and any(line in text for line in _PLAN_REBUILT):
+                self._plan_done = True
         return self._resolve(final=False)
 
     def flush(self) -> str:

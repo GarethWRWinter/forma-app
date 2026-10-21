@@ -1444,7 +1444,7 @@ export interface ChatSessionUpdate {
 export interface ChatSafetyCard {
   kind: "emergency" | "crisis" | "warning";
   text: string;
-  card?: string;
+  card?: string | null;
 }
 
 export interface ChatMessage {

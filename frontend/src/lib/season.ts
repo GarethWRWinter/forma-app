@@ -30,6 +30,10 @@ export interface Season {
   needsDebrief: boolean;
   /** Between goals, and the last goal was raced in the past fortnight. */
   freshFromRace: boolean;
+  /** Between goals after a DNF or DNS: the debrief leads, and nothing asks
+      for the next goal (the debrief law in coach_skills, and the server's
+      season note). */
+  setback: boolean;
 }
 
 /** How long a finished goal keeps the coach's slot on Today for the ask
@@ -70,6 +74,8 @@ export function seasonState(goals: GoalEvent[] | undefined): Season {
       betweenGoals &&
       !!lastGoal &&
       daysBetween(lastGoal.event_date, localISODate()) <= FRESH_DAYS,
+    setback:
+      betweenGoals && (lastGoal?.status === "dnf" || lastGoal?.status === "dns"),
   };
 }
 

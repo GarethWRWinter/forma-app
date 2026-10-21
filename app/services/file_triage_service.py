@@ -1027,7 +1027,25 @@ def card(f: Filing) -> dict:
     }
 
 
+def account_held(db: Session, user_id: str) -> bool:
+    """Whether the account is held as possibly under 18: nothing about the
+    rider is written while it is, so no file is saved and no card offers a
+    choice. A failed read counts as held."""
+    from app.services.plan_review_service import minor_hold_open
+
+    try:
+        return minor_hold_open(db, user_id)
+    except Exception:
+        logger.exception("Checking for an under-18 hold failed (user=%s)", user_id)
+        return True
+
+
 def cards(db: Session, user_id: str, attachments: list[ChatAttachment]) -> list[dict]:
-    """Cards for several files, in the order given."""
+    """Cards for several files, in the order given. On a held account
+    (account_held) a card says what the file is and asks nothing."""
     found = filings(db, user_id, attachments)
-    return [card(found[a.id]) for a in attachments]
+    shown = [card(found[a.id]) for a in attachments]
+    if shown and account_held(db, user_id):
+        for c in shown:
+            c.update(question=None, choices=[], changes=[])
+    return shown

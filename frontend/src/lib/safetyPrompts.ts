@@ -149,7 +149,7 @@ export function rebuildOfferText(gateOpens: string | null): string {
   return `${lead}${back} The new plan replaces this one.`;
 }
 
-export const REBUILT_TEXT = "Done. Your new plan is on the Training page.";
+export const REBUILT_TEXT = "Done. Your new plan is on Goal.";
 
 /** Per plan, so a new easy plan asks afresh. */
 export function rebuildDismissKey(planId: string): string {

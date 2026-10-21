@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 
 import {
   NO_REPLY_YET,
+  debriefOpening,
   foldReplyChunk,
   fromStoredMessage,
   keepStreamedDetail,
@@ -386,4 +387,95 @@ test("api.ts types the stored card and reads both streams through readChatStream
   const api = read("../../lib/api.ts");
   assert.match(api, /safety_card\?: ChatSafetyCard \| ChatSafetyCard\[\] \| null;/);
   assert.equal((api.match(/yield\* readChatStream\(response\.body, onClosed\)/g) || []).length, 2);
+});
+
+// === The debrief opening ===
+
+const GOAL = {
+  event_name: "Mallorca 312",
+  finish_time_seconds: null,
+  overall_satisfaction: null,
+  perceived_exertion: null,
+  assessment_data: null,
+};
+
+test("a DNF or DNS debrief never says the rider completed the event", () => {
+  const dnf = debriefOpening({
+    ...GOAL,
+    status: "dnf",
+    overall_satisfaction: 3,
+    perceived_exertion: 8,
+    assessment_data: {
+      dnf_reason: "fuelling", dnf_where: "65 km in", dnf_right_call: "yes",
+      went_well: "Pacing was spot on.", to_improve: "Eat earlier",
+    },
+  });
+  assert.equal(
+    dnf,
+    "I didn’t finish Mallorca 312. Where it ended: 65 km in. Cramps, fuelling or my stomach " +
+      "stopped me. Stopping was the right call. How I feel about stopping: 3/10. What was " +
+      "going right before it stopped: Pacing was spot on. What I’d change: Eat earlier. " +
+      "Can you help me talk it through?"
+  );
+
+  const dns = debriefOpening({
+    ...GOAL,
+    status: "dns",
+    overall_satisfaction: 5,
+    assessment_data: { dns_reason: "illness", dns_story: "Chest infection", to_improve: "You were ill, mate…" },
+  });
+  assert.equal(
+    dns,
+    "I didn’t start Mallorca 312. I was ill. Chest infection. What I’d say to a riding mate " +
+      "in my shoes: You were ill, mate. Can you help me talk it through?"
+  );
+  for (const text of [dnf, dns]) {
+    assert.ok(!text.includes("completed"), text);
+    assert.ok(!text.includes("'"), "curly apostrophes only");
+  }
+  assert.ok(!dns.includes("/10"), "a DNS carries no ratings");
+});
+
+test("a completed debrief ends each rating with a full stop", () => {
+  assert.equal(
+    debriefOpening({ ...GOAL, status: "completed", overall_satisfaction: 8 }),
+    "I just completed Mallorca 312. I rated my satisfaction 8/10. Can you help me debrief this event?"
+  );
+  assert.equal(
+    debriefOpening({
+      ...GOAL, status: "completed", finish_time_seconds: 3 * 3600 + 25 * 60,
+      overall_satisfaction: 8, perceived_exertion: 9, assessment_data: { went_well: "Fuelling" },
+    }),
+    "I just completed Mallorca 312. I finished in 3h 25m. I rated my satisfaction 8/10 and " +
+      "effort 9/10. What went well: Fuelling. Can you help me debrief this event?"
+  );
+});
+
+test("the coach page opens a debrief from the race report and raises a proposal at once", () => {
+  const page = read("../../app/dashboard/coach/page.tsx");
+  assert.match(page, /parts\.push\(debriefOpening\(goalData\)\)/);
+  assert.doesNotMatch(page, /I just completed/);
+  assert.match(
+    page,
+    /chunk\.type === "proposal_created"\) \{[^}]*invalidateQueries\(\{ queryKey: \["plan-proposals"\] \}\)/
+  );
+  // Only the chat the reply streams into looks as if it is being typed.
+  assert.match(page, /const replying = streaming && streamingSession === activeSessionId;/);
+  assert.doesNotMatch(page, /\bstreaming && i === messages\.length - 1/);
+  assert.doesNotMatch(page, /\bstreaming &&\s*i === messages\.length - 1/);
+});
+
+test("after a DNF or DNS neither Today nor Goal asks for the next goal", () => {
+  const season = read("../../lib/season.ts");
+  assert.match(season, /setback:\s*betweenGoals && \(lastGoal\?\.status === "dnf" \|\| lastGoal\?\.status === "dns"\)/);
+  const today = read("../../app/dashboard/page.tsx");
+  assert.match(today, /season\.freshFromRace && \(plans\?\.plans\.length \?\? 0\) > 0 && !season\.setback/);
+  const goal = read("../../app/dashboard/training/page.tsx");
+  const gentle = goal.indexOf("lastGoal && season.setback ? (");
+  const pitch = goal.indexOf("What are we chasing&nbsp;next?");
+  assert.ok(gentle > 0 && pitch > gentle, "the setback branch comes before the next-goal pitch");
+  // The race report's own screens say the block is running, gently.
+  const report = read("../../app/dashboard/goals/[id]/assess/page.tsx");
+  assert.match(report, /\{!!plan && !plan\.goal_event_id && \(\s*<> Your base block keeps the weeks ticking over gently&nbsp;meanwhile\.<\/>/);
+  assert.doesNotMatch(report, /Didn&apos;t/);
 });

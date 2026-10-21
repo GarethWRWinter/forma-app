@@ -422,7 +422,7 @@ export default function AssessPage() {
             ? "There’s no rush to replace it. If you ride this week, make it one you’d choose for its own sake."
             : dnsNext === "same_event"
               ? "The next edition can go in as the goal whenever you like. Before that, one easy ride with no numbers is the only thing worth planning."
-              : "No new goal today. The thing that brings riders back after a missed start is one easy ride in the next few days, not a new plan.",
+              : "No new goal today. The thing that brings riders back after a missed start is one easy ride in the next few days, not a new target.",
       },
     }[status];
 
@@ -448,7 +448,14 @@ export default function AssessPage() {
         <div className="border border-vb-border-subtle bg-vb-surface p-5">
           <Kicker className="mb-1.5">What’s next</Kicker>
           <h2 className="f-display text-xl text-vb-text">{filed.heading}</h2>
-          <p className="mt-1 text-xs text-vb-text-dim">{filed.sub}</p>
+          <p className="mt-1 text-xs text-vb-text-dim">
+            {filed.sub}
+            {/* Filing it can put the rider on the base block, which opens
+                with an easy week after a DNF or DNS (season_service). */}
+            {!!plan && !plan.goal_event_id && (
+              <> Your base block keeps the weeks ticking over gently&nbsp;meanwhile.</>
+            )}
+          </p>
           <div className="f-stagger mt-4 grid gap-2 sm:grid-cols-2">
             <Link
               href={`/dashboard/coach?ask=${encodeURIComponent("Put one easy ride in my week, no numbers, no targets. Just a ride I’d enjoy.")}`}
@@ -752,7 +759,7 @@ export default function AssessPage() {
                 <select value={fuelingWorked} onChange={(e) => setFuelingWorked(e.target.value)} className={selectClasses}>
                   <option value="yes">Worked well</option>
                   <option value="some_issues">Some issues</option>
-                  <option value="no">Didn&apos;t work</option>
+                  <option value="no">Didn’t work</option>
                 </select>
               </div>
             </div>

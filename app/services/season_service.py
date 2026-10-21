@@ -25,6 +25,16 @@ The rule, kept here and nowhere else:
 - Only riders who have been on a plan before, and who have access, are
   touched. A rider still in setup (even one whose only goal is in the past)
   is left to the setup steps, which build the first plan with them.
+- Nothing is built for an account held as possibly under 18, and nothing new
+  while the safety record says to wait (_held_back): an injury hold, eating
+  very little or fast weight loss in the last 28 days, or words of
+  hopelessness in the last 14. Expired plans still end. The block or the
+  goal's plan follows on the first pass after the wait is over.
+- A plan built within a week of a DNF or DNS the body caused (illness,
+  injury, a crash, the body saying no), or for such a DNS filed ahead of the
+  day, opens with a recovery week too: the race report has just told the
+  rider the next step is one easy ride. Any other DNS was never ridden, so
+  plan_service's own rule (no recovery week) stands.
 
 ensure_season runs hourly from inside the app, and straight after every goal
 write (the goals API and the coach's goal tools). It is idempotent: the
@@ -37,7 +47,7 @@ import asyncio
 import logging
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -63,6 +73,7 @@ class _Snapshot:
     ever_planned: bool
     last_model: str | None  # the periodisation of the newest plan
     minor_held: bool = False  # held as possibly under 18: nothing is built
+    held_back: str | None = None  # why nothing new is built now (_held_back)
 
 
 def _status(goal: GoalEvent) -> str:
@@ -112,7 +123,53 @@ def _read(db: Session, user: User, today: date) -> _Snapshot:
         ever_planned=bool(plans),
         last_model=getattr(model, "value", model),
         minor_held=minor_held,
+        held_back=_held_back(db, user),
     )
+
+
+def _held_back(db: Session, user: User) -> str | None:
+    """Why nothing new may be built for this rider right now, or None.
+
+    "injury": an injury hold is open, and no ride goes in the plan until it
+    lifts (SAFETY LAW 2e). "restriction": eating very little or fast weight
+    loss came up in the last 28 days, and nothing adds load (2h).
+    "wellbeing": words of hopelessness or worse in the last 14 days, and
+    nothing presses them (safety_screen.wellbeing_quiet_until). "unknown":
+    the record could not be read, so nothing is built on a guess."""
+    from app.services import safety_screen
+    from app.services.plan_review_service import open_hold_for, restriction_flagged
+
+    try:
+        if open_hold_for(db, user, "injury") is not None:
+            return "injury"
+        if restriction_flagged(db, user):
+            return "restriction"
+        quiet = safety_screen.wellbeing_quiet_until(db, user.id)
+        if quiet is not None and quiet > datetime.utcnow():
+            return "wellbeing"
+        return None
+    except Exception:
+        logger.exception("Reading the safety record for the season failed (user=%s)", user.id)
+        return "unknown"
+
+
+# The race report's reasons (goals/[id]/assess) that say the body stopped
+# the rider: after these the next step is one easy ride, never intensity.
+_BODY_REASONS = {"dnf_reason": {"crash", "illness", "body"}, "dns_reason": {"illness", "injury"}}
+
+
+def _fresh_setback(snap: _Snapshot, today: date) -> bool:
+    """The last goal was a DNF or DNS the body caused, in the past week or (a
+    DNS filed early) still ahead: a plan built now opens with a recovery
+    week."""
+    from app.services.plan_service import RECOVERY_DAYS
+
+    last = snap.last_goal
+    if last is None or last.event_date < today - timedelta(days=RECOVERY_DAYS):
+        return False
+    key = {GoalStatus.dnf.value: "dnf_reason", GoalStatus.dns.value: "dns_reason"}.get(_status(last))
+    reason = (last.assessment_data or {}).get(key) if key else None
+    return key is not None and reason in _BODY_REASONS[key]
 
 
 def _state(snap: _Snapshot) -> str:
@@ -174,7 +231,9 @@ def season_state(db: Session, user: User, today: date | None = None) -> dict:
             settings.season_keeper_enabled
             and _eligible(user, snap)
             and _replaceable(snap)
+            and snap.held_back is None
         ),
+        "held_back": snap.held_back,
     }
     if snap.last_goal is not None:
         g = snap.last_goal
@@ -238,6 +297,26 @@ def season_note(state: dict, in_chat: bool = True) -> str | None:
     # After a DNF or DNS the debrief law in the education leads: no pitch for
     # a new target unless the rider asks, and never "how did it go".
     setback = last["status"] in (GoalStatus.dnf.value, GoalStatus.dns.value)
+    held_back = state.get("held_back")
+    if held_back:
+        # The safety record says not now: no pitch, and nothing is built
+        # until the wait is over (_held_back).
+        parts += [_WAIT.get(held_back, _WAIT["unknown"]), "Do not propose a new goal."]
+        if in_chat and held_back == "wellbeing":
+            parts.append(
+                "If they ask for one, file it with create_goal; they can build the "
+                "plan around it from Goal, then Build my season, when they want to."
+            )
+        elif in_chat:
+            parts.append(
+                "If they ask for one, file it with create_goal; nothing is built "
+                "around it while this lasts, so say nothing about what the plan will do."
+            )
+        elif not last["result_recorded"] and not setback and held_back != "wellbeing":
+            parts.append("Spend the one question on how the race went.")
+        else:
+            parts.append("Spend the one question on how they are.")
+        return " ".join(parts)
     if in_chat:
         then = (
             "the plan is rebuilt around it at once." if state.get("rebuilds")
@@ -276,6 +355,22 @@ def season_note(state: dict, in_chat: bool = True) -> str | None:
     return " ".join(parts)
 
 
+# What the coach is told when the safety record says to wait (_held_back),
+# in words it can act on without repeating them to the rider.
+_WAIT = {
+    "injury": "An injury hold is open: no ride goes in the plan until it lifts.",
+    "restriction": (
+        "Eating very little or fast weight loss came up in the last 28 days: nothing "
+        "adds training for now, and say no numbers about food or weight."
+    ),
+    "wellbeing": (
+        "They wrote words of hopelessness or worse in the last 14 days: keep plan "
+        "talk gentle, as safety.wellbeing says."
+    ),
+    "unknown": "Their safety record could not be read just now.",
+}
+
+
 def lock_rider(db: Session, user: User) -> None:
     """Serialise plan building for one rider: the keeper, goal writes and
     Build my season. Postgres holds the row until the next commit, so a
@@ -287,7 +382,8 @@ def lock_rider(db: Session, user: User) -> None:
 def ensure_season(db: Session, user: User, today: date | None = None) -> str:
     """End expired plans and give the rider the plan their goals call for.
 
-    Returns "block", "goal_plan", "retired" (only plans ended) or "unchanged".
+    Returns "block", "goal_plan", "held" (one was due, but the safety record
+    says to wait: _held_back), "retired" (only plans ended) or "unchanged".
     """
     from app.services.plan_service import generate_plan, retire_plan
 
@@ -301,16 +397,23 @@ def ensure_season(db: Session, user: User, today: date | None = None) -> str:
         retire_plan(db, plan, today)
     db.flush()
     action = _action(user, snap, today)
+    if action is not None and snap.held_back:
+        db.commit()
+        logger.info("Season keeper: %s held back (%s) for user %s", action, snap.held_back, user.id)
+        return "held"
     if action is None:
         db.commit()
         return "retired" if ended else "unchanged"
     # generate_plan ends any other active plan and commits, which also
-    # releases the lock. The rider's periodisation carries over.
+    # releases the lock. The rider's periodisation carries over. After a
+    # DNF or DNS the body caused it opens with a recovery week; otherwise
+    # generate_plan decides (a recovery week after an A or B race).
     model = snap.last_model or "traditional"
+    recover = True if _fresh_setback(snap, today) else None
     if action == "block":
-        generate_plan(db, user, periodization_model=model, name=BLOCK_NAME)
+        generate_plan(db, user, periodization_model=model, name=BLOCK_NAME, recover_first=recover)
     else:
-        generate_plan(db, user, periodization_model=model)
+        generate_plan(db, user, periodization_model=model, recover_first=recover)
     logger.info("Season keeper: %s for user %s", action, user.id)
     return action
 
@@ -346,6 +449,8 @@ def ensure_all(db: Session, today: date | None = None, dry_run: bool = False) ->
             if dry_run:
                 snap = _read(db, user, today)
                 action = _action(user, snap, today)
+                if action is not None and snap.held_back:
+                    action = "held"
                 outcome = action or ("retired" if snap.expired or snap.extra else "unchanged")
                 if outcome != "unchanged":
                     logger.info("[dry run] %s for user %s", outcome, user.id)

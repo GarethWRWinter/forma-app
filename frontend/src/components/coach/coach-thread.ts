@@ -187,3 +187,110 @@ export function keepStreamedDetail<M extends ThreadMessage>(
         };
   });
 }
+
+// === The debrief opening ===
+
+/** The parts of a goal the debrief opening reads. */
+export interface DebriefGoal {
+  event_name: string;
+  status: string;
+  finish_time_seconds: number | null;
+  overall_satisfaction: number | null;
+  perceived_exertion: number | null;
+  assessment_data: Record<string, unknown> | null;
+}
+
+// The race report's reasons (goals/[id]/assess), in the rider's own voice.
+const DNF_WHY: Record<string, string> = {
+  mechanical: "The bike let me down.",
+  crash: "I crashed.",
+  illness: "I wasn’t well on the day.",
+  fuelling: "Cramps, fuelling or my stomach stopped me.",
+  body: "My body said no.",
+  head: "My head said no.",
+  time_cut: "The time cut got me.",
+  weather: "The weather or the course stopped me.",
+};
+const DNS_WHY: Record<string, string> = {
+  illness: "I was ill.",
+  injury: "I was injured.",
+  life: "Life needed me elsewhere.",
+  motivation: "When it came to it, I didn’t want to.",
+  logistics: "Travel, entry or logistics got in the way.",
+  weather: "The weather got in the way, or the event was cancelled.",
+  wrong_goal: "I realised it wasn’t the right goal.",
+};
+const RIGHT_CALL: Record<string, string> = {
+  yes: "Stopping was the right call.",
+  probably: "Stopping was probably the right call.",
+  no: "I could have carried on.",
+  no_choice: "There was no choice.",
+};
+
+/** A free-text answer without its closing stop, or null when blank. */
+function answer(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.trim().replace(/[.!?…\s]+$/, "");
+  return text || null;
+}
+
+/**
+ * What the rider sends to open the debrief, filled in from their race report.
+ * A DNF or DNS never says they completed it, and a DNS carries no ratings:
+ * its one slider is how they feel about it, not how the race went.
+ */
+export function debriefOpening(goal: DebriefGoal): string {
+  const ad = goal.assessment_data ?? {};
+  const parts: string[] = [];
+  const add = (label: string, key: string) => {
+    const text = answer(ad[key]);
+    if (text) parts.push(`${label}: ${text}.`);
+  };
+
+  if (goal.status === "dnf") {
+    parts.push(`I didn’t finish ${goal.event_name}.`);
+    add("Where it ended", "dnf_where");
+    const why = DNF_WHY[String(ad.dnf_reason ?? "")];
+    if (why) parts.push(why);
+    const call = RIGHT_CALL[String(ad.dnf_right_call ?? "")];
+    if (call) parts.push(call);
+    if (goal.overall_satisfaction) {
+      parts.push(`How I feel about stopping: ${goal.overall_satisfaction}/10.`);
+    }
+    add("What was going right before it stopped", "went_well");
+    add("What I’d change", "to_improve");
+    parts.push("Can you help me talk it through?");
+    return parts.join(" ");
+  }
+
+  if (goal.status === "dns") {
+    parts.push(`I didn’t start ${goal.event_name}.`);
+    const why = DNS_WHY[String(ad.dns_reason ?? "")];
+    if (why) parts.push(why);
+    const story = answer(ad.dns_story);
+    if (story) parts.push(`${story}.`);
+    add("What I’d say to a riding mate in my shoes", "to_improve");
+    parts.push("Can you help me talk it through?");
+    return parts.join(" ");
+  }
+
+  parts.push(`I just completed ${goal.event_name}.`);
+  if (goal.finish_time_seconds) {
+    const h = Math.floor(goal.finish_time_seconds / 3600);
+    const m = Math.floor((goal.finish_time_seconds % 3600) / 60);
+    parts.push(`I finished in ${h}h ${m}m.`);
+  }
+  const satisfaction = goal.overall_satisfaction;
+  const effort = goal.perceived_exertion;
+  if (satisfaction && effort) {
+    parts.push(`I rated my satisfaction ${satisfaction}/10 and effort ${effort}/10.`);
+  } else if (satisfaction) {
+    parts.push(`I rated my satisfaction ${satisfaction}/10.`);
+  } else if (effort) {
+    parts.push(`I rated my effort ${effort}/10.`);
+  }
+  add("What went well", "went_well");
+  add("What to improve", "to_improve");
+  parts.push("Can you help me debrief this event?");
+  return parts.join(" ");
+}
