@@ -475,8 +475,9 @@ test("after a DNF or DNS neither Today nor Goal asks for the next goal", () => {
   const pitch = goal.indexOf("What are we chasing&nbsp;next?");
   assert.ok(gentle > 0 && pitch > gentle, "the setback branch comes before the next-goal pitch");
   // The race report's own screens say the block is running, never that it is
-  // gentle: only a DNF or DNS the body caused opens it with an easy week
-  // (season_service), and a DNS for motivation gets none.
+  // gentle: it opens with an easy week only after a DNF or DNS the body
+  // caused (season_service) or an A or B race in the last week that wasn't
+  // a DNS (plan_service), and a DNS for motivation gets none.
   const report = read("../../app/dashboard/goals/[id]/assess/page.tsx");
   assert.match(report, /\{!!plan && !plan\.goal_event_id && \(\s*<> Your base block is running, so the sessions are there when you want&nbsp;them\.<\/>/);
   for (const page of [report, goal]) assert.doesNotMatch(page, /ticking over|gently/);

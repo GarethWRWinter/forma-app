@@ -9,6 +9,7 @@ below is a case where the two disagreed.
 
 import asyncio
 import json
+import threading
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -26,6 +27,7 @@ from app.services.coach_service import _build_rider_context, _execute_tool
 from app.services.safety_screen import ReplyGuard
 from app.services.season_service import BLOCK_NAME, ensure_all, season_note, season_state
 from tests.test_chat_file_triage import PB, PB_BYTES
+from tests.test_coach_safety_flow import _FakeClassifier
 from tests.test_season_service import (  # noqa: F401  (clock is a fixture)
     FRIDAY, _active, _gareth, _goal, _incident, _old_plan, clock,
 )
@@ -349,41 +351,209 @@ BOOKED = ("add_workout", "Booked. 'Easy spin' (60 min) is on Monday 19 October."
 def test_a_bare_confirmation_is_the_last_word_or_none():
     """It goes out after a booking only when nothing follows it, so "Done.
     It's on Monday." still loses its "Done"; one written before the tool
-    waits for the tool, and goes only if the booking went in."""
+    waits for the tool, and goes only if the booking went in. It is decided
+    at the end (finish_tail), after the classifier's time has run out."""
     guard = _plain_guard()
     guard.feed("Easy it is.")
     guard.before_tools()
     guard.after_tools([BOOKED])
-    assert guard.round_break() + guard.feed("Done.") + guard.finish_body() == "\n\nDone."
+    assert guard.round_break() + guard.feed("Done.") + guard.finish_body() == ""
+    assert guard.finish_tail() == "\n\nDone."
 
     guard = _plain_guard()
     guard.before_tools()
     guard.after_tools([BOOKED])
-    out = guard.feed("Done. It's on Monday 19 October.") + guard.finish_body()
+    out = guard.feed("Done. It's on Monday 19 October.") + guard.flush()
     assert out == "It's on Monday 19 October."
 
     guard = _plain_guard()
     assert guard.feed("All set. ") + guard.before_tools() == ""
     assert guard.after_tools([BOOKED]) == ""
-    assert guard.finish_body() == "All set. "
+    assert guard.flush() == "All set. "
 
     guard = _plain_guard()
     guard.feed("All set. ")
     guard.before_tools()
     guard.after_tools([BOOKED, ("add_workout", "Not changed: an injury hold is open.")])
-    assert guard.finish_body() == "" and "All set." in guard.dropped
+    assert guard.flush() == "" and "All set." in guard.dropped
 
     guard = _plain_guard()
     guard.before_tools()
     guard.after_tools([BOOKED, ("apply_safety_hold", "Hold applied now.")])
-    assert guard.feed("Done.") + guard.finish_body() == ""
+    assert guard.feed("Done.") + guard.flush() == ""
 
     # A red-flag turn keeps its whole fixed reply over a bare "Done.".
     guard = _plain_guard()
     guard.kinds = {"injury"}
     guard.before_tools()
     guard.after_tools([BOOKED])
-    assert guard.feed("Done.") + guard.finish_body() == ""
+    assert "Done." not in guard.feed("Done.") + guard.flush()
+    assert "Done." in guard.dropped
+
+
+SKIPPED = ("skip_workout", "Skipped 'PB reps' on Tuesday 20 October.")
+UPDATED = ("update_workout", "Updated 'PB reps': now on Wednesday 21 October.")
+
+
+@pytest.mark.parametrize("results, confirmation", [
+    ([BOOKED], "Booked."),
+    ([SKIPPED], "Skipped."),
+    ([UPDATED], "Moved."),
+    ([UPDATED], "All done."),
+])
+def test_a_bare_confirmation_names_the_change_that_went_in(results, confirmation):
+    guard = _plain_guard()
+    guard.before_tools()
+    guard.after_tools(results)
+    assert guard.feed(confirmation) + guard.flush() == confirmation
+
+
+def _booked_then(*rounds, after=None):
+    """The reply after a booking went in: each entry in `rounds` is one
+    round's words, with a lookup between them."""
+    guard = _plain_guard()
+    guard.before_tools()
+    out = guard.after_tools([BOOKED])
+    for i, words in enumerate(rounds):
+        if i:
+            out += guard.before_tools()
+            out += guard.after_tools([("find_ride", "Yesterday's ride: 60 min, 180 W.")])
+        out += guard.round_break() + guard.feed(words)
+    if after:
+        after(guard)
+    return out + guard.flush(), guard
+
+
+@pytest.mark.parametrize("rounds, after, shown", [
+    # A hold is only ever stated in the code's words: none is on record.
+    (["Hold applied."], None, ""),
+    (["That's applied."], None, ""),
+    (["Applied."], None, ""),
+    # The verb names a change that did not go in.
+    (["Skipped."], None, ""),
+    (["Moved."], None, ""),
+    # Tacked on after the coach's own words, in its round or since the change.
+    (["It's on Monday 19 October. Done."], None, "It's on Monday 19 October. "),
+    (["It's on Monday 19 October. ", "Done."], None, "It's on Monday 19 October. "),
+    # The model call failed after it: the coach never finished.
+    (["Done. "], lambda g: setattr(g, "cut_off", True), ""),
+    # Written in a round the code took the tools away for.
+    (["Done."], lambda g: setattr(g, "tools_withheld", True), ""),
+], ids=[
+    "hold applied", "that's applied", "applied", "skipped", "moved",
+    "after words", "after an earlier round's words", "cut off", "tools withheld",
+])
+def test_a_bare_confirmation_that_would_claim_more_is_dropped(rounds, after, shown):
+    out, guard = _booked_then(*rounds, after=after)
+    assert out == shown
+    assert guard.dropped[-1] in rounds[-1] and guard.dropped[-1] not in out
+
+
+@pytest.mark.parametrize("before", [
+    "Easy spin on Monday, booked in. Done. ",
+    "I've booked it. Done. ",
+])
+def test_a_bare_confirmation_beside_words_before_the_tool_is_dropped(before):
+    guard = _plain_guard()
+    out = guard.feed(before) + guard.before_tools() + guard.after_tools([BOOKED])
+    assert out + guard.flush() == before.removesuffix("Done. ")
+    assert "Done." in guard.dropped
+
+
+def test_a_bare_confirmation_cut_off_by_a_failed_call_is_dropped():
+    """"Done." and then "I couldn't finish a reply" contradicted each other."""
+    guard = _plain_guard()
+    guard.before_tools()
+    guard.after_tools([BOOKED])
+    guard.feed("Done. ")
+    out = coach_service._reply_after_failure(
+        guard, coach_service.StreamHumanizer(), "", safety_screen.ScreenResult()
+    )
+    assert out == safety_screen.REPLY_FAILED_MESSAGE
+
+
+@pytest.mark.parametrize("voice", [False, True], ids=["chat", "voice"])
+def test_a_bare_confirmation_after_the_tools_were_taken_away_is_dropped(
+    db_session, rider, scripted_model, voice
+):
+    """Monday went in; the third ride lookup was refused, so the last round
+    ran without tools and Tuesday's booking never did. "Done." would say it
+    had."""
+    tool = scripted_model.tool_use
+    scripted_model.append(([], [
+        tool("find_ride", {"query": "yesterday"}), tool("find_ride", {"query": "Sunday"}),
+        tool("find_ride", {"query": "Saturday"}), _booking(tool, "endurance"),
+    ]))
+    scripted_model.append((["Done."], [_booking(tool, "endurance")]))
+
+    _, said, _ = _send(db_session, rider, "Book Monday and Tuesday like last week", voice)
+
+    assert scripted_model.calls[1]["tool_choice"] == {"type": "none"}
+    assert "Done." not in said
+    assert db_session.query(Workout).count() == 1
+
+
+LATE = {
+    "chest": (
+        ("chest_pain", "very wrong in my ribs on the climb", "emergency"),
+        "Something felt very wrong in my ribs on the climb and I had to sit on the verge.",
+    ),
+    "crisis": (
+        ("crisis", "gave the dog to my sister", "crisis"),
+        "Sorted my will out and gave the dog to my sister, so the plan won't matter after Sunday.",
+    ),
+    "minor": (("minor", "my dad set this account up", "minor", 15), "My dad set this account up."),
+}
+
+
+@pytest.fixture
+def late_verdict(monkeypatch):
+    """The classifier's verdict lands after the model's last words, while the
+    turn waits out its time (_TurnSafety.settle), as it can in production
+    with no head start."""
+    fake = _FakeClassifier()
+    fake.gate = threading.Event()
+    monkeypatch.setattr(
+        coach_service, "_load_classifier", lambda: (fake.classify_safety, fake.merge)
+    )
+    monkeypatch.setattr(coach_service, "CLASSIFIER_HEAD_START_SECONDS", 0.0)
+    settle = coach_service._TurnSafety.settle
+
+    async def land_then_settle(self):
+        fake.gate.set()
+        return await settle(self)
+
+    monkeypatch.setattr(coach_service._TurnSafety, "settle", land_then_settle)
+    yield fake
+    fake.gate.set()
+
+
+@pytest.mark.parametrize("voice", [False, True], ids=["chat", "voice"])
+@pytest.mark.parametrize("kind", sorted(LATE))
+def test_a_late_red_flag_gets_the_same_fixed_reply_over_a_bare_confirmation(
+    db_session, rider, scripted_model, late_verdict, voice, kind
+):
+    """The "Done." went out as the model stopped, before the verdict landed:
+    the rider then got "Done." and the missing lines, not the whole fixed
+    reply (a crisis lost its question and means safety, chest pain "Don't
+    ride", and an under-18 account was told its booking was done)."""
+    hit, words = LATE[kind]
+    late_verdict.adds = [hit]
+    other = User(email="other@example.com", hashed_password="x", full_name="Alex Rider", ftp=250)
+    db_session.add(other)
+    db_session.commit()
+    replies = []
+    for user, last_words in ((rider, ["Done."]), (other, [])):
+        late_verdict.gate.clear()
+        scripted_model.append(([], [_booking(scripted_model.tool_use, "endurance")]))
+        scripted_model.append((last_words, ()))
+        _, said, _ = _send(db_session, user, words + " Book me an easy ride on Monday.", voice)
+        replies.append(said)
+
+    done, silent = replies
+    assert "Done." not in done
+    assert done == silent
+    assert len(late_verdict.calls) == 2
 
 
 @pytest.mark.parametrize("claim", [

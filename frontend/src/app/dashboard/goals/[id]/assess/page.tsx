@@ -451,8 +451,10 @@ export default function AssessPage() {
           <p className="mt-1 text-xs text-vb-text-dim">
             {filed.sub}
             {/* Filing it can put the rider on the base block. It opens with
-                an easy week only after a DNF or DNS the body caused
-                (season_service), so the line promises no easy weeks. */}
+                an easy week after a DNF or DNS the body caused
+                (season_service), or an A or B race in the last week that
+                wasn't a DNS (plan_service), and otherwise not, so the line
+                promises none. */}
             {!!plan && !plan.goal_event_id && (
               <> Your base block is running, so the sessions are there when you want&nbsp;them.</>
             )}
