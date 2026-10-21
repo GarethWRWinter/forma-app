@@ -619,12 +619,15 @@ def test_what_a_confirmation_says_still_goes_out_with_the_coachs_words():
     assert out == "It's booked for Monday 19 October. Keep it easy."
 
     # Beside a red flag too: the words after it go out whatever happens.
+    # Only when they carry the reply's lines does what "Done" said go with
+    # them; above the whole fixed reply it goes, as the bare "Done." does.
     guard = _plain_guard()
     guard.kinds = {"injury"}
     guard.before_tools()
     guard.after_tools([BOOKED])
     out = guard.feed("Done, it's booked for Monday 19 October. Keep it easy.") + guard.flush()
-    assert out.startswith("It's booked for Monday 19 October. Keep it easy.")
+    assert out.startswith("Keep it easy.") and "It's booked" not in out
+    assert "It's booked for Monday 19 October." in guard.dropped
 
 
 @pytest.mark.parametrize("word", ["Hold applied.", "Applied.", "That's applied.", "Paused."])
@@ -1412,10 +1415,574 @@ NOTED = (
 )
 
 
+HELD_BACK = (
+    "update_goal",
+    "Updated the goal 'Mallorca 312' (event_date). The plan was NOT rebuilt around it: an "
+    "injury hold is open, and under SAFETY LAW 2e no ride goes in the plan until it lifts.",
+)
+
+
 @pytest.mark.parametrize("word", ["Done.", "Updated."])
 def test_a_goal_note_is_confirmed(word):
     out, _ = _refused_then(word, [NOTED + ({"goal_id": "g1", "notes": "with my brother"},)])
     assert out == word
-    # A new date or priority may move the plan: nothing says it did.
+    # With no plan at all, a new date moves nothing else either.
     out, _ = _refused_then(word, [NOTED + ({"goal_id": "g1", "event_date": "2027-05-30"},)])
+    assert out == word
+    # A plan the safety record held back: the coach owes the rider why.
+    out, _ = _refused_then(word, [HELD_BACK + ({"goal_id": "g1", "event_date": "2027-05-30"},)])
     assert out == ""
+
+
+# ── Confirmations, fourth review ────────────────────────────────────────────
+
+VOICE = pytest.mark.parametrize("voice", [False, True], ids=["chat", "voice"])
+FOUND = ("find_ride", "Found 1 ride: Tuesday 20 October, 60 min, 180 W.")
+
+
+def _workouts(db) -> int:
+    return db.query(Workout).count()
+
+
+CLAIMS_WITH_MORE = [
+    "Booked, no problem.", "All booked, no problem!", "Monday's booked, but don't push it.",
+    "You're booked in for Monday, so don't go hard.", "Monday's booked, all good?",
+    "Easy spin booked for Monday, not too hard.", "It's in your plan for Monday, don't go hard.",
+    "Your easy spin is booked in for Monday morning at seven.", "Already booked.",
+    "Don't worry, Monday's booked.", "It's in, don't stress.", "Monday's sorted, not to worry.",
+    "It's already in your plan for Monday.",
+]
+
+
+@VOICE
+@pytest.mark.parametrize("word", CLAIMS_WITH_MORE)
+def test_a_claim_with_more_in_its_sentence_is_still_checked(
+    db_session, rider, scripted_model, voice, word
+):
+    """A negation, a question mark or a safety word anywhere in the sentence
+    let a claim skip every check: after the gate refused the booking the
+    rider read "You're booked in for Monday, so don't go hard."; and past
+    eight words a claim was never checked at all."""
+    _injured(db_session, rider)
+    scripted_model.append(([], [_booking(scripted_model.tool_use)]))
+    scripted_model.append(([word], ()))
+
+    _, said, _ = _send(db_session, rider, "Book me a hard ride on Monday.", voice)
+
+    assert word not in said and _workouts(db_session) == 0
+
+
+@pytest.mark.parametrize("words", [
+    "That didn't go in because of the knee hold.",
+    "I couldn't book it, the hold blocks hard sessions.",
+    "It's not booked: the injury hold stops hard rides.",
+    "Nothing changed, so you're booked in for Tuesday as before.",
+    "You're still booked in for Tuesday.",
+    "Is Monday booked?",
+])
+def test_saying_it_did_not_go_in_is_no_claim(words):
+    out, _ = _refused_then(words)
+    assert out == words
+
+
+@VOICE
+@pytest.mark.parametrize("case", ["cut", "tools withheld", "errored"])
+def test_a_claim_with_more_after_a_change_that_never_happened_is_dropped(
+    db_session, rider, scripted_model, voice, case
+):
+    tool = scripted_model.tool_use
+    if case == "cut":
+        word = "Booked, no problem."
+        scripted_model.append(([word], [_booking(tool, "endurance")], "max_tokens"))
+    elif case == "tools withheld":
+        word = "Both booked, no problem."
+        scripted_model.append(([], [
+            tool("find_ride", {"query": "yesterday"}), tool("find_ride", {"query": "Sunday"}),
+            tool("find_ride", {"query": "Saturday"}), _booking(tool, "endurance"),
+        ]))
+        scripted_model.append(([word], [_tuesday(tool)]))
+    else:
+        word = "Both booked, no stress."
+        scripted_model.append(([], [_booking(tool, "endurance"), _far(tool)]))
+        scripted_model.append(([word], ()))
+
+    _, said, _ = _send(db_session, rider, "Book me an easy ride on Monday and Tuesday.", voice)
+
+    assert word not in said and "booked" not in said
+
+
+@VOICE
+@pytest.mark.parametrize("word", [
+    "Monday's booked, just don't ride hard.", "Booked, no problem, just don't push it.",
+])
+def test_a_claim_with_safety_words_never_cuts_a_chest_reply(
+    db_session, rider, scripted_model, voice, word
+):
+    """Over a booking hold_all refused, "Monday's booked, just don't ride
+    hard." went out and counted as the reply: the rider lost "Don't ride,
+    not even an easy spin" and "Don't drive yourself"."""
+    done, silent = _against_silence(
+        db_session, rider, scripted_model, CHEST + BOOK_MONDAY, [([], _book), ([word], _nothing)],
+        voice,
+    )
+    assert done == silent
+
+
+LEADS_WITH_MORE = [
+    "Done, but don't ride hard on it.", "All set, just don't push it on Monday.",
+    "All set, you're booked in for an easy spin on Monday morning with the club after work.",
+]
+
+
+@VOICE
+@pytest.mark.parametrize("words", LEADS_WITH_MORE)
+def test_a_done_before_the_tool_waits_for_it_whatever_else_it_says(
+    db_session, rider, scripted_model, voice, words
+):
+    """With a safety word in it or more than twelve words after it, a "Done,
+    ..." written before the tool went out before the tool ran, and the gate
+    then refused the booking. Its safety words stay, never its "Done" or a
+    claim."""
+    _injured(db_session, rider)
+    scripted_model.append(([words], [_booking(scripted_model.tool_use)]))
+    scripted_model.append(([], ()))
+
+    _, said, _ = _send(db_session, rider, "Book me a hard ride on Monday.", voice)
+
+    lead = words.split(",")[0]
+    assert lead not in said and "booked" not in said and _workouts(db_session) == 0
+    if "don't" in words:
+        rest = words.split(", ", 1)[1].removeprefix("but ").removeprefix("just ")
+        assert rest[:1].upper() + rest[1:] in said
+
+
+@pytest.mark.parametrize("pieces", [
+    ["Done, just don't", " push it on Mon", "day."],
+    ["Do", "ne, just ", "don't push it on Monday.", " "],
+])
+def test_a_done_before_the_tool_streamed_in_pieces_waits_too(
+    db_session, rider, scripted_model, pieces
+):
+    _injured(db_session, rider)
+    scripted_model.append((pieces, [_booking(scripted_model.tool_use)]))
+    scripted_model.append(([], ()))
+    _, said, _ = _send(db_session, rider, "Book me a hard ride on Monday.")
+    assert "Done" not in said and _workouts(db_session) == 0
+
+
+@VOICE
+@pytest.mark.parametrize("message", [CHEST, KNEE], ids=["chest", "knee"])
+def test_a_done_with_safety_words_before_a_refused_booking_never_cuts_the_fixed_reply(
+    db_session, rider, scripted_model, voice, message
+):
+    """"Done, just don't push it on Monday." went out above "Don't ride, not
+    even an easy spin": a false "Done" and how to ride Monday."""
+    done, silent = _against_silence(
+        db_session, rider, scripted_model, message + BOOK_MONDAY,
+        [(["Done, just don't push it on Monday."], _book), ([], _nothing)], voice,
+    )
+    assert done == silent
+
+
+@VOICE
+@pytest.mark.parametrize("words", ["Done, I've booked Monday for you.", "All set, Monday's in."])
+def test_a_done_with_no_tool_never_claims_a_crisis_turns_booking(
+    db_session, rider, scripted_model, voice, words
+):
+    done, silent = _against_silence(
+        db_session, rider, scripted_model, CRISIS + BOOK_MONDAY, [([words], _nothing)], voice,
+    )
+    assert done == silent
+
+
+@VOICE
+def test_a_done_with_no_tool_never_claims_a_booking_for_a_held_account(
+    db_session, rider, scripted_model, voice
+):
+    ss.open_hold(db_session, rider, "hold_all", "Chest pain", "detector", red_flag="chest_pain")
+    scripted_model.append((["Done, I've booked Monday for you."], ()))
+    _, said, _ = _send(db_session, rider, "Book me an easy ride on Monday.", voice)
+    assert "booked Monday" not in said and _workouts(db_session) == 0
+
+
+@VOICE
+@pytest.mark.parametrize("message, words", [
+    ("Book me an easy ride on Monday.", "Done, you're booked in for Monday."),
+    ("Skip tomorrow.", "Sorted, tomorrow's skipped."),
+    ("Can you pause my plan for two weeks? I'm away.", "Your plan is paused for two weeks."),
+    ("Can you pause my plan for two weeks? I'm away.", "Done, your plan's paused for two weeks."),
+])
+def test_a_change_asked_for_is_never_confirmed_with_no_tool(
+    db_session, rider, scripted_model, voice, message, words
+):
+    scripted_model.append(([words], ()))
+    _, said, _ = _send(db_session, rider, message, voice)
+    assert words not in said and "paused" not in said and "booked" not in said
+    assert ss.current_hold(db_session, rider.id) is None
+
+
+@VOICE
+@pytest.mark.parametrize("word", [
+    "Your training is paused, so don't ride until you've seen someone.",
+    "Your plan is on pause for now.", "Everything's on hold, ok?",
+    "I've put your training on pause.",
+])
+def test_a_hold_in_the_coachs_words_waits_whatever_else_it_says(
+    db_session, rider, scripted_model, voice, word
+):
+    """A negation or a question mark anywhere took the hold back, "on pause"
+    was never a hold, and "I've put" needed the word "hold": each went out
+    before apply_safety_hold, which then refused the level."""
+    scripted_model.append(([word], [scripted_model.tool_use(
+        "apply_safety_hold", {"level": "pause", "reason": "knee"},
+    )]))
+    scripted_model.append(([], ()))
+
+    _, said, _ = _send(db_session, rider, "My knee aches a bit.", voice)
+
+    assert word not in said and "paused" not in said and "on pause" not in said
+    assert ss.current_hold(db_session, rider.id) is None
+    if "don't ride" in word:
+        assert "Don't ride until you've seen someone." in said
+
+
+@VOICE
+@pytest.mark.parametrize("word", [
+    "Your plan is on pause for now.", "Your training is paused, so don't ride for now.",
+])
+def test_a_hold_in_other_words_before_a_failed_tool_keeps_the_whole_crisis_reply(
+    db_session, rider, scripted_model, voice, word
+):
+    def failed_hold(tool):
+        return [tool("apply_safety_hold", {"level": "pause", "reason": "crisis"})]
+
+    done, silent = _against_silence(
+        db_session, rider, scripted_model, CRISIS + BOOK_MONDAY,
+        [([word], failed_hold), ([], _nothing)], voice,
+    )
+    assert done == silent
+
+
+@VOICE
+@pytest.mark.parametrize("tool_name, word", [
+    ("skip", "Rescheduled to Thursday."), ("add", "Cancelled."), ("add", "Tuesday's cancelled."),
+])
+def test_every_change_word_names_its_change(
+    db_session, rider, scripted_model, voice, tool_name, word
+):
+    """"Rescheduled", "cancelled" and "rebuilt" named no change, so any
+    change backed them: "Rescheduled to Thursday." went out after a skip."""
+    workout = _planned(db_session, rider, days=1)
+    tool = scripted_model.tool_use
+    if tool_name == "skip":
+        blocks = [tool("skip_workout", {"workout_id": workout.id})]
+    else:
+        blocks = [_booking(tool, "endurance")]
+    scripted_model.append(([], blocks))
+    scripted_model.append(([word], ()))
+
+    _, said, _ = _send(db_session, rider, "Move tomorrow's session to Thursday.", voice)
+
+    assert word not in said
+
+
+def test_every_word_that_claims_a_change_names_one():
+    words = coach_service._DONE_WORD_RX.pattern
+    for verb in ("rescheduled", "cancelled", "canceled", "rebuilt"):
+        assert verb in words and coach_service._CONFIRM_VERB_CHANGES[verb]
+
+
+@VOICE
+@pytest.mark.parametrize("kind", sorted(LATE))
+@pytest.mark.parametrize("last", [
+    "Booked. Enjoy it.", "Done. Enjoy the spin!", "Done, you're all set. Enjoy it.",
+])
+def test_a_late_red_flag_takes_back_a_confirmation_in_front_of_the_coachs_words(
+    db_session, rider, scripted_model, late_verdict, voice, kind, last
+):
+    """A true "Booked." went out in front of "Enjoy it." before the verdict
+    landed at the end: an account read as under 18 read "Booked. Enjoy it."
+    above "I can't coach you"."""
+    hit, words = LATE[kind]
+    late_verdict.adds = [hit]
+    other = User(email="other@example.com", hashed_password="x", full_name="Alex Rider", ftp=250)
+    db_session.add(other)
+    db_session.commit()
+    replies = []
+    for user, last_words in ((rider, [last]), (other, [])):
+        late_verdict.gate.clear()
+        scripted_model.append(([], [_booking(scripted_model.tool_use, "endurance")]))
+        scripted_model.append((last_words, ()))
+        _, said, _ = _send(db_session, user, words + BOOK_MONDAY, voice)
+        replies.append(said)
+
+    done, silent = replies
+    assert "Booked." not in done and "Done" not in done and "all set" not in done
+    assert silent.strip() in done
+
+
+@VOICE
+def test_a_confirmation_waiting_on_the_verdict_goes_out_when_none_comes(
+    db_session, rider, scripted_model, late_verdict, voice
+):
+    late_verdict.adds = []
+    late_verdict.gate.clear()
+    scripted_model.append(([], [_booking(scripted_model.tool_use, "endurance")]))
+    scripted_model.append((["Booked. Enjoy it."], ()))
+    _, said, _ = _send(db_session, rider, "Book me an easy ride on Monday.", voice)
+    assert said.strip() == "Booked. Enjoy it."
+
+
+@VOICE
+@pytest.mark.parametrize("message", [
+    CRISIS, "I'm 24 weeks pregnant and want to keep my training going.",
+], ids=["crisis", "pregnancy"])
+def test_what_done_said_never_stands_above_a_red_flags_whole_fixed_reply(
+    db_session, rider, scripted_model, voice, message
+):
+    """The booking went in; "You're all set. Enjoy it." then stood above the
+    whole fixed reply, where the bare "Booked." never did."""
+    done, silent = _against_silence(
+        db_session, rider, scripted_model, message + BOOK_MONDAY,
+        [([], _book), (["Done, you're all set. Enjoy it."], _nothing)], voice,
+    )
+    assert "all set" not in done
+    assert done == "Enjoy it.\n\n" + silent
+
+
+def _steps(tool, workout_type):
+    return tool("add_workout", {
+        "scheduled_date": (date.today() + timedelta(days=3)).isoformat(),
+        "title": "PB reps", "workout_type": workout_type,
+        "steps": [{"step_type": "steady_state", "duration_seconds": 1200, "power_watts": 245}],
+    })
+
+
+@VOICE
+@pytest.mark.parametrize("word, shown", [
+    ("Booked.", "Booked."), ("Booked for Saturday.", "Booked for Saturday."),
+    ("PB reps booked for Saturday.", "PB reps booked for Saturday."),
+    ("Done, it's in for Saturday.", "It's in for Saturday."),
+])
+def test_a_confirmation_after_steps_fixed_on_a_retry_reaches_the_rider(
+    db_session, rider, scripted_model, voice, word, shown
+):
+    """Steps above their type's ceiling are no safety gate: the coach fixed
+    the type and the session went in, yet the first refusal still counted,
+    and the rider got the no-reply apology over a booked session."""
+    tool = scripted_model.tool_use
+    scripted_model.append(([], [_steps(tool, "endurance")]))
+    scripted_model.append(([], [_steps(tool, "threshold")]))
+    scripted_model.append(([word], ()))
+
+    chunks, said, stored = _send(db_session, rider, "Book me PB reps on Saturday.", voice)
+
+    first = scripted_model.calls[1]["messages"][-1]["content"][0]["content"]
+    assert first.startswith(coach_service._STEPS_MISMATCH)
+    assert said.strip() == shown and _workouts(db_session) == 1
+    assert not (stored.context_snapshot or {}).get("fallback")
+
+
+def test_a_safety_gate_refusal_is_never_got_past_by_a_retry():
+    out, _ = _refused_then("Booked.", [REFUSED, BOOKED])
+    assert out == ""
+
+
+REBUILT_PLAN = (
+    "The plan has been rebuilt around it: 'Plan for Mallorca 312', Friday 16 October to "
+    "Sunday 30 May 2027."
+)
+NO_PLAN = "There is no current plan, so no sessions follow from this goal yet."
+FILED = "Filed the goal 'Mallorca 312' for Sunday 30 May 2027 (ID: g1). "
+MOVED_GOAL = "Updated the goal 'Mallorca 312' (event_date). "
+
+
+@pytest.mark.parametrize("results, word", [
+    ([("create_goal", FILED + REBUILT_PLAN, {"event_name": "Mallorca 312"})], "Goal added."),
+    ([("create_goal", FILED + REBUILT_PLAN, {"event_name": "Mallorca 312"})], "Added."),
+    ([("update_goal", MOVED_GOAL + REBUILT_PLAN, {"goal_id": "g1", "event_date": "2026-11-29"})],
+     "Updated."),
+    ([("update_goal", MOVED_GOAL + REBUILT_PLAN, {"goal_id": "g1", "event_date": "2026-11-29"})],
+     "Moved to 29 November."),
+    ([("update_goal", MOVED_GOAL + NO_PLAN, {"goal_id": "g1", "event_date": "2026-11-29"})],
+     "Updated."),
+    ([("update_goal", MOVED_GOAL + NO_PLAN, {"goal_id": "g1", "event_date": "2026-11-29"})],
+     "Moved."),
+    ([("create_goal", FILED + NO_PLAN, {"event_name": "Mallorca 312"})], "Added."),
+])
+def test_a_goal_that_went_in_is_confirmed_in_its_own_words(results, word):
+    """Every verb was checked against the plan's "rebuild", which none
+    named: "Goal added." and "Updated." after a rebuild became the no-reply
+    apology."""
+    out, _ = _refused_then(word, results)
+    assert out == word
+
+
+def test_a_goal_verb_never_names_a_session_change():
+    out, _ = _refused_then("Skipped.", [
+        ("create_goal", FILED + REBUILT_PLAN, {"event_name": "Mallorca 312"}),
+    ])
+    assert out == ""
+
+
+@pytest.mark.parametrize("message, text, shown", [
+    ("Book me a threshold session this week", "Your next threshold session is on Thursday.", None),
+    ("Move my intervals to Sunday",
+     "Your intervals are on Thursday. Want me to move them to Sunday?", None),
+    ("Can you move Saturday's long ride?", "Where to? It's on Saturday at the moment.", None),
+    ("Change tomorrow to an easy ride", "Tomorrow's already easy. It's booked as endurance.", None),
+    ("Can you make Saturday harder?", "I'd keep it as it is. It's scheduled as threshold.", None),
+    ("Please add a recovery spin on Sunday", "I'd rest instead. Your long ride is on Saturday.",
+     None),
+    ("Can you add it back? I skipped Tuesday.", "No need. You skipped it for good reason.", None),
+    ("Can you skip Thursday?", "I'd keep it. Skipped sessions add up.", None),
+    # What the rider asked for, said with no tool behind it: still a claim.
+    ("Book me a ride on Thursday", "Easy spin on Thursday. It's on Thursday.",
+     "Easy spin on Thursday. "),
+    ("Skip tomorrow", "Okay. Tomorrow's skipped.", "Okay. "),
+])
+def test_with_no_tool_only_the_change_asked_for_is_a_claim(message, text, shown):
+    """Any sentence placing a session or using a change word was taken for
+    the change the rider asked for: "Your next threshold session is on
+    Thursday." to "Book me a threshold session this week" became the no-reply
+    apology."""
+    guard = _plain_guard()
+    guard.message = message
+    assert guard.feed(text) + guard.flush() == (text if shown is None else shown)
+
+
+@pytest.mark.parametrize("results, text", [
+    ([SKIPPED], "Skipped. Your intervals are booked for Saturday."),
+    ([SKIPPED], "Done. You've got Saturday's long ride booked."),
+    ([BOOKED], "Booked. You skipped Tuesday, so this helps."),
+    ([BOOKED], "Booked. Thursday's intervals moved last week."),
+    ([SKIPPED], "Skipped. Saturday is booked as your long ride."),
+])
+def test_a_short_sentence_about_another_session_goes_out_after_a_change(results, text):
+    out, _ = _refused_then(text, results)
+    assert out == text
+
+
+@pytest.mark.parametrize("results, text, shown", [
+    ([SKIPPED], "Skipped. Moved to Thursday.", "Skipped. "),
+    ([SKIPPED], "Skipped. Your Tuesday ride is booked.", "Skipped. "),
+    ([BOOKED], "Booked. Rescheduled to Thursday.", "Booked. "),
+])
+def test_a_change_claimed_onto_a_day_is_still_checked_after_a_change(results, text, shown):
+    out, _ = _refused_then(text, results)
+    assert out == shown
+
+
+@pytest.mark.parametrize("message, text", [
+    ("Am I all set for the weekend?", "Yes, all set. Saturday is the long ride."),
+    ("Great, thanks. Is everything set?", "Yes, all set. Enjoy the week."),
+    ("Did that go in?", "Yes, all done."),
+    ("Did that go in?", "Yes, booked. Saturday, 60 minutes easy."),
+    ("Perfect, thanks", "All booked. Enjoy Saturday."),
+    ("Thanks, see you Saturday", "All set. Enjoy it."),
+    ("Thanks!", "All sorted. Enjoy the ride."),
+])
+def test_a_recap_in_any_words_reaches_the_rider(db_session, rider, scripted_model, message, text):
+    scripted_model.append(([text], ()))
+    _, said, _ = _send(db_session, rider, message)
+    assert said.strip() == text
+
+
+@VOICE
+def test_a_turn_with_no_words_left_over_a_change_says_the_change_went_in(
+    db_session, rider, scripted_model, voice
+):
+    """The reply check took out every word after a booking that went in, and
+    the rider was asked to send one part at a time: sent again, the session
+    is booked twice. The next turn is told the change went in."""
+    scripted_model.append(([], [_booking(scripted_model.tool_use, "endurance")]))
+    scripted_model.append((["Moved."], ()))
+
+    chunks, said, stored = _send(db_session, rider, "Book me an easy ride on Monday.", voice)
+
+    assert said.strip() == coach_service.REPLY_FAILED_PLAN_CHANGED
+    assert any(c["type"] == "plan_updated" for c in chunks)
+    assert stored.context_snapshot["fallback"] is True and stored.context_snapshot["changed"]
+    history = coach_service._build_messages(stored.session)
+    assert history[-1]["content"] == coach_service._NO_REPLY_CHANGED_NOTE
+
+
+def test_a_turn_with_no_words_left_over_a_goal_says_the_goal_went_in():
+    guard = _plain_guard()
+    guard.before_tools()
+    guard.after_tools([("create_goal", FILED + "The plan was NOT rebuilt: that step failed.",
+                        {"event_name": "Mallorca 312"})])
+    assert guard.feed("Done.") + guard.flush() == ""
+    assert coach_service._no_reply_line(guard) == (coach_service.REPLY_FAILED_GOAL_CHANGED, True)
+    assert coach_service._no_reply_line(_plain_guard()) == (
+        coach_service._NO_REPLY_FALLBACK, False,
+    )
+
+
+@pytest.mark.parametrize("text, shown", [
+    ("Confirmed: you rode 60 minutes on Tuesday.", "You rode 60 minutes on Tuesday."),
+    ("All done, that was a solid hour.", "That was a solid hour."),
+    ("Sorted, it was Tuesday's ride.", "It was Tuesday's ride."),
+    ("Nice ride. All done for the week now.", "Nice ride. All done for the week now."),
+])
+def test_after_a_lookup_a_done_keeps_what_it_says(text, shown):
+    """No change was made for the lead to claim, yet it went with the
+    answer: "Confirmed: you rode 60 minutes on Tuesday." left nothing."""
+    out, _ = _refused_then(text, [FOUND])
+    assert out == shown
+
+
+@VOICE
+def test_after_a_lookup_a_done_keeps_what_it_says_in_a_whole_turn(
+    db_session, rider, scripted_model, voice
+):
+    scripted_model.append(([], [scripted_model.tool_use("find_ride", {"query": "yesterday"})]))
+    scripted_model.append((["Nice ride. All done for the week now."], ()))
+    _, said, _ = _send(db_session, rider, "How did yesterday go?", voice)
+    assert said.strip() == "Nice ride. All done for the week now."
+
+
+def test_a_held_confirmation_keeps_its_rounds_paragraph_break():
+    guard = _plain_guard()
+    out = guard.round_break() + guard.feed("Booked. ") + guard.before_tools()
+    out += guard.after_tools([BOOKED, FOUND])
+    out += guard.round_break() + guard.feed("Yesterday looked easy enough, so that works.")
+    assert out + guard.flush() == "Booked.\n\nYesterday looked easy enough, so that works."
+
+    # In the same round, no break.
+    guard = _plain_guard()
+    guard.before_tools()
+    guard.after_tools([BOOKED])
+    assert guard.feed("Booked. Enjoy it.") + guard.flush() == "Booked. Enjoy it."
+
+
+SATURDAY_ASK = "Book me an easy ride on Saturday."
+FILED_NO_PLAN = ("create_goal", FILED + NO_PLAN, {"event_name": "Mallorca 312"})
+
+
+@pytest.mark.parametrize("results, text, shown", [
+    # A confirmation, never a description of another session.
+    ([SKIPPED], "Booked: easy 60 minutes on Monday.", ""),
+    ([SKIPPED], "Skipped. Easy spin booked for Monday.", "Skipped. "),
+    # With no tool, any change confirmed is the one asked for.
+    (None, "Moved to Wednesday.", ""),
+    (None, "Your session is now on Wednesday 21 October.", ""),
+    (None, "Got it, Tuesday's skipped and you've got a rest day.", ""),
+    (None, "I've booked an easy spin for Saturday.", ""),
+    (None, "I'm booking you an easy spin on Saturday.", ""),
+    # A goal filed is never a session booked.
+    ([FILED_NO_PLAN], "Booked.", ""),
+    ([FILED_NO_PLAN], "Easy spin booked for Saturday.", ""),
+    ([FILED_NO_PLAN], "Done, it's in for Saturday.", ""),
+    ([FILED_NO_PLAN], "Saturday's in.", ""),
+    ([FILED_NO_PLAN], "Done.", "Done."),
+    # After a lookup, what a "Done" claims goes with it.
+    ([FOUND], "Done, I've moved it to Wednesday.", ""),
+])
+def test_a_change_no_tool_made_is_never_confirmed(results, text, shown):
+    guard = _plain_guard()
+    guard.message = SATURDAY_ASK
+    if results is not None:
+        guard.before_tools()
+        guard.after_tools(results)
+    assert guard.feed(text) + guard.flush() == shown
