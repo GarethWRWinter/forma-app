@@ -691,6 +691,32 @@ def test_the_quota_after_words_keeps_the_words(
     assert "went_in" not in (stored.context_snapshot or {})
 
 
+@pytest.mark.parametrize("what", ["booking", "no change"])
+def test_the_quota_ending_in_voice_speaks_the_opening_line_first(
+    db_session, rider, scripted_model, clock, monkeypatch, what
+):
+    """The opening line was shown above the quota message and the lines, and
+    never spoken, where every other ending that lists what went in speaks
+    it first. With nothing listed the quota message is not spoken at all, as
+    in the reviewed merge."""
+    from app.core import forma_core
+
+    spoken = _tts(monkeypatch)
+    if what == "booking":
+        scripted_model.append(([], [_easy_spin(scripted_model.tool_use)]))
+    _quota_after(monkeypatch, scripted_model, rounds=len(scripted_model))
+
+    chunks, said, _ = _send(db_session, rider, "Book me an easy ride on Monday", True)
+
+    if what == "no change":
+        assert said == forma_core.QUOTA_MESSAGE and spoken == []
+        return
+    line = "Booked: Easy spin, Monday 19 October."
+    assert said == "\n\n".join([forma_core.QUOTA_MESSAGE, coach_service.CHANGES_HEADER, line])
+    assert spoken == [INTRO.strip(), forma_core.QUOTA_MESSAGE, coach_service.CHANGES_HEADER, line]
+    assert _audio_indexes(chunks) == [0, 1, 2, 3]
+
+
 @ENDING
 def test_spoken_indexes_never_repeat(db_session, rider, scripted_model, clock, monkeypatch, ending):
     """In voice mode each spoken piece takes the next index, the app's lines
@@ -743,6 +769,18 @@ def test_a_failed_call_after_a_refused_change_keeps_its_line(
 # What follows the list when a plan or goal call this turn was refused or
 # errored, whatever any later call did.
 NOT_ALL_IN = "Not everything I tried went in. Ask me about it if anything looks missing."
+# What the next turn's history says before the calls that did not go in.
+NOT_IN_INTRO = (
+    "The plan and goal calls that did not go in, in the order they ran, each with "
+    "what its tool said then. A later call may have made the same change; what went "
+    "in, above, is the plan as saved."
+)
+
+
+def _not_in(call, result: str) -> str:
+    """A call that did not go in, as the next turn's history lists it: the
+    call as it was sent, then what its tool said."""
+    return f"{call.name} {json.dumps(call.input, ensure_ascii=False)}: {result.strip()}"
 # An hour at 65% of FTP: steps any endurance session may carry.
 STEADY_HOUR = [{"step_type": "steady_state", "duration_seconds": 3600, "power_pct": 65}]
 # Steps that ask for 120% of FTP: refused on an endurance session for any
@@ -810,11 +848,11 @@ def test_a_change_that_did_not_go_in_is_never_left_off_the_list(
     the tool's own words, so the coach can answer "what didn't?"."""
     w = _session(db_session, rider)
     tool = scripted_model.tool_use
-    skip = tool("skip_workout", {"workout_id": w.id})
+    skip, hard = tool("skip_workout", {"workout_id": w.id}), _too_hard(tool)
     if later:
-        scripted_model.extend([([], [skip]), ([], [_too_hard(tool)])])
+        scripted_model.extend([([], [skip]), ([], [hard])])
     else:
-        scripted_model.append(([], [skip, _too_hard(tool)]))
+        scripted_model.append(([], [skip, hard]))
     _end(ending, monkeypatch, scripted_model)
 
     _, said, stored = _send(
@@ -824,15 +862,13 @@ def test_a_change_that_did_not_go_in_is_never_left_off_the_list(
     results = [r for call in scripted_model.calls[1:] for r in _results(call)]
     refused = next(r for r in results if r.startswith("Not changed"))
     assert refused.startswith("Not changed. This session's steps ask for 120%")
-    lines = ["Skipped: Threshold reps, Monday 19 October.", NOT_ALL_IN]
-    assert said == _ended(ending, lines)
-    assert stored.context_snapshot["went_in"] == lines
-    assert stored.context_snapshot["not_in"] == [refused.strip()]
+    line = "Skipped: Threshold reps, Monday 19 October."
+    assert said == _ended(ending, [line, NOT_ALL_IN])
+    assert stored.context_snapshot["went_in"] == [line]
+    assert stored.context_snapshot["not_in"] == [_not_in(hard, refused)]
     assert ("code_written" in stored.context_snapshot) == (ending == "done")
     note = coach_service._build_messages(stored.session)[-1]["content"]
-    assert note.endswith(
-        "What the tools said about what did not go in:\n- " + refused.strip() + "]"
-    )
+    assert note.endswith(NOT_IN_INTRO + "\n- " + _not_in(hard, refused) + "]")
     if ending != "done":
         assert note.startswith(stored.content + "\n\n[")
 
@@ -896,8 +932,8 @@ def test_a_refusal_is_never_taken_as_put_right(
     refused = _results(scripted_model.calls[1])[0]
     assert refused.startswith(("Error", "Not changed"))
     assert said == _ended(ending, [line, NOT_ALL_IN])
-    assert stored.context_snapshot["not_in"] == [refused.strip()]
-    assert refused.strip() in coach_service._build_messages(stored.session)[-1]["content"]
+    assert stored.context_snapshot["not_in"] == [_not_in(rounds[0][0], refused)]
+    assert _not_in(rounds[0][0], refused) in coach_service._build_messages(stored.session)[-1]["content"]
 
 
 def _shared_ride(db, user):
@@ -992,14 +1028,61 @@ def test_a_change_whose_tool_broke_before_saving_is_not_all_in(
     monkeypatch.setattr(coach_service, "_execute_tool", run)
     w = _session(db_session, rider)
     tool = scripted_model.tool_use
-    scripted_model.append(([], [_easy_spin(tool), tool("skip_workout", {"workout_id": w.id})]))
+    skip = tool("skip_workout", {"workout_id": w.id})
+    scripted_model.append(([], [_easy_spin(tool), skip]))
     _end(ending, monkeypatch, scripted_model)
 
     _, said, stored = _send(db_session, rider, "Swap Monday for an easy spin", voice)
 
     assert _results(scripted_model.calls[1])[1] == coach_service._TOOL_CRASHED
     assert said == _ended(ending, ["Booked: Easy spin, Monday 19 October.", NOT_ALL_IN])
-    assert stored.context_snapshot["not_in"] == [coach_service._TOOL_CRASHED.strip()]
+    assert stored.context_snapshot["not_in"] == [_not_in(skip, coach_service._TOOL_CRASHED)]
+
+
+@VOICE
+@ENDING
+def test_the_next_turn_knows_which_call_did_not_go_in(
+    db_session, rider, scripted_model, clock, monkeypatch, voice, ending
+):
+    """The skip broke, and the same skip in the next round went in. The next
+    turn had only "Error: that change failed", naming no call, listed under
+    what went in beside the rider's "Not everything I tried went in": asked
+    what did not, the coach had nothing to answer from and was told to say
+    the skip failed. It now has each call as it was sent, in the order they
+    ran, and knows a later call may have made the same change."""
+    real = coach_service._execute_tool
+    broke = []
+
+    def run(db, user, name, args):
+        if name == "skip_workout" and not broke:
+            broke.append(name)
+            raise RuntimeError("the skip broke")
+        return real(db, user, name, args)
+
+    monkeypatch.setattr(coach_service, "_execute_tool", run)
+    w = _session(db_session, rider)
+    tool = scripted_model.tool_use
+    skip = tool("skip_workout", {"workout_id": w.id})
+    scripted_model.extend([([], [skip]), ([], [tool("skip_workout", {"workout_id": w.id})])])
+    _end(ending, monkeypatch, scripted_model)
+
+    _, said, stored = _send(db_session, rider, "Skip Monday for me", voice)
+
+    line = "Skipped: Threshold reps, Monday 19 October."
+    assert said == _ended(ending, [line, NOT_ALL_IN])
+    assert stored.context_snapshot["went_in"] == [line]
+    entry = _not_in(skip, coach_service._TOOL_CRASHED)
+    assert entry == f'skip_workout {{"workout_id": "{w.id}"}}: ' + coach_service._TOOL_CRASHED
+    assert stored.context_snapshot["not_in"] == [entry]
+    not_in = f"{NOT_IN_INTRO}\n- {entry}"
+    note = coach_service._build_messages(stored.session)[-1]["content"]
+    if ending == "done":
+        assert note == (
+            "[No answer was written to the message above. The app showed the rider "
+            f"what went in, from the plan as saved:\n{line}\n{not_in}]"
+        )
+    else:
+        assert note == f"{stored.content}\n\n[{not_in}]"
 
 
 def _booked_id_into(monkeypatch, tool_input: dict) -> None:
@@ -1054,7 +1137,31 @@ def _net(what, db, user, tool, monkeypatch):
         return [[tool("update_workout", {
             "workout_id": w.id, "title": "Easy spin", "workout_type": "endurance",
             "scheduled_date": WEDNESDAY.isoformat(),
-        })]], ["Moved: Easy spin to Wednesday 21 October.", "Changed: Easy spin, Wednesday 21 October."]
+        })]], ["Moved: Threshold reps to Wednesday 21 October.", "Changed: Easy spin, Wednesday 21 October."]
+    if what == "moved and retyped":
+        # The app gives a stock title the new type's name: the move still
+        # names the session the rider knew, so they can tell which one went.
+        w = _session(db, user, title="Threshold")
+        return [[tool("update_workout", {
+            "workout_id": w.id, "workout_type": "endurance", "scheduled_date": WEDNESDAY.isoformat(),
+        })]], [
+            "Moved: Threshold to Wednesday 21 October.",
+            "Changed: Short endurance ride, Wednesday 21 October.",
+        ]
+    if what in ("moved, then skipped", "retitled, then skipped"):
+        # Each change the session ended with has its line, the skip included.
+        w = _session(db, user)
+        moved = what.startswith("moved")
+        edit = {"scheduled_date": WEDNESDAY.isoformat()} if moved else {"title": "Easy spin"}
+        day = "Wednesday 21 October" if moved else "Monday 19 October"
+        name = "Threshold reps" if moved else "Easy spin"
+        return [
+            [tool("update_workout", {"workout_id": w.id, **edit})],
+            [tool("skip_workout", {"workout_id": w.id})],
+        ], [
+            f"Moved: Threshold reps to {day}." if moved else f"Changed: Easy spin, {day}.",
+            f"Skipped: {name}, {day}.",
+        ]
     if what in ("given its own type", "moved under its own type"):
         # The app works out a load estimate for a session that had none: a
         # number the call never sent, so not a change.
@@ -1081,6 +1188,7 @@ def _net(what, db, user, tool, monkeypatch):
 NET = [
     "booked, then given steps", "booked, then moved", "booked, then skipped",
     "moved, then moved back", "swapped twice", "moved under its own name", "moved and changed",
+    "moved and retyped", "moved, then skipped", "retitled, then skipped",
     "given its own type", "moved under its own type",
     "skipped, then put back", "skipped again", "goal given its own date",
 ]

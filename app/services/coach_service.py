@@ -3493,8 +3493,14 @@ _CHANGES_NOTE = (
     "[No answer was written to the message above. The app showed the rider "
     "what went in, from the plan as saved:\n{lines}]"
 )
-# And what the tools said about the calls that did not go in.
-_NOT_IN_NOTE = "What the tools said about what did not go in:\n{results}"
+# And each plan or goal call that did not go in, as it was sent, with what
+# its tool said. Whether a later call made the same change is not worked
+# out here: the lines above it are the plan as saved.
+_NOT_IN_NOTE = (
+    "The plan and goal calls that did not go in, in the order they ran, each with "
+    "what its tool said then. A later call may have made the same change; what went "
+    "in, above, is the plan as saved.\n{results}"
+)
 # A plan or goal tool's result when its change went in.
 _WENT_IN = {
     "add_workout": "Booked",
@@ -3534,8 +3540,9 @@ def _texts(value) -> list[str] | None:
 
 
 def _not_in_note(msg: ChatMessage) -> str:
-    """What the tools said about the calls that did not go in, as a coach
-    message that listed what went in stored it; empty when there were none."""
+    """The plan and goal calls that did not go in, each as it was sent with
+    what its tool said, as a coach message that listed what went in stored
+    them; empty when there were none."""
     snapshot = msg.context_snapshot
     not_in = _texts(snapshot.get("not_in")) if isinstance(snapshot, dict) else None
     if msg.role != ChatRole.assistant or not not_in:
@@ -3545,8 +3552,8 @@ def _not_in_note(msg: ChatMessage) -> str:
 
 def _changes_note(msg: ChatMessage) -> str:
     """The next turn's view of the app's lines: the lines alone (never the
-    AI disclosure a chat's first reply opens with), then what the tools said
-    about anything that did not go in."""
+    AI disclosure a chat's first reply opens with, nor CHANGES_NOT_ALL_IN),
+    then the calls that did not go in."""
     lines = _texts((msg.context_snapshot or {}).get("went_in")) or [msg.content or ""]
     not_in = _not_in_note(msg)
     return _CHANGES_NOTE.format(lines="\n".join(lines) + (f"\n{not_in}" if not_in else ""))
@@ -3591,8 +3598,8 @@ class _TurnChanges:
     rows: each session, goal and plan a tool touched, as the turn found it
     and as it left it. A session booked and then moved is one booking on its
     new day, one moved and moved back is no change, and a call that changed
-    nothing gets no line. What the tools said about a plan or goal call that
-    was refused or errored is kept for the next turn."""
+    nothing gets no line. A plan or goal call that was refused or errored is
+    kept for the next turn, as it was sent, with what its tool said."""
 
     def __init__(self) -> None:
         # Each session and goal a tool touched, as the turn found it (None:
@@ -3603,14 +3610,15 @@ class _TurnChanges:
         self._sent: dict[str, set[str]] = {}
         # The active plans before the first goal tool ran (None: none ran).
         self._plans: set[str] | None = None
-        # What the tools said about the plan and goal calls that did not go in.
+        # The plan and goal calls that did not go in, each as it was sent
+        # with what its tool said, in the order they ran.
         self._refused: list[str] = []
         # One of the coach's own safety tools ran this turn.
         self._safety_tool = False
         # A row could not be read: the ending stays as it was.
         self._unsure = False
-        # What ending() listed, and the tools' words behind
-        # CHANGES_NOT_ALL_IN, once it has.
+        # The lines ending() wrote (CHANGES_NOT_ALL_IN never among them),
+        # and the calls behind that sentence, once it has.
         self.listed: list[str] = []
         self.not_in: list[str] = []
 
@@ -3764,7 +3772,8 @@ class _TurnChanges:
             read = self._goal_states if name == "update_goal" else self._session_states
             went_in = read(db, user, list(before)) != before
         if not went_in:
-            self._refused.append(result.strip()[:500])
+            sent = json.dumps(args, ensure_ascii=False, default=str)[:500]
+            self._refused.append(f"{name} {sent}: {result.strip()[:500]}")
         elif name == "update_workout":
             for wid in before:
                 self._sent.setdefault(wid, set()).update(k for k in _EDIT_FIELDS if k in args)
@@ -3790,11 +3799,8 @@ class _TurnChanges:
             return []
         if not lines:
             return []
-        self.not_in = list(self._refused)
-        if self.not_in:
-            lines.append(CHANGES_NOT_ALL_IN)
-        self.listed = lines
-        return lines
+        self.listed, self.not_in = lines, list(self._refused)
+        return [*lines, CHANGES_NOT_ALL_IN] if self.not_in else lines
 
     def _lines(self, db: Session, user: User) -> list[str]:
         # One per change to each session, goal and plan the turn touched.
@@ -3827,20 +3833,25 @@ class _TurnChanges:
     @staticmethod
     def _session_lines(start: _SessionState | None, end: _SessionState | None, sent) -> list[str]:
         """One session's changes, from how the turn found it to how it left
-        it; none when the calendar no longer shows it or nothing changed. A
-        session put back on the plan after a skip has changed."""
+        it: a line each for a move, a change and a skip; none when the
+        calendar no longer shows it or nothing changed. A move names the
+        session as the turn found it, so the rider can tell which one went;
+        the other lines name it as the calendar shows it now. A session put
+        back on the plan after a skip has changed."""
         if end is None:
             return []
         name, day = end.name, _say_day(end.day)
         if start is None:
             return [] if end.skipped else [f"Booked: {name}, {day}."]
-        if end.skipped:
-            return [] if start.skipped else [f"Skipped: {name}, {day}."]
-        lines = [f"Moved: {name} to {day}."] if end.day != start.day else []
+        if start.skipped and end.skipped:
+            return []
+        lines = [f"Moved: {start.name} to {day}."] if end.day != start.day else []
         if start.skipped or any(
             start.edits[_EDIT_FIELDS[key]] != end.edits[_EDIT_FIELDS[key]] for key in sent
         ):
             lines.append(f"Changed: {name}, {day}.")
+        if end.skipped:
+            lines.append(f"Skipped: {name}, {day}.")
         return lines
 
 
@@ -8298,7 +8309,10 @@ async def _stream_voice_turn(
                 ending = [forma_core.QUOTA_MESSAGE, CHANGES_HEADER, *lines] if lines else []
                 full_response = "\n\n".join(ending) or forma_core.QUOTA_MESSAGE
                 yield _sse_text(full_response)
-                async for piece in speak_cards(ending):
+                # The opening line shown above the ending is spoken first, as
+                # in the other endings that list what went in.
+                opening = [sentence_buffer.strip()] if ending and sentence_buffer.strip() else []
+                async for piece in speak_cards(opening + ending):
                     yield piece
         except Exception as e:
             # Never leave the rider with silence AND an empty bubble. A red-flag
