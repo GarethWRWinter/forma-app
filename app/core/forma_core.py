@@ -108,9 +108,10 @@ TASKS: dict[str, TaskConfig] = {
 }
 
 # USD per million tokens, matched by model-id prefix. Cache reads bill at
-# 0.1x input, cache writes at 1.25x (5-minute TTL).
+# 0.1x input, cache writes at 1.25x (5-minute TTL). List prices checked
+# 21 Oct 2026; scripts/reprice_forma_calls.py re-costs the ledger after a change.
 _PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
-    "claude-sonnet-5": (3.00, 15.00),
+    "claude-sonnet-5": (2.00, 10.00),
     "claude-haiku-4-5": (1.00, 5.00),
     "claude-opus-4-8": (5.00, 25.00),
 }
