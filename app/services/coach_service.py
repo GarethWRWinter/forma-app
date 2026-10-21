@@ -1864,13 +1864,6 @@ def _type_value(value) -> str | None:
     return None if value is None else str(getattr(value, "value", value))
 
 
-# The one refusal that is no safety gate: steps that ask more than the
-# session's own type allows, for any rider. The coach fixes the type or the
-# steps and calls again, and a confirmation then is true (_CheckedReply
-# _retried). Every gate ("Not changed: ...") stays a refusal.
-_STEPS_MISMATCH = "Not changed. This session's steps ask for"
-
-
 def _intensity_refusal(db: Session, user: User, candidate: dict, on_date: date) -> str | None:
     """Why a session cannot go in (or stay in) the plan on that day, worded
     for the coach to pass on, or None when it can.
@@ -1884,7 +1877,7 @@ def _intensity_refusal(db: Session, user: User, candidate: dict, on_date: date) 
     if allowed == "all":
         peak = round(safety_service.max_step_pct(candidate) * 100)
         return (
-            f"{_STEPS_MISMATCH} {peak}% of FTP, more than a "
+            f"Not changed. This session's steps ask for {peak}% of FTP, more than a "
             f"{candidate.get('workout_type')} session should. Send steps that fit its type, "
             "change its workout_type to match the steps, or skip it."
         )
@@ -3461,23 +3454,6 @@ _NO_REPLY_NOTE = (
 )
 
 
-def _no_reply_line(guard) -> tuple[str, bool]:
-    """What a turn that reached the rider with no words ends on, and whether
-    a change went in under it. Once one did ("Booked." after a booking,
-    taken out by the reply check), never the apology that asks for one part
-    at a time: sent again, the session would be booked twice."""
-    try:
-        changed = guard.change_went_in() if isinstance(guard, _CheckedReply) else None
-    except Exception:
-        logger.exception("Reading whether a change went in failed")
-        changed = None
-    if changed == "plan":
-        return REPLY_FAILED_PLAN_CHANGED, True
-    if changed == "goal":
-        return REPLY_FAILED_GOAL_CHANGED, True
-    return _NO_REPLY_FALLBACK, False
-
-
 def _was_no_reply(msg: ChatMessage) -> bool:
     """A stored coach message that is the fallback, not an answer."""
     if msg.role != ChatRole.assistant:
@@ -3486,6 +3462,204 @@ def _was_no_reply(msg: ChatMessage) -> bool:
     if isinstance(snapshot, dict) and snapshot.get("fallback") is True:
         return True
     return (msg.content or "").strip() == _OLD_NO_REPLY_FALLBACK
+
+
+# ── What went in, when no words are left to say it ─────────────────────────
+#
+# The reply check drops a bare "Done." after a tool (red team: the model
+# confirmed changes twice, confirmed holds the code had not placed, and said
+# "Done" after changes that were refused), and a model call can fail after a
+# tool ran. Over a session that was booked, the no-reply apology or "Try
+# sending that again" has the rider send it again and book it twice. So in
+# an ordinary turn those two endings say what went in instead: one line per
+# change, written here from the rows the plan and goal tools wrote, never
+# from the model's words. A turn with a red flag, a card, a hold or an
+# account held as under 18 keeps its ending exactly as it was.
+
+# The failure line once a change went in: never "send it again".
+REPLY_FAILED_CHANGES = "I couldn't finish a reply just now. Here's what went in:"
+# What the next turn's history shows in place of the lines, so the coach
+# knows the change went in and that the words were the app's, not its own.
+_CHANGES_NOTE = (
+    "[No answer was written to the message above. The app showed the rider "
+    "what went in, from the plan as saved:\n{lines}]"
+)
+# What an update_workout can change besides the day: with none of these,
+# it is a move.
+_SESSION_EDITS = (
+    "title", "description", "workout_type", "planned_duration_seconds", "planned_tss", "steps",
+)
+
+
+def _was_changes_ending(msg: ChatMessage) -> bool:
+    """A stored coach message that is the app's lines for what went in."""
+    snapshot = msg.context_snapshot
+    return (
+        msg.role == ChatRole.assistant
+        and isinstance(snapshot, dict)
+        and snapshot.get("code_written") is True
+    )
+
+
+def _plain_name(text) -> str:
+    return humanize(str(text or "")).strip().rstrip(".").strip()
+
+
+def _str_id(value) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _safety_decides_ending(db: Session, user: User, screen, guard) -> bool:
+    """Whether this turn's ending is the safety system's: a red flag or a
+    card, a hold on the account (an under-18 hold included), or a reply
+    check that reads the turn as a safety turn. Yes when unsure."""
+    try:
+        if screen is None or screen.hits or screen.cards:
+            return True
+        if getattr(guard, "safety_turn", True) or getattr(guard, "kinds", None):
+            return True
+        return safety_service.current_hold(db, user.id) is not None
+    except Exception:
+        logger.exception("Reading whether a turn is a safety turn failed (user=%s)", user.id)
+        return True
+
+
+class _TurnChanges:
+    """The plan and goal changes that went in this turn, as the rows the
+    tools wrote: a session booked (the rider's new booking), moved, changed
+    or skipped, a goal set or changed. Only a tool whose result says the
+    change went in counts, and a line is written only while its row still
+    shows the change."""
+
+    def __init__(self) -> None:
+        # (what, the row's id, the session's day before the tool ran)
+        self._went_in: list[tuple[str, str, date | None]] = []
+
+    def run(self, db: Session, user: User, name: str, tool_input) -> str:
+        """_run_tool, noting what a plan or goal tool changed."""
+        args = tool_input if isinstance(tool_input, dict) else {}
+        before = self._before(db, user, name, args)
+        result = _run_tool(db, user, name, tool_input)
+        if before is not None:
+            try:
+                self._note(db, user, name, args, result or "", before)
+            except Exception:
+                logger.exception("Noting what %s changed failed (user=%s)", name, user.id)
+        return result
+
+    @staticmethod
+    def _bookings(db: Session, user: User) -> set[str]:
+        # A booking belongs to no plan (add_workout).
+        return {
+            row.id for row in db.query(Workout.id).filter(
+                Workout.user_id == user.id, Workout.phase_id.is_(None)
+            )
+        }
+
+    @staticmethod
+    def _goals(db: Session, user: User) -> set[str]:
+        return {row.id for row in db.query(GoalEvent.id).filter(GoalEvent.user_id == user.id)}
+
+    def _before(self, db: Session, user: User, name: str, args: dict):
+        """What the rows look like before the tool runs: the rider's
+        bookings or goals (a new one is the tool's), or the days of the
+        sessions it names. None for a tool that changes neither."""
+        try:
+            if name == "add_workout":
+                return self._bookings(db, user)
+            if name == "create_goal":
+                return self._goals(db, user)
+            if name == "update_goal":
+                return {}
+            if name in ("update_workout", "swap_workout_date", "skip_workout"):
+                ids = [
+                    _str_id(args.get(key))
+                    for key in ("workout_id", "workout_id_a", "workout_id_b")
+                ]
+                return dict(
+                    db.query(Workout.id, Workout.scheduled_date)
+                    .filter(Workout.user_id == user.id, Workout.id.in_([i for i in ids if i]))
+                    .all()
+                )
+        except Exception:
+            logger.exception("Reading the rows before %s failed (user=%s)", name, user.id)
+        return None
+
+    def _note(self, db: Session, user: User, name: str, args: dict, result: str, before) -> None:
+        went_in = self._went_in.append
+        if name == "add_workout" and result.startswith("Booked"):
+            for workout_id in sorted(self._bookings(db, user) - before):
+                went_in(("booked", workout_id, None))
+        elif name == "create_goal" and result.startswith("Filed the goal"):
+            for goal_id in sorted(self._goals(db, user) - before):
+                went_in(("goal set", goal_id, None))
+        elif name == "update_goal" and result.startswith("Updated the goal"):
+            goal_id = _str_id(args.get("goal_id"))
+            if goal_id:
+                went_in(("goal changed", goal_id, None))
+        elif name == "skip_workout" and result.startswith("Skipped"):
+            workout_id = _str_id(args.get("workout_id"))
+            if workout_id in before:
+                went_in(("skipped", workout_id, before[workout_id]))
+        elif name == "update_workout" and result.startswith("Updated"):
+            workout_id = _str_id(args.get("workout_id"))
+            if workout_id in before:
+                moved = not any(key in args for key in _SESSION_EDITS)
+                went_in(("moved" if moved else "changed", workout_id, before[workout_id]))
+        elif name == "swap_workout_date" and result.startswith("Swapped"):
+            for key in ("workout_id_a", "workout_id_b"):
+                workout_id = _str_id(args.get(key))
+                if workout_id in before:
+                    went_in(("moved", workout_id, before[workout_id]))
+
+    def ending(self, db: Session, user: User, screen, guard) -> list[str]:
+        """The lines for an ending that has no words for the change, or none
+        when nothing went in or the turn's ending is the safety system's."""
+        if not self._went_in or _safety_decides_ending(db, user, screen, guard):
+            return []
+        lines: list[str] = []
+        for what, row_id, day_before in self._went_in:
+            try:
+                line = self._line(db, user, what, row_id, day_before)
+            except Exception:
+                logger.exception("Writing the line for a change failed (user=%s)", user.id)
+                line = None
+            if line and line not in lines:
+                lines.append(line)
+        return lines
+
+    @staticmethod
+    def _line(db: Session, user: User, what: str, row_id: str, day_before) -> str | None:
+        """One change, from its row as it is now; None once the row no
+        longer shows it."""
+        if what.startswith("goal"):
+            goal = (
+                db.query(GoalEvent)
+                .filter(GoalEvent.id == row_id, GoalEvent.user_id == user.id)
+                .first()
+            )
+            if goal is None or not goal.event_date:
+                return None
+            label = "Goal set" if what == "goal set" else "Goal changed"
+            return (
+                f"{label}: {_plain_name(goal.event_name)}, "
+                f"{_say_day(goal.event_date)} {goal.event_date.year}."
+            )
+        workout = (
+            db.query(Workout).filter(Workout.id == row_id, Workout.user_id == user.id).first()
+        )
+        if workout is None or workout.scheduled_date is None:
+            return None
+        name, day = _plain_name(_session_name(workout)), _say_day(workout.scheduled_date)
+        if what == "booked":
+            return f"Booked: {name}, {day}."
+        if what == "skipped":
+            skipped = _type_value(workout.status) == WorkoutStatus.skipped.value
+            return f"Skipped: {name}, {day}." if skipped else None
+        if what == "moved":
+            moved = workout.scheduled_date != day_before
+            return f"Moved: {name} to {day}." if moved else None
+        return f"Changed: {name}, {day}."
 
 
 def _last_round_choice(
@@ -3617,9 +3791,10 @@ class _TurnLog:
             self.rounds[-1]["results"].append(done)
 
     def emit(self, ended: str) -> None:
-        """ended: reply, fallback, quota, error, child (the fixed words for an
-        account held as possibly under 18), disconnected or crashed. Once
-        only."""
+        """ended: reply, fallback, changes (no words were left after a change
+        went in, and the rider got the app's lines for it, not the
+        fallback), quota, error, child (the fixed words for an account held
+        as possibly under 18), disconnected or crashed. Once only."""
         if self._emitted:
             return
         self._emitted = True
@@ -3666,15 +3841,6 @@ def _tool_outcome(name: str, result: str) -> tuple[str, int | None]:
     return "ok", None
 
 
-def _no_reply_note(msg: ChatMessage) -> str:
-    """The history's note for a turn that ended with no answer: that a change
-    went in under it, when one did (_no_reply_line)."""
-    snapshot = msg.context_snapshot
-    if isinstance(snapshot, dict) and snapshot.get("changed") is True:
-        return _NO_REPLY_CHANGED_NOTE
-    return _NO_REPLY_NOTE
-
-
 def _with_shared_note(msg: ChatMessage, shared_names: dict[str, str] | None) -> str:
     """A rider message that carried files, opening with their names."""
     snapshot = msg.context_snapshot
@@ -3706,20 +3872,22 @@ def _build_messages(
     files block does not.
 
     A coach turn that ended in the fallback shows as a plain note that no
-    answer was given, never as the apology the rider saw.
+    answer was given, never as the apology the rider saw; one that ended in
+    the app's lines for what went in shows them inside a note saying so.
     """
     messages = sorted(session.messages, key=lambda m: m.created_at)
 
     # Take last N messages
     recent = messages[-max_messages:] if len(messages) > max_messages else messages
 
-    return [
-        {
-            "role": msg.role,
-            "content": _no_reply_note(msg) if _was_no_reply(msg) else _with_shared_note(msg, shared_names),
-        }
-        for msg in recent
-    ]
+    def content(msg: ChatMessage) -> str:
+        if _was_no_reply(msg):
+            return _NO_REPLY_NOTE
+        if _was_changes_ending(msg):
+            return _CHANGES_NOTE.format(lines=msg.content)
+        return _with_shared_note(msg, shared_names)
+
+    return [{"role": msg.role, "content": content(msg)} for msg in recent]
 
 
 def _assistant_replied(db: Session, user: User, session: ChatSession | None) -> bool:
@@ -3919,342 +4087,17 @@ _FILLER_RX = re.compile(
 # Tools whose success changes nothing the rider asked for: a confirmation
 # after them is still narration. A file save that did not happen opens with
 # one of _FILE_NOT_SAVED (beside _CHANGED_NOTHING for the rest).
-# A proposal changes nothing until the rider approves it.
-_CONFIRM_NOT_A_CHANGE = {
-    "analyse_ride", "find_ride", "apply_safety_hold", "flag_for_review", "propose_plan_change",
-}
+_CONFIRM_NOT_A_CHANGE = {"analyse_ride", "find_ride", "apply_safety_hold", "flag_for_review"}
 _FILE_NOT_SAVED = ("Nothing was saved", "Not saved", "The save failed")
 
 # A confirmation that opens a sentence after a tool call: "Done, that
-# session's skipped", "Confirmed: your account's on a full hold". "That's
-# in" only as one ("That's in.", "That's in your plan"), never "That's in
-# your best interest, so don't drive yourself".
-_CONFIRM_WORDS = (
-    r"all done|done and dusted|done|sorted|that's done|that's sorted|that's in"
-    r"(?!\s+(?!(?:(?:your|the) (?:plan|calendar|diary)|for|on)\b)\w)|confirmed|ok(?:ay)?,? done|"
-    r"right,? done|all set|there we go|there you go|great,? done|perfect,? done"
-)
-# A hold's: its sentence only ever comes from code (hold_sentence).
-_CONFIRM_HOLD_WORDS = r"hold applied|applied|that's applied"
+# session's skipped", "Confirmed: your account's on a full hold".
 _CONFIRM_LEAD_RX = re.compile(
-    r"^\W*(?:" + _CONFIRM_WORDS + "|" + _CONFIRM_HOLD_WORDS + r")\b[,.:;!]*\s*", re.I
+    r"^\W*(?:all done|done and dusted|done|sorted|that's done|that's sorted|that's "
+    r"in|confirmed|ok(?:ay)?,? done|right,? done|all set|there we go|there you go|"
+    r"hold applied|applied|that's applied|great,? done|perfect,? done)\b[,.:;!]*\s*",
+    re.I,
 )
-# A sentence that only says a hold went on, in the coach's own words ("Hold
-# applied.", "Paused."), matched on _norm(sentence).strip(). The hold
-# sentence only ever comes from code, so these go in any round: one written
-# before apply_safety_hold ran went out whatever the tool then did. In an
-# ordinary turn with no hold, "Paused." or "On hold." may be about
-# something else, and waits for the hold tool instead (_BARE_APPLIED_RX).
-_BARE_HOLD_RX = re.compile(
-    r"\W*(?:all |that's |it's |now )?(?:" + _CONFIRM_HOLD_WORDS + r"|paused|on hold|on pause|held)"
-    r"\b[^\w:]*"
-)
-# The days a confirmation names.
-_DAY_NAME = (
-    r"(?:(?:this |next )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|today|"
-    r"tomorrow|tonight|(?:this |next |the )?weekend)"
-)
-# The day a short confirmation may name: "Booked in for Monday", "Scheduled
-# for Saturday the 24th", "Booked for Monday 19 October", "Booked for
-# Monday morning", "Booked for the 19th".
-_CONFIRM_DAY = (
-    r"(?:\s+(?:in\s+)?(?:for|on)\s+(?:" + _DAY_NAME + r"(?:\s+(?:morning|afternoon|evening|night))?"
-    r"(?:,?\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?(?:\s+(?:of\s+)?[a-z]+)?)?"
-    r"|the\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+(?:of\s+)?[a-z]+)?))?"
-)
-# A word a confirmation may open with: "Yep, done.", "Ok, booked."
-_CONFIRM_INTERJECTION = (
-    r"(?:(?:yep|yes|yeah|yup|sure|ok(?:ay)?|right|brilliant|nice|great|perfect|lovely|cool|"
-    r"excellent|awesome|fab|grand|good|nice one|no problem|no worries)\W+)?"
-)
-# A sentence that is nothing but a confirmation, in the words above (never a
-# hold's), the plan tools' own ("Booked.") or the rider's side of them
-# ("You're all set.", "Locked in.", "Monday's booked."), with at most the
-# day, matched on _norm(sentence).strip(). Nothing in it is checked against
-# a tool result, so it is only true when a plan change went in this turn
-# and nothing else happened (_CheckedReply._confirmation_backed). The list
-# is never the whole guarantee: a red flag's fixed reply never gives way to
-# a few short words in any wording (_CheckedReply._only_short_words), and a
-# change claimed in a few words after the plan tools changed nothing goes
-# (_DONE_WORD_RX).
-_BARE_CONFIRM_RX = re.compile(
-    r"\W*" + _CONFIRM_INTERJECTION + r"(?:" + _CONFIRM_WORDS + r"|it's (?:all )?done|consider it "
-    r"done|all sorted|it's in|you're (?:all )?set|" + _DAY_NAME + r"'s (?:all )?(?:booked|in|"
-    r"sorted|done|set|scheduled|locked in|pencill?ed in)|(?:all |that's |it's |you're |you are )?"
-    r"(?:booked|added|skipped|swapped|moved|updated|scheduled|pencill?ed|locked)(?: in| it)?)"
-    + _CONFIRM_DAY + r"\b[^\w:]*"
-)
-# The confirmations above that can be about the plan as it stands or an
-# earlier turn's change, with no change behind them: "You're booked in for
-# Saturday" to "Is Saturday still on?", "Yes, all done." to "Did that go
-# in?", "All set." to "Thanks, see you Saturday". A bare "Done.", "Booked."
-# or "Sorted." says something happened just now, and is never a recap
-# (_CheckedReply._recap).
-_RECAP_CONFIRM_RX = re.compile(
-    r"\bit's in\b|\byou(?:'re| are)\b|\b(?:scheduled|pencill?ed|locked)\b|\b" + _DAY_NAME
-    + r"\b|\d|^\W*(?:yes|yep|yeah|yup)\b|^\W*all (?:set|booked|sorted|done|good)\b"
-)
-_NAMES_DAY_RX = re.compile(r"\b" + _DAY_NAME + r"\b|\d")
-# The changes each verb names (_plan_changes), so "Skipped." never goes out
-# over a booking and "Moved." never over a session left on its day. A moved
-# session is booked on its new day; a skip and a booking together replace
-# one session with another ("replace"). A goal's own changes are kept
-# apart ("goal_add"...): "Goal added." names a goal filed, "Booked." never
-# does. Every verb _DONE_WORD_RX takes is here (it is built from these), so
-# none is ever checked against nothing: "Rescheduled to Thursday." over a
-# skip went out as if any change backed it.
-_CONFIRM_VERB_CHANGES = {
-    "booked": {"add", "move"},
-    "scheduled": {"add", "move"},
-    "pencilled": {"add", "move"},
-    "penciled": {"add", "move"},
-    "added": {"add", "goal_add"},
-    "skipped": {"skip"},
-    "cancelled": {"skip"},
-    "canceled": {"skip"},
-    "swapped": {"move", "retype", "replace"},
-    "moved": {"move", "replace", "goal_move"},
-    "rescheduled": {"move", "replace", "goal_move"},
-    "updated": {"update", "goal_update"},
-    "rebuilt": {"rebuild"},
-}
-_CONFIRM_VERB_RX = re.compile(r"\b(?:" + "|".join(_CONFIRM_VERB_CHANGES) + r")\b")
-# A word that says a change went in, in any sentence: a few words with one
-# of these after the plan tools changed nothing claim what did not happen
-# ("Moved to Thursday.", "Added to your plan."), and the coach's words with
-# one already said the change a bare "Done." would say again.
-_DONE_WORD_RX = re.compile(
-    r"\b(?:" + "|".join(_CONFIRM_VERB_CHANGES) + r"|locked in|all set|you're set|"
-    r"you're all good|good to go|confirmed)\b"
-    # "Done." and "It's sorted.", never "Well done" or "Get it sorted".
-    r"|(?:^\W*" + _CONFIRM_INTERJECTION + r"|\b(?:it's|that's|it is|that is|all|consider it|been|"
-    r"now|is|got it|already)\s+)"
-    r"(?:done|sorted)\b"
-    # "Monday's sorted, not to worry."
-    r"|\b(?:" + _DAY_NAME + r")(?:'s|\s+is)\s+(?:all\s+)?(?:done|sorted|set)\b"
-    # "Monday's in.", "Tuesday's in too", "It's in, don't stress.", never
-    # "It's in your rides now".
-    r"|\b(?:it|that|" + _DAY_NAME + r")'s in\b(?=\W*$|\s*[,;:]|\s+(?:too|now|for|on|(?:your|the) "
-    r"(?:plan|calendar|diary))\b)"
-)
-# Where a session now sits, said as a fact: "It's on Monday 19 October",
-# "PB reps is on Monday". "An easy 90 minutes on Saturday" describes it.
-_PLACED_RX = re.compile(r"(?:'s|\bis|\bare)\s+(?:now\s+)?(?:on|for)\s+" + _DAY_NAME + r"\b")
-# Where one clause of a sentence ends, for what a negation or a "still"
-# governs: "Monday's booked, but don't push it" claims the booking whatever
-# the instruction after it says, and "I couldn't get it booked" does not.
-_CLAUSE_RX = re.compile(
-    r"[,;:]|\s[-–—]\s|\b(?:but|so|because|though|although|while)\b"
-)
-# A clause saying the change did not happen, before the words that would
-# claim it: "Nothing changed, so ...", "It's not booked", "I couldn't".
-_NEGATION_RX = re.compile(
-    r"\b(?:not|no|nothing|never|none|cannot|unable|failed|no longer)\b|n't\b"
-)
-# A clause about the plan as it stands, never a change: "You're still booked
-# in for Tuesday", "It's on Saturday at the moment", "as before". Never
-# "already", which claims as often as not ("I've already booked it").
-_STATE_RX = re.compile(
-    r"\b(?:still|stays?|stayed|remains?|remained|unchanged|currently|as it stands|"
-    r"as things stand|at the moment|as (?:before|it was|it is|planned|usual))\b"
-)
-# A sentence that asks, never claims: "Is Monday booked?", "Want me to move
-# it?". "Monday's booked, all good?" claims the booking and then asks.
-_QUESTION_RX = re.compile(
-    r"^\W*(?:(?:so|and|ok(?:ay)?|right)\W+)?(?:is|are|was|were|do|does|did|have|has|had|"
-    r"shall|should|can|could|would|will|want|how|what|when|where|which|who|why)\b"
-)
-# The rider's own doing ("You skipped Tuesday", "You've added 20 watts") and
-# a word that only describes ("Skipped sessions add up") claim nothing.
-_RIDER_DID_RX = re.compile(r"\byou(?:'ve| have| had)?\s+(?:just\s+|also\s+|then\s+)?$")
-_DESCRIBES_RX = re.compile(r"\s+(?:sessions|rides|workouts|days|intervals|efforts|weeks)\b")
-# The days a sentence names, as weekdays.
-_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
-_WEEKDAY_RX = re.compile(r"\b(?:" + "|".join(_WEEKDAYS) + r")\b")
-# A change claimed onto a day ("Moved to Thursday", "Tuesday's cancelled"):
-# never a sentence about another session (_CheckedReply._about_another_day).
-_TO_DAY_RX = re.compile(r"\bto\s+(?:" + _DAY_NAME + r")\b")
-_DAY_VERB_RX = re.compile(
-    r"\b(?:" + _DAY_NAME + r")(?:'s|\s+is|\s+are)\s+(?:now\s+|all\s+|also\s+)?(?:"
-    + "|".join(_CONFIRM_VERB_CHANGES) + r")\b(?!\s+as\b)"
-)
-# Keeping a sentence's safety words once its claim goes: split at its
-# punctuation, and the word that joined the clause it lost.
-_SALVAGE_SPLIT_RX = re.compile(r"\s*(?:[,;:]|\s[-–—])\s*")
-_LEADING_LINK_RX = re.compile(r"^(?:but|so|and|just|though|then|also)\s+", re.I)
-# Words that keep the rider safe, which never go with a confirmation they
-# sit in: what never to do (care and the crisis lines are checked too).
-_KEEP_SAFE_RX = re.compile(
-    r"\b(?:don't|do not|never|no)\b[^.!?\n]{0,30}\b(?:ride|riding|drive|driving|train|training|"
-    r"race|racing|alone|cycle|cycling|go|push)\b"
-)
-# The rider asking for a change ("Book me Monday", "Can you skip tomorrow?"),
-# never asking whether one is needed ("Do I need to change anything?").
-_CHANGE_VERBS = (
-    r"(?:book|add|schedule|move|shift|swap|switch|skip|cancel|drop|remove|replace|reschedule|"
-    r"change|put|pencil|slot|stick|make|turn|shorten|lengthen|update|bump|push|pull|give|set|"
-    r"pause|freeze|suspend)"
-)
-# What each verb of the rider's asks for, as _plan_changes names it: "Skip
-# Thursday" is never stated by "Your long ride is booked for Saturday".
-_ASKED_CHANGES = (
-    (re.compile(r"\b(?:book|add|schedule|put|pencil|slot|stick|give)\b"), {"add"}),
-    (re.compile(r"\b(?:move|shift|reschedule|bump|push|pull)\b"), {"move"}),
-    (re.compile(r"\b(?:skip|cancel|drop|remove)\b"), {"skip"}),
-    (re.compile(r"\b(?:swap|switch|replace)\b"), {"move", "replace", "retype"}),
-    (re.compile(r"\b(?:change|make|turn|shorten|lengthen|update|set)\b"), {"update", "retype"}),
-    (re.compile(r"\b(?:pause|freeze|suspend)\b"), {"pause"}),
-)
-_ASKS_CHANGE_RX = re.compile(
-    r"(?:^|[.!?\n]\s*|\b(?:and|also|then|please|pls|just)\s+)\W*" + _CHANGE_VERBS + r"\b"
-    r"|\b(?:can|could|would|will) you\s+(?:please\s+|just\s+|also\s+)?" + _CHANGE_VERBS + r"\b"
-    r"|\b(?:i'd like|i would like|i want|i'd love|i'd rather) to\s+" + _CHANGE_VERBS + r"\b"
-    r"|\b(?:need|want|like) you to\b"
-)
-# A hold said in the coach's own words, outside _HOLD_CLAIM_RX's "I've put
-# a hold on": "Plan paused.", "Your training is paused.", "Hold's in
-# place.", "Everything's on hold.". With no hold on record it waits for
-# apply_safety_hold (_CheckedReply._resolve).
-_HOLD_WORD_RX = re.compile(
-    r"\b(?:plan|training|account|riding|rides|sessions?|everything|it|that|all|workouts?|week|"
-    r"block|intervals)(?:'s|\s+is|\s+are|\s+has been|\s+have been)?\s+(?:now\s+|all\s+)?"
-    r"(?:paused|frozen|suspended|held)\b"
-    r"|(?:'s|\bis|\bare|\bnow|\ball|\bstays?)\s+on (?:hold|pause)\b"
-    r"|^\W*(?:now\s+|all\s+)?(?:paused|on hold|on pause|held|frozen)\b"
-    r"|\bhold(?:'s|\s+is|\s+has been)\s+(?:now\s+)?(?:in place|on|open|applied|active|live|set)\b"
-    # "I've put your training on pause", which _HOLD_CLAIM_RX's "hold" never sees.
-    r"|\b(?:i've|i have)\s+(?:now\s+|just\s+|already\s+|also\s+)?(?:put|placed|set)\b"
-    r"[^.!?\n]{0,50}\bon (?:pause|hold|ice)\b"
-)
-# The hold words that never stand in any turn: a hold is only ever stated
-# in the code's words, and these name nothing else.
-_BARE_APPLIED_RX = re.compile(
-    r"\W*(?:all |that's |it's |now )?(?:" + _CONFIRM_HOLD_WORDS + r")\b[^\w:]*"
-)
-# What the rider gets when the model call fails after a plan change went in,
-# in place of REPLY_FAILED_MESSAGE: "Try sending that again" would book the
-# session twice.
-REPLY_FAILED_PLAN_CHANGED = (
-    "I couldn't finish a reply just now, but your plan has changed. Have a look "
-    "at it to see what went in."
-)
-# The same once a goal went in with no plan change: sent again, the goal
-# would be filed twice.
-REPLY_FAILED_GOAL_CHANGED = (
-    "I couldn't finish a reply just now, but your goal has been saved. Have a "
-    "look at Goal to see it."
-)
-# What the next turn's history shows for either of them (_build_messages),
-# so the coach knows the change went in and never makes it again.
-_NO_REPLY_CHANGED_NOTE = (
-    "[No answer was given to the message above, but the change it asked for "
-    "went in: the rider context shows it. Do not make it again. The rider "
-    "was shown a short line saying so.]"
-)
-# How a model call ends when the coach finished what it was writing. Any
-# other (the output allowance ran out) is cut off, like a call that failed.
-_WHOLE_STOPS = ("end_turn", "stop_sequence", "tool_use", None)
-
-
-def _plan_went_in(name: str, result: str) -> bool:
-    """A tool result saying the plan changed, read as ReplyGuard reads it: a
-    plan tool's success, or a goal tool that rebuilt the plan."""
-    if name in safety_screen._PLAN_TOOLS:
-        return result.startswith(safety_screen._PLAN_DONE)
-    return name in safety_screen._GOAL_TOOLS and any(
-        line in result for line in safety_screen._PLAN_REBUILT
-    )
-
-
-def _plan_changes(name: str, tool_input) -> set[str]:
-    """What a plan change that went in did, for the verb a bare confirmation
-    names. update_workout moved its session only when the call gave it a
-    date (its result says where the session is, not where it was), and
-    retyped it only when the call gave a type."""
-    if name == "add_workout":
-        return {"add"}
-    if name == "skip_workout":
-        return {"skip"}
-    if name == "swap_workout_date":
-        return {"move", "update"}
-    if name == "update_workout":
-        given = tool_input if isinstance(tool_input, dict) else {}
-        return (
-            {"update"}
-            | ({"move"} if given.get("scheduled_date") is not None else set())
-            | ({"retype"} if given.get("workout_type") is not None else set())
-        )
-    return {"rebuild"} | _goal_changes(name, tool_input)
-
-
-def _goal_changes(name: str, tool_input) -> set[str]:
-    """What a goal tool that went in did to the goal, for the verb that
-    names it: a goal filed was added ("Goal added."), one updated was
-    updated, and moved when the call gave it a date."""
-    if name == "create_goal":
-        return {"goal_add"}
-    if name == "update_goal":
-        given = tool_input if isinstance(tool_input, dict) else {}
-        return {"goal_update"} | ({"goal_move"} if given.get("event_date") else set())
-    return set()
-
-
-# A goal tool's result when the rider has no plan for anything to follow.
-_NO_PLAN_FOLLOWS = "There is no current plan"
-
-
-def _goal_noted(name: str, result: str, tool_input) -> bool:
-    """A goal tool that went in where no plan can follow from it, so "Done."
-    or "Updated." is the whole truth: an update_goal that changed only what
-    the plan never reads (notes, the why, the becoming, the name), with no
-    date or priority given, or any goal filed or updated with no plan to
-    rebuild. A plan held back by the safety record ("The plan was NOT
-    rebuilt") is never one: the coach owes the rider why."""
-    given = tool_input if isinstance(tool_input, dict) else {}
-    if (
-        name == "update_goal" and result.startswith("Updated the goal")
-        and not given.get("event_date") and not given.get("priority")
-    ):
-        return True
-    return (
-        name in safety_screen._GOAL_TOOLS
-        and result.startswith(("Filed the goal", "Updated the goal"))
-        and _NO_PLAN_FOLLOWS in result
-    )
-
-
-class _Confirm:
-    """A confirmation waiting with the claims (_CheckedReply._resolve).
-    `kind` is "lead", a "Done, ..." written before any tool and kept whole;
-    "tail", what one said after its "Done" once a change went in; or "said",
-    words saying a change went in, in any wording ("Easy spin booked for
-    Monday.", "Moved to Thursday."). `round` is the tool round it was
-    written in, so it is checked against every tool that ran after it.
-    `plan` when ReplyGuard read a plan claim in it ("Done, I've booked
-    Monday"), and `long` for a "said" of more than a few words, which is
-    checked but never held as a confirmation."""
-
-    __slots__ = ("kind", "round", "plan", "long")
-
-    def __init__(self, kind: str, round_: int, *, plan: bool = False, long: bool = False):
-        self.kind = kind
-        self.round = round_
-        self.plan = plan
-        self.long = long
-
-
-class _Paused:
-    """A hold in the coach's own words with no hold on record, waiting on
-    apply_safety_hold (_CheckedReply._resolve). `bare` for one that is
-    nothing else ("Paused.", "On hold."), which the code's hold sentence
-    replaces once a hold is on."""
-
-    __slots__ = ("bare",)
-
-    def __init__(self, bare: bool):
-        self.bare = bare
-
-
 # A word the model opens a fresh message with after a tool call.
 _INTERJECTION_RX = re.compile(
     r"^\W*(?:(?:ah+|oh|hmm+)\b[,.!:;]*|(?:ok(?:ay)?|right|alright|so|got it|perfect|"
@@ -4274,134 +4117,6 @@ _PLAN_NOW_RX = re.compile(
     r"workout|intervals?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"today|tomorrow|week|vo2|sweet spot|threshold|tempo)"
 )
-
-# The rider's side of a booking claim ("You're booked in for Monday", "It's
-# in your plan"), which _PLAN_CLAIM_RX's "I've booked" never sees: untrue
-# once a plan tool this turn changed nothing.
-_PLAN_YOURS_RX = re.compile(
-    r"\byou're\s+(?:now\s+|all\s+|already\s+)?(?:booked|pencill?ed|scheduled|locked)\s+in\b"
-    r"|\b(?:it's|that's|this is)\s+(?:now\s+|already\s+)?in\s+(?:the|your)\s+(?:plan|calendar|"
-    r"diary)\b"
-)
-
-
-def _claims_plan(text: str) -> bool:
-    """The words say a plan change went in, in any form: "I've booked",
-    "You're booked in", "It's on Monday", "Your plan's updated"."""
-    low = _norm(text)
-    return bool(
-        _DONE_WORD_RX.search(low) or _PLACED_RX.search(low) or _PLAN_YOURS_RX.search(low)
-        or safety_screen._PLAN_CLAIM_RX.search(low) or _PLAN_NOW_RX.search(low)
-    )
-
-
-def _clause_of(low: str, start: int, end: int) -> tuple[str, int]:
-    """The clause of `low` around [start, end), and where start sits in it."""
-    lo = 0
-    for cut in _CLAUSE_RX.finditer(low, 0, start):
-        lo = cut.end()
-    after = _CLAUSE_RX.search(low, end)
-    return low[lo:after.start() if after else len(low)], start - lo
-
-
-def _asks(low: str) -> bool:
-    """The sentence is a question, never a claim: "Is Monday booked?"."""
-    return bool(_QUESTION_RX.match(low)) and low.rstrip().endswith("?")
-
-
-def _change_claims(low: str) -> list[re.Match]:
-    """Where a sentence (as _norm) says a change went in: a word that says
-    so (_DONE_WORD_RX), a session placed on a day (_PLACED_RX) or the
-    rider's side of a booking (_PLAN_YOURS_RX). A clause that says it did
-    not happen or is as it was claims nothing ("I couldn't get it booked",
-    "You're still booked in for Tuesday"), and a negation or a question in
-    another clause never takes a claim back: "Monday's booked, but don't
-    push it." and "Monday's booked, all good?" claim the booking. Nor do
-    the rider's own doing ("You skipped Tuesday") or a word that describes
-    ("Skipped sessions add up")."""
-    found = []
-    for rx in (_DONE_WORD_RX, _PLACED_RX, _PLAN_YOURS_RX):
-        for m in rx.finditer(low):
-            if rx is _DONE_WORD_RX and (
-                _RIDER_DID_RX.search(low, 0, m.start()) or _DESCRIBES_RX.match(low, m.end())
-            ):
-                continue
-            clause, at = _clause_of(low, m.start(), m.end())
-            if _STATE_RX.search(clause) or _NEGATION_RX.search(clause, 0, at):
-                continue
-            found.append(m)
-    return found
-
-
-def _asserts_change(text: str) -> bool:
-    """The sentence says a change went in, in any wording (_change_claims),
-    and is not a question."""
-    low = _norm(text).strip()
-    return bool(_change_claims(low)) and not _asks(low)
-
-
-# A change word with a subject and a verb in front of it describes how
-# things stand ("Your intervals are booked for Saturday", "You've got
-# Saturday's long ride booked"); one with none confirms ("Booked: easy 60
-# minutes on Monday", "Easy spin booked for Monday", "Moved to Wednesday").
-_DESCRIBED_BY_RX = re.compile(r"\b(?:is|are|was|were|got|have|has|had|been)\b|'s\b|'re\b|'ve\b")
-
-
-def _only_describes(low: str) -> bool:
-    """Every claim in the sentence (as _norm) describes the plan as it
-    stands, never confirms a change: no change word without a subject and a
-    verb in front of it, none put onto a day ("Moved to Thursday",
-    "Tuesday's cancelled") and no "now"."""
-    if _TO_DAY_RX.search(low) or _DAY_VERB_RX.search(low):
-        return False
-    for m in _change_claims(low):
-        clause, at = _clause_of(low, m.start(), m.end())
-        if re.search(r"\bnow\b", clause):
-            return False
-        if m.re is _DONE_WORD_RX and not _DESCRIBED_BY_RX.search(clause, 0, at):
-            return False
-    return True
-
-
-def _hold_stated(text: str) -> bool:
-    """The sentence says a hold is on in the coach's own words ("Your plan
-    is on pause", "Everything's on hold, ok?", "I've put your training on
-    pause"): only a negation of the hold itself takes it back ("isn't
-    paused"), never one elsewhere in the sentence ("Your training is
-    paused, so don't ride")."""
-    low = _norm(text).strip()
-    if _NOT_HOLD_TALK_RX.search(low) or _asks(low):
-        return False
-    for m in _HOLD_WORD_RX.finditer(low):
-        clause, at = _clause_of(low, m.start(), m.end())
-        if not _NEGATION_RX.search(clause, 0, at + (m.end() - m.start())):
-            return True
-    return False
-
-
-def _days_in(low: str) -> set[str]:
-    """The weekdays a text (as _norm) names, today and tomorrow included."""
-    days = set(_WEEKDAY_RX.findall(low))
-    today = date.today().weekday()
-    if re.search(r"\b(?:today|tonight)\b", low):
-        days.add(_WEEKDAYS[today])
-    if re.search(r"\btomorrow\b", low):
-        days.add(_WEEKDAYS[(today + 1) % 7])
-    if re.search(r"\bweekend\b", low):
-        days |= {"saturday", "sunday"}
-    return days
-
-
-def _asked_changes(message: str) -> set[str] | None:
-    """The changes the rider's verbs ask for (_ASKED_CHANGES), or None when
-    the ask names none we know ("I need you to sort Tuesday"): then any."""
-    low = _norm(message)
-    asked = set()
-    for rx, changes in _ASKED_CHANGES:
-        if rx.search(low):
-            asked |= changes
-    return asked or None
-
 
 # Talk about the training hold itself, which the app says in its own words.
 _HOLD_NOUN_RX = re.compile(
@@ -4765,13 +4480,7 @@ class _CheckedReply(safety_screen.ReplyGuard):
         confirmations after a tool ("Done, that session's skipped",
         "Confirmed: ...") are taken out, a fresh message's "Ah," goes, and a
         sentence after a tool call that only repeats one already sent is
-        dropped; a bare "Done." goes out only when a plan change it names
-        went in this turn and nothing else happened (_confirmation_backed),
-        a short "Done, ..." or a few words saying a change went in only when
-        the tools after it backed them (_decide), and no confirmation, in
-        any words, stands in for a red flag's fixed reply (_release_held,
-        _only_short_words); a hold is never confirmed in the coach's own
-        words ("Hold applied."), and "Plan paused." waits for the hold tool;
+        dropped;
       - a sentence said word for word a second time goes (live round 2: "Are
         you safe right now?" twice, R16 and L11);
       - "I'm skipping Tuesday's session" waits for the tool, like "I've
@@ -4830,49 +4539,6 @@ class _CheckedReply(safety_screen.ReplyGuard):
         # skipping Tuesday's session"), when it would say it twice.
         self._change_done = False
         self._change_said = False
-        # A sentence that is only a confirmation ("Done.", "All set."),
-        # held until the coach goes on (it goes in front of its words when
-        # true) or the reply ends (_release_held).
-        self._held_confirm = ""
-        # A short "Done, ..." once the tools behind it backed it (_resolve),
-        # held the same way: as the coach's only words in a red-flag turn,
-        # "You're all set." would stand in for the fixed reply.
-        self._held_tail = ""
-        # A refusal from this tool round on takes the held tail back
-        # (_release_held).
-        self._held_tail_since = 0
-        # Set for the sentence being checked by _without_artefacts: what it
-        # waits on (_Confirm, _Paused), claimed in _check.
-        self._claim_as = None
-        # Every tool this turn: (name, result, the tool's input, its round).
-        self._results: list[tuple] = []
-        # What the plan changes that went in did (_plan_changes), for the
-        # verb a bare confirmation names ("Booked.", "Moved."), and a goal
-        # updated in what no plan reads (_goal_noted).
-        self._changes: set[str] = set()
-        self._goal_noted = False
-        # apply_safety_hold was called this turn, whatever it did.
-        self._hold_tried = False
-        # The coach's own words already said a change went in ("It's on
-        # Monday 19 October", "I've booked it"), before the first change or
-        # since the latest: a "Done." beside them says it again (round 1).
-        self._said_change = False
-        # The coach's words this turn confirmed a change, in any words and
-        # whatever became of them (_only_short_words).
-        self._confirmed = False
-        # The code took the tools away for the last round (_last_round_choice,
-        # set by the stream): a "Done." then may be for what it couldn't do.
-        self.tools_withheld = False
-        # Whether the classifier's verdict is still on its way (set by the
-        # stream). While it is, a held confirmation and the coach's words
-        # after it wait in _after_held, and are decided once the verdict is
-        # in (finish_tail): released in front of the words, "Booked." stood
-        # above a fixed reply a late red flag then brought.
-        self.verdict_pending = lambda: False
-        self._after_held: list[str] = []
-        # A round ended while a confirmation was held: its paragraph break
-        # goes after it once it is released (_release_held).
-        self._held_break = False
 
     def absorb(self, screen) -> None:
         """Take in the turn's red flags again after a late verdict added to
@@ -4923,49 +4589,17 @@ class _CheckedReply(safety_screen.ReplyGuard):
     def round_break(self) -> str:
         """The paragraph break before the next round's words, held until
         there are words to put after it: a round that turns out to be all
-        narration leaves nothing behind. With a confirmation held, the break
-        goes after it once it is released; with words waiting on the
-        verdict, after them."""
+        narration leaves nothing behind."""
         if self._pending:
             return super().round_break()
-        if self._after_held:
-            if not self._after_held[-1][-1:].isspace():
-                self._after_held.append("\n\n")
-            return ""
-        if self._held_confirm.strip() or self._held_tail.strip():
-            self._held_break = True
         if self.said and not self.said[-1].isspace():
             self._break = "\n\n"
         return ""
 
     def after_tools(self, results) -> str:
-        """`results` are (name, result) or (name, result, the tool's input):
-        the input says what an update_workout changed (_plan_changes).
-
-        What the round did is taken in before anything waiting on it goes
-        out: a "Done." held in front of "I've booked Monday's easy ride" is
-        checked against this round's refusal too, and "Booked." against its
-        booking."""
-        given = [(tuple(r) + (None,))[:3] for r in results]
-        results = [r[:2] for r in given]
         claimed = any(claim == "plan" for claim, _ in self._pending)
-        changed_before = self._plan_done or self._goal_noted
-        went = False
-        for name, result, tool_input in given:
-            result = result or ""
-            self._results.append((name, result, tool_input, self._round))
-            if name == "apply_safety_hold":
-                self._hold_tried = True
-            if _plan_went_in(name, result):
-                self._changes |= _plan_changes(name, tool_input)
-                went = True
-            elif _goal_noted(name, result, tool_input):
-                self._changes |= _goal_changes(name, tool_input)
-                self._goal_noted = went = True
-        if went and changed_before:
-            # A further change: the words about the one before never
-            # confirmed this one ("Moved to Sunday." then a booking).
-            self._said_change = False
+        out = super().after_tools(results)
+        self._change_said = self._change_said or (claimed and self._plan_done)
         self._round += 1
         self._round_start = True
         self._change_done = self._change_done or any(
@@ -4973,8 +4607,6 @@ class _CheckedReply(safety_screen.ReplyGuard):
             and not (result or "").startswith(_CHANGED_NOTHING + _FILE_NOT_SAVED)
             for name, result in results
         )
-        out = super().after_tools(results)
-        self._change_said = self._change_said or (claimed and self._plan_done)
         return out
 
     def finish_body(self) -> str:
@@ -4985,493 +4617,12 @@ class _CheckedReply(safety_screen.ReplyGuard):
         self._drop_dangling_colon()
         return out + self._resolve(final=True)
 
-    def _resolve(self, *, final: bool) -> str:
-        """ReplyGuard's, with this class's own claims decided in their place
-        in the reply (_decide): what follows one waits behind it, so the
-        reply keeps its order.
-
-        ReplyGuard lets "I've booked an easy spin for Saturday." out at the
-        end when no tool touched the plan, as a recap of an earlier change:
-        never when the rider asked for that change and nothing at all
-        changed (_claims_asked_change)."""
-        if final and self._pending and self._asks_change() and not (
-            self._plan_tried or self._plan_done or self._change_done
-        ):
-            self._pending = [
-                (_Confirm("said", self._round, plan=True, long=True), text)
-                if claim == "plan" and self._claims_asked_change(text) else (claim, text)
-                for claim, text in self._pending
-            ]
-        out = []
-        while True:
-            at = next(
-                (i for i, (c, _) in enumerate(self._pending) if isinstance(c, (_Confirm, _Paused))),
-                None,
-            )
-            if at is None:
-                out.append(super()._resolve(final=final))
-                return "".join(out)
-            rest = self._pending[at:]
-            self._pending = self._pending[:at]
-            out.append(super()._resolve(final=final))
-            if self._pending:
-                # Something before it still waits on a tool.
-                self._pending += rest
-                return "".join(out)
-            (claim, text), self._pending = rest[0], rest[1:]
-            verdict = self._decide(claim, text, final)
-            if verdict is None:
-                self._pending.insert(0, (claim, text))
-                return "".join(out)
-            if verdict == "rest":
-                m = _CONFIRM_LEAD_RX.match(text.lstrip())
-                rest = text.lstrip()[m.end():] if m else text
-                if claim.plan or _claims_plan(rest) or not rest.strip():
-                    self._drop(text, "a confirmation before a lookup")
-                else:
-                    lead = text[: len(text) - len(text.lstrip())]
-                    out.append(self._emit(lead + _capitalise(rest)))
-            elif verdict == "drop":
-                self._drop(text, "a confirmation or hold no tool backed")
-                kept = self._salvage(text)
-                if kept:
-                    out.append(self._emit(kept))
-            elif verdict == "hold":
-                if not self._held_tail.strip():
-                    self._held_tail_since = self._round
-                since = claim.round if claim.kind == "said" else 0
-                self._held_tail_since = min(self._held_tail_since, since)
-                self._held_tail += text
-            else:
-                out.append(self._emit(text))
-
-    def _decide(self, claim, text: str, final: bool) -> str | None:
-        """What happens to a claim of this class's: "emit", "hold" (with the
-        held confirmations, _release_held), "drop", "rest" (a lead with only
-        lookups after it: what it says without its "Done"), or None to keep
-        waiting.
-
-        A hold in the coach's words (_Paused) goes once a hold is on, as the
-        code's hold sentence when it talks about the hold, and never once
-        apply_safety_hold was tried and no hold resulted, or in a safety
-        turn: "Plan paused." before a refused hold told the rider their plan
-        was paused. In an ordinary turn it is about something else
-        ("Paused. It picks up when you're back."), unless the rider asked
-        for a change and nothing changed: "Your plan is paused for two
-        weeks." to "Can you pause my plan?" with no tool paused nothing.
-
-        A "Done, ..." (_Confirm) with a tool after it claimed that tool's
-        change, whatever its length and whatever else it says: it goes only
-        if a change went in, nothing was refused, the call ran whole with
-        its tools in hand, and any plan change it names went in ("Done,
-        you're all set." before a booking the gate refused, "Done, Tuesday's
-        in too." before a booking that errored). With no tool after it, a
-        lead is the coach's own answer ("Sorted, you've got three rides this
-        week."), never a change the rider asked for and nothing made
-        ("Sorted, tomorrow's skipped." to "Skip tomorrow"), nor ReplyGuard's
-        plan claim in a safety turn ("Done, I've booked Monday for you.").
-
-        Words saying a change went in ("said": "Easy spin booked for
-        Monday.") are checked against the plan tools after them, or, with
-        none, against the turn: beside a plan tool they need a change and no
-        refusal, and a few words a change their verb names, unless they are
-        about another day ("Skipped. Your intervals are booked for
-        Saturday."); with no plan tool at all they are a recap, or about the
-        goal or file that went in, unless they claim the change the rider
-        asked for and nothing changed (_claims_asked_change). After a goal
-        alone, only words for the goal (_names_goal_change)."""
-        if isinstance(claim, _Paused):
-            if self._hold_done or self._hold() is not None:
-                return "emit" if not claim.bare and _hold_talk(text) else "drop"
-            if self._hold_tried or self.safety_turn:
-                return "drop"
-            if not final:
-                return None
-            return "drop" if not self._change_done and self._asks_change() else "emit"
-        changed = self._plan_done or self._goal_noted
-        if claim.kind == "said":
-            after = any(
-                name in safety_screen._PLAN_TOOLS and at >= claim.round
-                for name, _, _, at in self._results
-            )
-            if not after and not final:
-                return None
-            if self.cut_off or self.tools_withheld or self._refused(claim.round if after else 0):
-                return "drop"
-            if self._plan_tried or changed:
-                if not (self._plan_done or self._names_goal_change(text)):
-                    return "drop"
-                if claim.long:
-                    return "emit"
-                fits = self._verb_fits(text) or self._about_another_day(text)
-                return "hold" if fits else "drop"
-            if not self._change_done and self._claims_asked_change(text):
-                # Nothing at all changed for the change the rider asked for
-                # (a goal filed or a file saved may be what it is about).
-                return "drop"
-            return "emit" if claim.long else "hold"
-        if claim.kind == "lead" and self._round <= claim.round:
-            if not final:
-                return None
-            if self.cut_off:
-                return "drop"
-            m = _CONFIRM_LEAD_RX.match(text)
-            rest = text[m.end():] if m else text
-            if (claim.plan and self.safety_turn and not changed) or (
-                not self._change_done and (
-                    self._claims_asked_change(rest)
-                    or (_hold_stated(rest) and self._asks_change())
-                )
-            ):
-                return "drop"
-            return "emit"
-        if claim.kind == "lead" and not (self.cut_off or self.tools_withheld):
-            ran = [name for name, _, _, at in self._results if at >= claim.round]
-            if ran and all(name in _RIDE_LOOKUP_TOOLS for name in ran):
-                # Only lookups after it: it claimed no change. A few words
-                # after its "Done" narrate the lookup and go with it, as they
-                # always have; more are the answer, and stay (_resolve).
-                m = _CONFIRM_LEAD_RX.match(text.lstrip())
-                rest = text.lstrip()[m.end():] if m else text
-                return "rest" if len(_WORD_RX.findall(_norm(rest))) > 12 else "drop"
-        if self.cut_off or self.tools_withheld or self._refused() or not self._change_done:
-            return "drop"
-        rest = text
-        if claim.kind == "lead":
-            m = _CONFIRM_LEAD_RX.match(text)
-            rest = text[m.end():] if m else text
-        if _claims_plan(rest) and not (self._plan_done or self._names_goal_change(rest)):
-            return "drop"
-        return "hold"
-
-    def _names_goal_change(self, text: str) -> bool:
-        """After a goal change and no plan change, words that confirm the
-        goal, never a session: "Goal added.", "Updated.", "Moved to 29
-        November.", never "It's in for Saturday." or "You're booked in"."""
-        if not self._goal_noted:
-            return False
-        low = _norm(text)
-        if (
-            _PLACED_RX.search(low) or _PLAN_YOURS_RX.search(low) or _days_in(low)
-            or safety_screen._PLAN_CLAIM_RX.search(low)
-        ):
-            return False
-        verbs = [m.group() for m in _CONFIRM_VERB_RX.finditer(low)]
-        if verbs:
-            return all(_CONFIRM_VERB_CHANGES[verb] & self._changes for verb in verbs)
-        return bool(re.search(r"\b(?:goal|race|event|target)\b", low))
-
-    def _claims_asked_change(self, text: str) -> bool:
-        """With nothing changed after the rider asked for a change, whether a
-        sentence claims one: it states the change they asked for
-        (_states_asked_change), or confirms any change at all ("Moved to
-        Wednesday.", "Your session is now on Wednesday.") rather than say
-        how the plan stands (_only_describes)."""
-        if not self._asks_change():
-            return False
-        return self._states_asked_change(text) or not _only_describes(_norm(text).strip())
-
-    def _asks_change(self) -> bool:
-        """The rider's message asks for a change ("Book me Monday")."""
-        return bool(_ASKS_CHANGE_RX.search(_norm(self.message or "")))
-
-    def _states_asked_change(self, text: str) -> bool:
-        """With nothing changed, whether a sentence states the change the
-        rider asked for: a word saying it went in whose verb is one they
-        asked for ("Skip tomorrow" and "Sorted, tomorrow's skipped."), a
-        word that names no verb ("Done", "Monday's in"), a hold to a pause
-        asked for, or a session placed on the day they named. What the plan
-        is otherwise ("Your intervals are on Thursday." to "Move my
-        intervals to Sunday", "It's on Saturday at the moment", "It's booked
-        as endurance." to "Change tomorrow to an easy ride") claims nothing
-        they asked for."""
-        message = _norm(self.message or "")
-        if not _ASKS_CHANGE_RX.search(message):
-            return False
-        low = _norm(text).strip()
-        if _asks(low):
-            return False
-        asked = _asked_changes(message)
-
-        def fits(changes: set[str]) -> bool:
-            return asked is None or bool(changes & asked)
-
-        if _hold_stated(low) and fits({"pause"}):
-            return True
-        plan = safety_screen._PLAN_CLAIM_RX.search(low) or _PLAN_NOW_RX.search(low)
-        if plan:
-            verb = _CONFIRM_VERB_RX.search(plan.group())
-            if verb is None or fits(_CONFIRM_VERB_CHANGES[verb.group()]):
-                return True
-        for m in _change_claims(low):
-            if m.re is _PLACED_RX:
-                if _days_in(m.group()) & _days_in(message):
-                    return True
-            elif m.re is _PLAN_YOURS_RX:
-                if fits({"add", "move"}):
-                    return True
-            else:
-                verb = _CONFIRM_VERB_RX.search(m.group())
-                if verb is None or fits(_CONFIRM_VERB_CHANGES[verb.group()]):
-                    return True
-        return False
-
-    def _changed_days(self) -> set[str]:
-        """The weekdays of the sessions this turn's plan changes put in or
-        took out, from their results and the dates the calls gave."""
-        days = set()
-        for name, result, given, _ in self._results:
-            if name not in safety_screen._PLAN_TOOLS or not _plan_went_in(name, result):
-                continue
-            days |= _days_in(_norm(result))
-            for key in ("scheduled_date", "new_date", "date"):
-                value = given.get(key) if isinstance(given, dict) else None
-                try:
-                    days.add(_WEEKDAYS[date.fromisoformat(str(value)).weekday()])
-                except (TypeError, ValueError):
-                    continue
-        return days
-
-    def _about_another_day(self, text: str) -> bool:
-        """A short sentence about a session the turn's change never touched,
-        named by a day that neither the change nor the rider's message is
-        on: "Skipped. Your intervals are booked for Saturday." after Tuesday
-        was skipped. Never one that confirms rather than describes
-        (_only_describes): "Moved to Thursday.", "Tuesday's cancelled.",
-        "Booked: easy 60 minutes on Monday."."""
-        low = _norm(text).strip()
-        if not _only_describes(low):
-            return False
-        days = _days_in(low)
-        return bool(days) and not days & (
-            self._changed_days() | _days_in(_norm(self.message or ""))
-        )
-
-    def _keeps_safe(self, text: str) -> bool:
-        """Words that keep the rider safe: care, the crisis lines, or what
-        never to do."""
-        return bool(
-            _care_tier(text, self._loc) is not None or _KEEP_SAFE_RX.search(_norm(text))
-            or re.search(self._loc["crisis_rx"], text, re.I)
-        )
-
-    def _salvage(self, text: str) -> str:
-        """What a sentence keeps once its claim goes: its safety words,
-        without the clause that claimed ("Booked for Monday, but don't ride
-        if the knee swells." after a refused booking keeps "Don't ride if the
-        knee swells."). Nothing that claims a change or a hold, and nothing
-        at all in a red-flag turn, whose fixed reply carries the safety
-        words: "Just don't push it on Monday." above chest pain's "Don't
-        ride, not even an easy spin" told the rider how to ride."""
-        try:
-            if self._fixed_reply_at_stake() or not self._keeps_safe(text):
-                return ""
-            body = text.strip()
-            lead = text[: len(text) - len(text.lstrip())]
-            tail = text[len(text.rstrip()):] or " "
-            m = _CONFIRM_LEAD_RX.match(body)
-            if m:
-                body = body[m.end():]
-            end = body.rstrip()[-1:] if body.rstrip()[-1:] in (".", "!") else "."
-            parts = [
-                p for p in _SALVAGE_SPLIT_RX.split(body.rstrip(" .!?\n")) if p.strip()
-            ]
-
-            def claims(part: str) -> bool:
-                return (
-                    _claims_plan(part) or bool(_HOLD_WORD_RX.search(_norm(part)))
-                    or bool(safety_screen._HOLD_CLAIM_RX.search(_norm(part)))
-                )
-
-            kept = [p for p in parts if not claims(p)]
-            if not kept or (len(kept) == len(parts) and not m):
-                return ""
-            words = _LEADING_LINK_RX.sub("", ", ".join(p.strip() for p in kept))
-            if not words.strip() or not self._keeps_safe(words):
-                return ""
-            return lead + _capitalise(words) + end + tail
-        except Exception:
-            logger.exception("Keeping a dropped sentence's safety words failed")
-            return ""
-
-    def change_went_in(self) -> str | None:
-        """"plan" once a plan change went in this turn, "goal" once only a
-        goal did, else None (for the line a turn with no words ends on)."""
-        if self._plan_done:
-            return "plan"
-        if any(
-            name in safety_screen._GOAL_TOOLS
-            and result.startswith(("Filed the goal", "Updated the goal"))
-            for name, result, _, _ in self._results
-        ):
-            return "goal"
-        return None
-
-    def _verdict_still_pending(self) -> bool:
-        try:
-            return bool(self.verdict_pending())
-        except Exception:
-            logger.exception("Reading whether the classifier has answered failed")
-            return False
-
-    def _retried(self, i: int) -> bool:
-        """The tool call at `i` failed, or asked steps its own type never
-        allows (_STEPS_MISMATCH, no safety gate), and a later call of the
-        same tool this turn went in: the coach got past it. A safety gate's
-        refusal ("Not changed: ...") never is."""
-        name, result, _, _ = self._results[i]
-        return result.startswith(("Error", _STEPS_MISMATCH)) and any(
-            later == name and _plan_went_in(later, r) for later, r, _, _ in self._results[i + 1:]
-        )
-
-    def _refused(self, since: int = 0) -> bool:
-        """A tool this turn (from round `since`) was refused or failed, and
-        the coach never got past it by calling it again."""
-        return any(
-            at >= since and result.startswith(_CHANGED_NOTHING + _FILE_NOT_SAVED)
-            and not self._retried(i)
-            for i, (_, result, _, at) in enumerate(self._results)
-        )
-
-    def _overclaims(self) -> bool:
-        """A tool this turn was refused, or did something other than change
-        the plan (a hold, a flag, a proposal, a file, a goal with no plan
-        rebuilt): a bare "Done." would then claim more than happened. An
-        error the coach got past by calling the tool again (_retried) is
-        not one, nor a goal updated in what no plan reads (_goal_noted)."""
-        return any(
-            name not in _RIDE_LOOKUP_TOOLS and not _plan_went_in(name, result)
-            and not _goal_noted(name, result, given) and not self._retried(i)
-            for i, (name, result, given, _) in enumerate(self._results)
-        )
-
-    def _fixed_reply_at_stake(self) -> bool:
-        """A red flag whose fixed reply a confirmation would cut short, as
-        the coach's only words. Not the quiet kinds with no hold on record:
-        their fixed reply is the no-reply apology and their lines
-        (fallback_reply), which over a session that was booked tells the
-        rider to send it again."""
-        if not self.kinds:
-            return False
-        return not (self.kinds <= safety_screen.QUIET_KINDS and self._hold() is None)
-
-    def _confirmation_backed(self, held: str) -> bool:
-        """Whether a bare confirmation is true: a plan tool's change went in
-        this turn, any verb in it names what that change did, nothing was
-        refused or done besides, the reply said the change neither before
-        the call nor since, and the coach finished with its tools in hand
-        and its call whole. Before any tool, after a refusal, a hold or a
-        lookup alone, it is a claim nothing backs. Never where it would
-        stand in for a red flag's fixed reply."""
-        return not (
-            not (self._plan_done or self._goal_noted) or self._overclaims() or self._change_said
-            or self._said_change or self._fixed_reply_at_stake() or self.cut_off
-            or self.tools_withheld or not self._verb_fits(held)
-            # After a goal alone, "Saturday's in." is about a session.
-            or (not self._plan_done and _days_in(_norm(held)))
-        )
-
-    def _verb_fits(self, text: str) -> bool:
-        """Any verb in a confirmation names what the changes that went in
-        did (_plan_changes): no "Skipped." over a booking, no "Moved." over
-        a session left on its day."""
-        verb = _CONFIRM_VERB_RX.search(_norm(text))
-        changes = set(self._changes)
-        if {"add", "skip"} <= changes:
-            changes.add("replace")
-        return not verb or bool(_CONFIRM_VERB_CHANGES[verb.group()] & changes)
-
-    def _recap(self, held: str) -> bool:
-        """A confirmation in a turn that changed nothing and tried nothing,
-        which can only be about the plan as it stands or an earlier turn's
-        change (_RECAP_CONFIRM_RX): "You're booked in for Saturday." to "Is
-        Saturday's ride still on?", "Yes, all done." to "Did that go in?",
-        "All set." to "Thanks, see you Saturday". Never a bare "Done." or
-        "Booked.", which say something happened just now, and never when the
-        rider asked for a change: "Skip tomorrow" then "You're all set." with
-        no tool claimed a skip."""
-        return bool(
-            not self._plan_tried and not self._plan_done and not self._goal_noted
-            and not self._overclaims() and not self.cut_off and not self.tools_withheld
-            and _RECAP_CONFIRM_RX.search(_norm(held).strip())
-            and not self._asks_change()
-        )
-
-    def _release_held(self, *, last: bool = False) -> str:
-        """The held confirmations, once the coach goes on or the reply ends.
-
-        A bare one goes out when it is true (_confirmation_backed), or a
-        recap in a turn that changed nothing (_recap): in front of the
-        coach's next words ("Booked. Enjoy it.") it is the rider's only word
-        that the change went in, and as the last word, dropped, it left a
-        booked session under the no-reply apology. What a "Done, ..." said
-        once its tools backed it goes out unless a tool since was refused,
-        or the call was cut short or lost its tools.
-
-        As the only words (`last`, nothing else said), neither stands in for
-        a red flag's fixed reply: a reply of nothing but "Done." or "Done,
-        you're all set." gets the whole fixed reply instead (_finish_tail),
-        as it always has. So that is decided once the classifier's time has
-        run out (finish_tail), never as the model stops: a verdict that
-        landed after "Done." had gone out left the rider "Done." and a few
-        lines. In a red-flag turn a bare one never goes, and what a "Done,
-        ..." said waits for the end and goes only beside words that carry
-        the reply's lines: "You're all set. Enjoy it." stood above the whole
-        fixed reply a crisis then got, as "Booked." never did.
-
-        The coach's words that waited behind them (_after_held), for the
-        classifier's verdict or that decision, go out after them, in order."""
-        held, self._held_confirm = self._held_confirm, ""
-        tail, self._held_tail = self._held_tail, ""
-        waited, self._after_held = self._after_held, []
-        broke, self._held_break = self._held_break, False
-        stake = self._fixed_reply_at_stake()
-        alone = last and stake and not self.said.strip() and not "".join(waited).strip()
-        if broke and (waited or not last):
-            held, tail = held.rstrip(" \t"), tail.rstrip(" \t")
-        out = ""
-        if held.strip():
-            if self._confirmation_backed(held) or (not alone and self._recap(held)):
-                out += self._emit(held)
-            else:
-                self._drop(held, "a confirmation no plan change backs")
-        if tail.strip():
-            if stake and (alone or self._only_short_words(self.said + "".join(waited))):
-                # The whole fixed reply follows the coach's few words: what
-                # the "Done, ..." said goes as the bare "Done." does. Beside
-                # words that carry the reply's lines it goes with them
-                # ("Don't ride through that. I've skipped it instead.").
-                self._drop(tail, "a confirmation above a red flag's fixed reply")
-            elif self.cut_off or self.tools_withheld or self._refused(self._held_tail_since):
-                self._drop(tail, "a confirmation a later tool or the cut took back")
-            else:
-                out += self._emit(tail)
-        if broke and out.strip() and (waited or not last):
-            # The round ended after it: the next round's words start a
-            # paragraph, as they would have without the wait.
-            self._break = "\n\n"
-        for text in waited:
-            out += self._emit(text)
-        return out
-
-    def fallback(self, extra_kinds: set[str] | None = None) -> str | None:
-        """The fixed reply, never telling the rider to send a message again
-        once a plan change went in: that would book the session twice."""
-        text = super().fallback(extra_kinds)
-        failed = safety_screen.REPLY_FAILED_MESSAGE
-        changed = self.change_went_in()
-        if text and changed and text.startswith(failed):
-            line = REPLY_FAILED_PLAN_CHANGED if changed == "plan" else REPLY_FAILED_GOAL_CHANGED
-            text = line + text[len(failed):]
-        return text
-
     def finish_tail(self) -> str:
         """The whole fixed reply if nothing reached the rider in a safety
         turn; otherwise only what the code guarantees and the reply lacks."""
-        out = self._release_held(last=True)
         self._own_words = False
         try:
-            return out + self._finish_tail()
+            return self._finish_tail()
         finally:
             self._own_words = True
 
@@ -5484,15 +4635,6 @@ class _CheckedReply(safety_screen.ReplyGuard):
             fallback = self.fallback()
             if fallback:
                 return self._emit(fallback)
-        elif self._only_short_words():
-            # A few short words with none of the reply's lines in them
-            # ("Monday's booked.", "Easy spin booked for Monday."): the whole
-            # fixed reply follows, as if the coach had said nothing.
-            fallback = self.fallback()
-            if fallback:
-                self._break = ""
-                trailing = len(self.said) - len(self.said.rstrip("\n"))
-                return self._emit("\n" * max(0, 2 - trailing) + fallback)
         try:
             extra = self._missing_lines()
         except Exception:
@@ -5516,35 +4658,6 @@ class _CheckedReply(safety_screen.ReplyGuard):
             out += self._release_ending()
         return out
 
-    def _only_short_words(self, said: str | None = None) -> bool:
-        """In a red-flag turn, the coach's words confirmed a change and are
-        a few short sentences that carry none of the lines its fixed reply
-        gives, in any wording: a confirmation the list of confirmations
-        never saw ("It's done.", "Monday's booked.") stood in for the reply,
-        and a crisis lost its question and means safety, chest pain "Don't
-        ride" and "Don't drive yourself". A short reply that confirms
-        nothing keeps the one line at its tier ("That sounds unpleasant.
-        Let's take it easy this week.", live round 3). Never once the coach
-        said the hold, or held back the crisis ending. `said` is the reply
-        to judge, when not the one already out (_release_held)."""
-        said = self.said if said is None else said
-        if (
-            not self._confirmed or not self._fixed_reply_at_stake() or self._held_ending
-            or self._hold_said
-        ):
-            return False
-        counts = [
-            len(_WORD_RX.findall(_norm(s))) for s in _UNIT_SPLIT_RX.split(said) if s.strip()
-        ]
-        if not counts or max(counts) > 8 or sum(counts) > 16:
-            return False
-        try:
-            lines = safety_screen._required_lines
-            return lines(self._turn, said, self._shown) == lines(self._turn, "", self._shown)
-        except Exception:
-            logger.exception("Reading the reply's safety lines failed")
-            return False
-
     def flush(self) -> str:
         return self.finish_body() + self.finish_tail()
 
@@ -5552,11 +4665,9 @@ class _CheckedReply(safety_screen.ReplyGuard):
 
     def _check(self, segment: str):
         first, self._round_start = self._round_start, False
-        self._claim_as = None
         cleaned = self._without_artefacts(segment, first)
         if cleaned is None:
             return None
-        waits_as, self._claim_as = self._claim_as, None
         key = _sentence_key(cleaned)
         if key and key in self._sentences:
             self._drop(cleaned, "a sentence said twice")
@@ -5580,37 +4691,7 @@ class _CheckedReply(safety_screen.ReplyGuard):
         if checked is None:
             return None
         claim, text = checked
-        low = _norm(text)
-        if claim == "hold":
-            return claim, text
-        # Safety words in a sentence never let its claim through unchecked:
-        # "You're booked in for Monday, so don't go hard." after a refused
-        # booking told the rider it was booked. The claim is checked, and
-        # the safety words alone stay when it goes (_salvage).
-        if isinstance(waits_as, _Confirm):
-            waits_as.plan = claim == "plan"
-            self._confirmed = True
-            return waits_as, text
-        if (
-            claim is None and (isinstance(waits_as, _Paused) or _hold_stated(text))
-            and not self._hold_done and self._hold() is None
-        ):
-            # A hold in the coach's own words with none on record waits for
-            # apply_safety_hold, like "I've put a hold on" (_decide).
-            return _Paused(isinstance(waits_as, _Paused)), text
-        if claim is None and _asserts_change(text):
-            # Words saying a change went in, in any wording ("Easy spin
-            # booked for Monday.", "Moved to Thursday.", "Added to your
-            # plan.", "Your easy spin is booked in for Monday morning at
-            # seven."): checked against the plan tools after them, or the
-            # turn (_decide). A few words are held like a bare "Done.";
-            # more go out once checked. "Nothing changed, so you're booked in
-            # for Tuesday as before" says so, and is no claim.
-            short = len(_WORD_RX.findall(low)) <= 8
-            if short:
-                self._confirmed = True
-            return _Confirm("said", self._round, long=not short), text
-        if claim is None and not self._plan_done and _PLAN_NOW_RX.search(low):
+        if claim is None and not self._plan_done and _PLAN_NOW_RX.search(_norm(text)):
             return "plan", text
         return claim, text
 
@@ -5619,94 +4700,24 @@ class _CheckedReply(safety_screen.ReplyGuard):
         if _NARRATION_RX.search(low) or _FILLER_RX.fullmatch(low):
             self._drop(segment, "tool narration")
             return None
-        if _BARE_HOLD_RX.fullmatch(low):
-            # Before the tool too: "Hold applied." went out in round 0 when
-            # apply_safety_hold then failed. A bare "Paused." or "On hold."
-            # waits for the hold tool in an ordinary turn, where it may be
-            # about something else (_decide).
-            if (
-                _BARE_APPLIED_RX.fullmatch(low) or self._hold_done or self.safety_turn
-                or self._hold() is not None
-            ):
-                self._drop(segment, "a hold confirmed in the coach's own words")
-                return None
-            self._claim_as = _Paused(True)
-            return segment
-        if _BARE_CONFIRM_RX.fullmatch(low):
-            # Held, in any round: one written before the tool waits for it.
-            self._confirmed = True
-            if self._held_confirm.strip():
-                # Said twice: the one that names the day, or the first.
-                if _NAMES_DAY_RX.search(low) and not _NAMES_DAY_RX.search(
-                    _norm(self._held_confirm)
-                ):
-                    self._drop(self._held_confirm, "a confirmation said twice")
-                    self._held_confirm = segment
-                else:
-                    self._drop(segment, "a confirmation said twice")
-                return None
-            if (
-                self._said_change or self._pending or self._colon.strip()
-                or self._held_tail.strip()
-            ):
-                # The coach's own words already said the change ("It's on
-                # Monday 19 October. Done."), or words before it still wait
-                # on a tool: it was never the reply. Beside words that said
-                # nothing of it ("Good call. Booked.") it is the only word
-                # that the change went in, and is held.
-                self._drop(segment, "a confirmation after the coach's own words")
-                return None
-            self._held_confirm = segment
-            return None
-        m = _CONFIRM_LEAD_RX.match(segment)
-        rest = segment[m.end():] if m else ""
-        brief = bool(m) and (
-            len(_WORD_RX.findall(_norm(rest))) <= 12
-            or bool(safety_screen._PLAN_CLAIM_RX.search(_norm(rest)))
-        )
-        colon = rest.rstrip().endswith(":")
         if self._round == 0:
-            if m and rest.strip() and not colon:
-                # Before any tool, whole, whatever its length and whatever
-                # else it says: with a tool call after it, it claimed that
-                # tool's change before the tool ran, and waits for it with
-                # everything after it (_decide). "Done, but don't ride hard
-                # on it." went out over a booking the gate then refused.
-                self._claim_as = _Confirm("lead", self._round)
             return segment
+        m = _CONFIRM_LEAD_RX.match(segment)
         if m:
+            rest = segment[m.end():]
             # After a change went in, "Done, it's booked for Monday 19
             # October" keeps what it says and loses its "Done": dropped whole,
             # a short answer left the rider with nothing but the fallback. A
             # hold confirmation always goes, since its sentence comes from code.
-            if not rest.strip() or (not colon and _hold_talk(rest)):
-                self._drop(segment, "a confirmation after a tool call")
-                return None
-            if not colon and self._results and all(
-                name in _RIDE_LOOKUP_TOOLS for name, _, _, _ in self._results
+            short = (not self._change_done or self._change_said) and (
+                len(_WORD_RX.findall(_norm(rest))) <= 12
+                or safety_screen._PLAN_CLAIM_RX.search(_norm(rest))
+            )
+            if not rest.strip() or (
+                not rest.rstrip().endswith(":") and (_hold_talk(rest) or short)
             ):
-                # Only lookups ran: the lead claims no change, and what it
-                # says is the answer ("Confirmed: you rode 60 minutes on
-                # Tuesday."). With nothing after it, it is no lead at all
-                # ("All done for the week now.").
-                if not re.search(r"[,.:;!]", m.group()):
-                    return segment
-                if _claims_plan(rest):
-                    # "Done, I've moved it to Wednesday." after a lookup
-                    # claims what no tool did, and goes whole as before.
-                    self._drop(segment, "a confirmation after a lookup")
-                    return None
-                return _capitalise(_LEADING_LINK_RX.sub("", rest))
-            short = (not self._change_done or self._change_said) and brief
-            if not colon and short:
                 self._drop(segment, "a confirmation after a tool call")
                 return None
-            if brief and not colon:
-                # Checked against what the tools did, any after it included
-                # (_decide), then held like a bare one: as the coach's only
-                # words, "You're all set." would stand in for a red flag's
-                # fixed reply.
-                self._claim_as = _Confirm("tail", self._round)
             return _capitalise(rest)
         if first:
             m = _INTERJECTION_RX.match(segment)
@@ -5728,30 +4739,11 @@ class _CheckedReply(safety_screen.ReplyGuard):
     def _emit(self, text: str) -> str:
         if not text:
             return ""
-        out = []
-        if self._own_words and (
-            self._after_held
-            or (text.strip() and (self._held_confirm.strip() or self._held_tail.strip()))
-        ) and (
-            self._verdict_still_pending()
-            or (self._held_tail.strip() and self._fixed_reply_at_stake())
-        ):
-            # The classifier's verdict is on its way, or a red flag's fixed
-            # reply may yet follow the coach's few words: either takes the
-            # held confirmation back, so it and the words after it wait for
-            # the end (_release_held, finish_tail).
-            self._after_held.append(text)
-            return ""
-        if self._own_words and text.strip():
-            # The coach went on: a held confirmation goes in front of its
-            # words, or goes.
-            out.append(self._release_held())
-            if _claims_plan(text):
-                self._said_change = self._confirmed = True
         if self._break and text[:1] in (" ", "\t"):
             text = text.lstrip(" \t")
             if not text:
-                return "".join(out)
+                return ""
+        out = []
         for piece in _pieces(text):
             self._notice(piece)
             piece = self._lift_rewrite(self._hold_rewrite(piece))
@@ -6773,6 +5765,7 @@ def _reply_after_failure(
     scrub: StreamHumanizer,
     so_far: str,
     screen: "safety_screen.ScreenResult",
+    went_in=None,
 ) -> str:
     """What the rider gets when the model call fails.
 
@@ -6780,16 +5773,17 @@ def _reply_after_failure(
     card is up and any hold is on, and a rider with chest pain or in crisis
     needs to act, not retry. They get whatever was already written plus the
     lines the law requires, or the whole fixed reply (fallback_reply). An
-    ordinary turn gets an honest line after anything already written, which
-    never asks for the message again once a plan change went in."""
+    ordinary turn gets an honest line after anything already written, and
+    once a change went in (went_in, read after the reply check is done:
+    _TurnChanges.ending), never "send it again", which would make the change
+    twice, but the app's lines for what went in."""
     out = _flush_after_failure(guard, scrub, after=so_far)
     if screen.hits and (so_far + out).strip():
         return out
     sep = "\n\n" if (so_far + out).strip() else ""
-    # Never "send it again" over a plan change that went in: it would go in
-    # twice.
-    if getattr(guard, "_plan_done", False):
-        return out + sep + REPLY_FAILED_PLAN_CHANGED
+    lines = went_in() if went_in is not None else []
+    if lines:
+        return out + sep + "\n\n".join([REPLY_FAILED_CHANGES, *lines])
     return out + sep + safety_screen.REPLY_FAILED_MESSAGE
 
 
@@ -7103,9 +6097,6 @@ def _child_reply_after(guard: "safety_screen.ReplyGuard", scrub: StreamHumanizer
     guard._buf = ""
     guard._pending = []
     guard._colon = ""
-    guard._held_confirm = ""
-    guard._held_tail = ""
-    guard._after_held = []
     return _child_reply(guard)
 
 
@@ -8266,8 +7257,6 @@ async def _stream_chat_turn(
         intro, known = _intro_for(db, user, session)
         guard = _reply_guard(db, user, screen, turn_started)
         safety.guard = guard
-        # A held "Done." waits with the words after it until the verdict is in.
-        guard.verdict_pending = lambda: not safety.resolved
 
         if _child_account(db, user, screen):
             # Fixed words only: nothing more of a child's data reaches the
@@ -8324,6 +7313,9 @@ async def _stream_chat_turn(
         scrub = StreamHumanizer()
         ended = "reply"
         lookups = 0
+        # What the plan and goal tools changed, for an ending with no words
+        # left to say it (_TurnChanges).
+        changes = _TurnChanges()
 
         if intro:
             yield _sse_text(intro + " ")
@@ -8356,7 +7348,6 @@ async def _stream_chat_turn(
                 )
                 if tool_choice:
                     _note_last_round(messages)
-                    guard.tools_withheld = True
                 # One more try after a short pause when the call fails before
                 # any words arrive: nothing has reached the rider or the reply
                 # check, so a second try can't repeat or garble anything.
@@ -8429,11 +7420,6 @@ async def _stream_chat_turn(
                 ]
 
                 if not tool_use_blocks or final.stop_reason != "tool_use":
-                    if tool_use_blocks or final.stop_reason not in _WHOLE_STOPS:
-                        # Cut short at the output allowance, its tool calls
-                        # never run: the coach never finished ("Done." there
-                        # covers a change that never happened).
-                        guard.cut_off = True
                     # No tool calls, we're done
                     break
 
@@ -8464,12 +7450,11 @@ async def _stream_chat_turn(
                     label = _tool_status(db, user, tool_block.name, tool_block.input)
                     if label:
                         yield _sse({"type": "status", "content": label})
-                    result_text = _run_tool(
+                    result_text = changes.run(
                         db, user, tool_block.name, tool_block.input
                     )
                     turn.tool_done(tool_block.name, result_text)
-                    # The input too: what an update_workout changed (_plan_changes).
-                    ran.append((tool_block.name, result_text, tool_block.input))
+                    ran.append((tool_block.name, result_text))
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_block.id,
@@ -8550,7 +7535,10 @@ async def _stream_chat_turn(
             reply_failed = True
             for chunk in await safety.settle():
                 yield _sse(chunk)
-            out = _reply_after_failure(guard, scrub, full_response, screen)
+            out = _reply_after_failure(
+                guard, scrub, full_response, screen,
+                went_in=lambda: [] if safety.child else changes.ending(db, user, screen, guard),
+            )
             if out:
                 yield said(out)
             _record_reply_failure(db, user, screen, user_msg.id, error=e, source="chat")
@@ -8570,20 +7558,25 @@ async def _stream_chat_turn(
         # reaches the rider (a max_tokens cut-off streams zero text and raises
         # nothing). A rider's message must NEVER sit unanswered in the history,
         # and the next turn must know no answer was given (_build_messages).
+        # After a change went in, an ordinary turn says what went in instead,
+        # in the app's words (_TurnChanges).
         fell_back = not full_response.strip()
-        changed_anyway = None
-        if fell_back:
+        listed = changes.ending(db, user, screen, guard) if fell_back and not child_now else []
+        if listed:
+            ended = "changes"
+            full_response = "\n\n".join(listed)
+        elif fell_back:
             ended = "fallback"
-            full_response, changed_anyway = _no_reply_line(guard)
+            full_response = _NO_REPLY_FALLBACK
 
         saved = f"{intro} {full_response}" if intro else full_response
         # The cards go on the stored reply, a late one included, so a reload
         # shows them again.
         snapshot = _cards_snapshot(screen) if child_now else _snapshot(rider_context, screen)
-        if fell_back:
+        if listed:
+            snapshot = {**(snapshot or {}), "code_written": True}
+        elif fell_back:
             snapshot = {**(snapshot or {}), "fallback": True}
-            if changed_anyway:
-                snapshot["changed"] = True
         # Saved, logged and recorded before the fallback goes out, so a rider
         # who leaves at that moment still leaves an answered message behind.
         add_assistant_message(db, session, saved, snapshot, tokens_used)
@@ -8805,8 +7798,6 @@ async def _stream_voice_turn(
         intro, known = _intro_for(db, user, session)
         guard = _reply_guard(db, user, screen, turn_started)
         safety.guard = guard
-        # A held "Done." waits with the words after it until the verdict is in.
-        guard.verdict_pending = lambda: not safety.resolved
         child = _child_account(db, user, screen)
 
         # Build context (none for an account that may be a child's: the reply
@@ -8854,6 +7845,8 @@ async def _stream_voice_turn(
         scrub = StreamHumanizer()
         ended = "reply"
         lookups = 0
+        # What the plan and goal tools changed, as in stream_response.
+        changes = _TurnChanges()
 
         async def speak_cards(cards):
             """A rider in voice mode may not be looking at the screen: a card
@@ -8901,9 +7894,7 @@ async def _stream_voice_turn(
                 match = _SENTENCE_END.search(sentence_buffer)
                 complete_sentence = sentence_buffer[:match.end()].strip()
                 sentence_buffer = sentence_buffer[match.end():]
-                # Any sentence with a word in it: a released "Done." or a
-                # "No." was shown and never heard.
-                if re.search(r"\w", complete_sentence):
+                if complete_sentence and len(complete_sentence) > 5:
                     try:
                         audio_b64 = base64.b64encode(
                             await text_to_speech(complete_sentence)
@@ -8933,7 +7924,6 @@ async def _stream_voice_turn(
                 )
                 if tool_choice:
                     _note_last_round(messages)
-                    guard.tools_withheld = True
                 # One more try when the call fails before any words arrive, as in
                 # stream_response.
                 final = None
@@ -9002,8 +7992,6 @@ async def _stream_voice_turn(
                 ]
 
                 if not tool_use_blocks or final.stop_reason != "tool_use":
-                    if tool_use_blocks or final.stop_reason not in _WHOLE_STOPS:
-                        guard.cut_off = True  # cut short, as in stream_response
                     break
 
                 async for chunk in emit(guard.feed(scrub.flush()) + guard.before_tools()):
@@ -9029,12 +8017,11 @@ async def _stream_voice_turn(
                     label = _tool_status(db, user, tool_block.name, tool_block.input)
                     if label:
                         yield _sse({"type": "status", "content": label})
-                    result_text = _run_tool(
+                    result_text = changes.run(
                         db, user, tool_block.name, tool_block.input
                     )
                     turn.tool_done(tool_block.name, result_text)
-                    # The input too: what an update_workout changed (_plan_changes).
-                    ran.append((tool_block.name, result_text, tool_block.input))
+                    ran.append((tool_block.name, result_text))
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_block.id,
@@ -9092,7 +8079,9 @@ async def _stream_voice_turn(
                     yield chunk
 
             # Handle any remaining text in buffer
-            if voice_enabled and re.search(r"\w", sentence_buffer):
+            if voice_enabled and sentence_buffer.strip() and len(
+                sentence_buffer.strip()
+            ) > 5:
                 try:
                     audio_bytes = await text_to_speech(
                         sentence_buffer.strip()
@@ -9124,7 +8113,12 @@ async def _stream_voice_turn(
             try:
                 async for chunk in late_cards(await safety.settle()):
                     yield chunk
-                async for chunk in emit(_reply_after_failure(guard, scrub, full_response, screen)):
+                async for chunk in emit(_reply_after_failure(
+                    guard, scrub, full_response, screen,
+                    went_in=lambda: (
+                        [] if child or safety.child else changes.ending(db, user, screen, guard)
+                    ),
+                )):
                     yield chunk
             except Exception:
                 logger.exception("Sending the reply after a voice failure failed")
@@ -9135,19 +8129,24 @@ async def _stream_voice_turn(
             ended = "child"
         # A rider's message must NEVER sit unanswered in the history (a
         # max_tokens cut-off streams zero text and raises nothing), and the
-        # next turn must know no answer was given (_build_messages).
+        # next turn must know no answer was given (_build_messages). After a
+        # change went in, an ordinary turn says what went in instead, as in
+        # stream_response.
         fell_back = not full_response.strip()
-        changed_anyway = None
-        if fell_back:
+        listed = changes.ending(db, user, screen, guard) if fell_back and not child else []
+        if listed:
+            ended = "changes"
+            full_response = "\n\n".join(listed)
+        elif fell_back:
             ended = "fallback"
-            full_response, changed_anyway = _no_reply_line(guard)
+            full_response = _NO_REPLY_FALLBACK
 
         saved = f"{intro} {full_response}" if intro else full_response
         snapshot = _cards_snapshot(screen) if child else _snapshot(rider_context, screen)
-        if fell_back:
+        if listed:
+            snapshot = {**(snapshot or {}), "code_written": True}
+        elif fell_back:
             snapshot = {**(snapshot or {}), "fallback": True}
-            if changed_anyway:
-                snapshot["changed"] = True
         # Saved, logged and recorded before the fallback goes out, so a rider
         # who leaves at that moment still leaves an answered message behind.
         add_assistant_message(db, session, saved, snapshot, tokens_used)
@@ -9158,6 +8157,10 @@ async def _stream_voice_turn(
             _after_child_turn(db, user, turn_started)
         if fell_back:
             yield _sse_text(full_response)
+        if listed:
+            # Spoken too: a rider in voice mode may not be looking.
+            async for piece in speak_cards(listed):
+                yield piece
 
         if plan_was_updated:
             yield _sse({"type": "plan_updated"})
@@ -9215,8 +8218,6 @@ def get_non_streaming_response(
         intro, known = _intro_for(db, user, session)
         guard = _reply_guard(db, user, screen, turn_started)
         safety.guard = guard
-        # A held "Done." waits with the words after it until the verdict is in.
-        guard.verdict_pending = lambda: not safety.resolved
 
         def _with_cards(text: str) -> str:
             body = f"{intro} {text}" if intro else text
