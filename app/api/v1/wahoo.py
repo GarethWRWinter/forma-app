@@ -181,7 +181,10 @@ async def wahoo_webhook_receive(request: Request):
 
     if settings.wahoo_webhook_token:
         provided = payload.get("webhook_token") or request.headers.get("x-webhook-token", "")
-        if provided != settings.wahoo_webhook_token:
+        # Stray whitespace on either side is never part of a token: a copied
+        # line break once mismatched the two copies for four days and got the
+        # webhook blocked (11 Oct 2026).
+        if str(provided or "").strip() != settings.wahoo_webhook_token.strip():
             logger.warning("Wahoo webhook with bad token rejected")
             return JSONResponse(status_code=403, content={"error": "Bad token"})
 
