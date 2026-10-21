@@ -9,6 +9,7 @@ below is a case where the two disagreed.
 
 import asyncio
 import json
+import re
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -384,10 +385,15 @@ def test_a_bare_confirmation_after_a_change_gets_the_apps_line(
     assert any(c["type"] == "plan_updated" for c in chunks)
     assert stored.content == INTRO + said
     assert stored.context_snapshot["code_written"] is True
+    assert stored.context_snapshot["went_in"] == lines
     assert not stored.context_snapshot.get("fallback")
-    # The next turn reads them as the app's words, not an answer it gave.
+    # The next turn reads them as the app's words, not an answer it gave:
+    # the lines alone, never the AI disclosure the first reply opens with.
     history = coach_service._build_messages(stored.session)
-    assert history[-1]["content"] == coach_service._CHANGES_NOTE.format(lines=stored.content)
+    assert history[-1]["content"] == (
+        "[No answer was written to the message above. The app showed the rider "
+        "what went in, from the plan as saved:\n" + "\n".join(lines) + "]"
+    )
 
 
 @VOICE
@@ -493,7 +499,7 @@ def test_of_two_changes_only_the_one_that_went_in_is_listed(
 
     refused, skipped = _results(scripted_model.calls[1])
     assert refused.startswith("Not changed") and skipped.startswith("Skipped")
-    assert said == "Skipped: Threshold reps, Monday 19 October."
+    assert said == "Skipped: Threshold reps, Monday 19 October.\n\n" + NOT_ALL_IN
 
 
 def _results(call) -> list[str]:
@@ -581,6 +587,285 @@ def test_a_failed_call_after_a_refused_change_keeps_its_line(
     assert said == safety_screen.REPLY_FAILED_MESSAGE
 
 
+# What follows the list when a plan or goal call this turn did not go in and
+# nothing later in the turn put it right, so the list never reads as the
+# whole of what was asked.
+NOT_ALL_IN = "Not everything went in. Ask me what didn't, and why."
+
+
+@VOICE
+@pytest.mark.parametrize("fails", [False, True], ids=["done", "failed call"])
+def test_a_session_booked_twice_shows_as_two(
+    db_session, rider, scripted_model, clock, monkeypatch, voice, fails
+):
+    """Two bookings that read the same are two sessions on the calendar. One
+    line for both hid the very double booking this ending is there to stop."""
+    tool = scripted_model.tool_use
+    scripted_model.append(([], [_easy_spin(tool), _easy_spin(tool)]))
+    if fails:
+        _fails_after(monkeypatch, scripted_model)
+    else:
+        scripted_model.append((["Done."], ()))
+
+    _, said, _ = _send(db_session, rider, "Book me an easy ride on Monday", voice)
+
+    assert db_session.query(Workout).count() == 2
+    line = "Booked: Easy spin, Monday 19 October (two sessions)."
+    assert said == ("\n\n".join([coach_service.REPLY_FAILED_CHANGES, line]) if fails else line)
+
+
+@VOICE
+def test_two_sessions_that_read_the_same_are_both_counted(
+    db_session, rider, scripted_model, clock, voice
+):
+    a, b = (
+        _session(db_session, rider, title="Endurance", kind=WorkoutType.endurance) for _ in "ab"
+    )
+    tool = scripted_model.tool_use
+    scripted_model.append(([], [
+        tool("skip_workout", {"workout_id": a.id}), tool("skip_workout", {"workout_id": b.id}),
+    ]))
+    scripted_model.append((["Done."], ()))
+
+    _, said, _ = _send(db_session, rider, "Skip both of Monday's rides", voice)
+
+    assert said == "Skipped: Endurance, Monday 19 October (two sessions)."
+
+
+def _too_hard(tool, day=WEDNESDAY):
+    """An endurance session whose steps ask for 120% of FTP: refused for any
+    rider, hold or none."""
+    return tool("add_workout", {
+        "scheduled_date": day.isoformat(), "title": "Hill reps", "workout_type": "endurance",
+        "steps": [
+            {"step_type": "warmup", "duration_seconds": 600, "power_pct": 55},
+            {
+                "step_type": "interval_on", "duration_seconds": 300, "power_pct": 120,
+                "repeat_count": 4,
+            },
+            {"step_type": "interval_off", "duration_seconds": 300, "power_pct": 50},
+            {"step_type": "cooldown", "duration_seconds": 600, "power_pct": 50},
+        ],
+    })
+
+
+@VOICE
+@pytest.mark.parametrize("fails", [False, True], ids=["done", "failed call"])
+@pytest.mark.parametrize("later", [False, True], ids=["same round", "later round"])
+def test_a_change_that_did_not_go_in_is_never_left_off_the_list(
+    db_session, rider, scripted_model, clock, monkeypatch, voice, later, fails
+):
+    """Monday's session went and Wednesday's was refused: the list alone read
+    as the whole of the swap."""
+    w = _session(db_session, rider)
+    tool = scripted_model.tool_use
+    skip = tool("skip_workout", {"workout_id": w.id})
+    if later:
+        scripted_model.extend([([], [skip]), ([], [_too_hard(tool)])])
+    else:
+        scripted_model.append(([], [skip, _too_hard(tool)]))
+    if fails:
+        _fails_after(monkeypatch, scripted_model, rounds=len(scripted_model))
+    else:
+        scripted_model.append((["Done."], ()))
+
+    _, said, stored = _send(
+        db_session, rider, "Swap Monday's threshold for hill reps on Wednesday", voice
+    )
+
+    results = [r for call in scripted_model.calls[1:] for r in _results(call)]
+    assert any(r.startswith("Not changed. This session's steps ask for 120%") for r in results)
+    lines = ["Skipped: Threshold reps, Monday 19 October.", NOT_ALL_IN]
+    assert said == "\n\n".join(([coach_service.REPLY_FAILED_CHANGES] if fails else []) + lines)
+    if not fails:
+        # The next turn can answer "what didn't?" from the tool's own words.
+        note = coach_service._build_messages(stored.session)[-1]["content"]
+        assert "This session's steps ask for 120% of FTP" in note
+
+
+@VOICE
+@pytest.mark.parametrize("first", ["bad date", "wrong id", "too hard"])
+def test_a_call_put_right_in_a_later_round_is_not_said_to_have_failed(
+    db_session, rider, scripted_model, clock, voice, first
+):
+    tool = scripted_model.tool_use
+    if first == "bad date":
+        bad = tool("add_workout", {
+            "scheduled_date": "19/10/2026", "title": "Easy spin", "workout_type": "endurance",
+        })
+        scripted_model.extend([([], [bad]), ([], [_easy_spin(tool)])])
+        line = "Booked: Easy spin, Monday 19 October."
+    elif first == "wrong id":
+        w = _session(db_session, rider)
+        scripted_model.extend([
+            ([], [tool("skip_workout", {"workout_id": "not-a-session"})]),
+            ([], [tool("skip_workout", {"workout_id": w.id})]),
+        ])
+        line = "Skipped: Threshold reps, Monday 19 October."
+    else:
+        scripted_model.extend([([], [_too_hard(tool)]), ([], [_easy_spin(tool, WEDNESDAY)])])
+        line = "Booked: Easy spin, Wednesday 21 October."
+    scripted_model.append((["Done."], ()))
+
+    _, said, _ = _send(db_session, rider, "Can you sort that for me?", voice)
+
+    assert _results(scripted_model.calls[1])[0].startswith(("Error", "Not changed"))
+    assert said == line
+
+
+@VOICE
+def test_a_session_saved_before_its_tool_broke_is_listed(
+    db_session, rider, scripted_model, clock, monkeypatch, voice
+):
+    """The rows decide, not the result: the tool broke after saving, said
+    nothing was saved, and the session is on the calendar."""
+    def broken(*args, **kwargs):
+        raise RuntimeError("the note broke")
+
+    monkeypatch.setattr(coach_service, "_structure_note", broken)
+    scripted_model.append(([], [_easy_spin(scripted_model.tool_use)]))
+    scripted_model.append((["Done."], ()))
+
+    _, said, _ = _send(db_session, rider, "Book me an easy ride on Monday", voice)
+
+    assert _results(scripted_model.calls[1]) == [coach_service._TOOL_CRASHED]
+    assert db_session.query(Workout).count() == 1
+    assert said == "Booked: Easy spin, Monday 19 October."
+
+
+def _booked_id_into(monkeypatch, tool_input: dict) -> None:
+    """A later round's call gets the id of the session booked before it, as
+    the model reads it from the booking's result."""
+    real = coach_service._execute_tool
+
+    def run(db, user, name, args):
+        result = real(db, user, name, args)
+        booked = name == "add_workout" and result.startswith("Booked")
+        if booked and not tool_input.get("workout_id"):
+            tool_input["workout_id"] = re.search(r"workout_id ([\w-]+)", result).group(1)
+        return result
+
+    monkeypatch.setattr(coach_service, "_execute_tool", run)
+
+
+def _net(what, db, user, tool, monkeypatch):
+    """Rounds of plan calls, and the lines for where each session ended up:
+    one per session, from its turn-start state to its end state."""
+    if what.startswith("booked, then"):
+        later = {
+            "booked, then given steps": {
+                "steps": [{"step_type": "steady_state", "duration_seconds": 3600, "power_pct": 65}],
+            },
+            "booked, then moved": {"scheduled_date": WEDNESDAY.isoformat()},
+            "booked, then skipped": {"workout_id": ""},
+        }[what]
+        _booked_id_into(monkeypatch, later)
+        name = "skip_workout" if what.endswith("skipped") else "update_workout"
+        day = "Wednesday 21 October" if what.endswith("moved") else "Monday 19 October"
+        lines = [] if what.endswith("skipped") else [f"Booked: Easy spin, {day}."]
+        return [[_easy_spin(tool)], [tool(name, later)]], lines
+    if what == "moved, then moved back":
+        w = _session(db, user)
+        return [
+            [tool("update_workout", {"workout_id": w.id, "scheduled_date": WEDNESDAY.isoformat()})],
+            [tool("update_workout", {"workout_id": w.id, "scheduled_date": MONDAY.isoformat()})],
+        ], []
+    if what == "swapped twice":
+        a = _session(db, user)
+        b = _session(db, user, WEDNESDAY, "Easy spin", WorkoutType.endurance)
+        swap = {"workout_id_a": a.id, "workout_id_b": b.id}
+        return [[tool("swap_workout_date", swap)], [tool("swap_workout_date", swap)]], []
+    if what == "moved under its own name":
+        w = _session(db, user)
+        return [[tool("update_workout", {
+            "workout_id": w.id, "title": "Threshold reps", "scheduled_date": WEDNESDAY.isoformat(),
+        })]], ["Moved: Threshold reps to Wednesday 21 October."]
+    if what == "moved and changed":
+        w = _session(db, user)
+        return [[tool("update_workout", {
+            "workout_id": w.id, "title": "Easy spin", "workout_type": "endurance",
+            "scheduled_date": WEDNESDAY.isoformat(),
+        })]], ["Moved and changed: Easy spin, now on Wednesday 21 October."]
+    if what in ("skipped, then put back", "skipped again"):
+        w = _session(db, user)
+        w.status = WorkoutStatus.skipped
+        db.commit()
+        if what == "skipped again":
+            return [[tool("skip_workout", {"workout_id": w.id})]], []
+        return [[tool("update_workout", {
+            "workout_id": w.id, "scheduled_date": MONDAY.isoformat(),
+        })]], ["Back on the plan: Threshold reps, Monday 19 October."]
+    assert what == "goal given its own date"
+    goal = _goal(db, user, date(2027, 5, 30), name="Mallorca 312")
+    return [[tool("update_goal", {"goal_id": goal.id, "event_date": "2027-05-30"})]], []
+
+
+NET = [
+    "booked, then given steps", "booked, then moved", "booked, then skipped",
+    "moved, then moved back", "swapped twice", "moved under its own name", "moved and changed",
+    "skipped, then put back", "skipped again", "goal given its own date",
+]
+
+
+@VOICE
+@pytest.mark.parametrize("what", NET)
+def test_each_change_is_listed_for_where_it_ended_up(
+    db_session, rider, scripted_model, clock, monkeypatch, voice, what
+):
+    """One line per session or goal, for the difference between how the turn
+    found it and how it left it: never a line per call, and none for a call
+    that left it as it was."""
+    rounds, lines = _net(what, db_session, rider, scripted_model.tool_use, monkeypatch)
+    scripted_model.extend(([], calls) for calls in rounds)
+    scripted_model.append((["Done."], ()))
+
+    _, said, _ = _send(db_session, rider, "Can you sort that for me?", voice)
+
+    results = [r for call in scripted_model.calls[1:] for r in _results(call)]
+    assert len(results) == sum(map(len, rounds))
+    assert not any(r.startswith(("Error", "Not changed")) for r in results)
+    assert said == ("\n\n".join(lines) if lines else coach_service._NO_REPLY_FALLBACK)
+
+
+@VOICE
+def test_a_goal_that_rebuilt_the_plan_says_so(db_session, scripted_model, clock, voice):
+    gareth, _, _ = _incident(db_session)
+    scripted_model.append(([], [scripted_model.tool_use("create_goal", {
+        "event_name": "Mallorca 312", "event_date": "2027-04-24",
+        "event_type": "gran_fondo", "priority": "a_race",
+    })]))
+    scripted_model.append((["Done."], ()))
+
+    _, said, _ = _send(db_session, gareth, "Let's aim at the 312 in April", voice)
+
+    assert "The plan has been rebuilt around it" in _results(scripted_model.calls[1])[0]
+    [plan] = _active(db_session, gareth)
+    assert (plan.start_date, plan.end_date) == (FRIDAY, date(2027, 4, 24))
+    assert said == (
+        "Goal set: Mallorca 312, Saturday 24 April 2027.\n\n"
+        f"New plan: {plan.name}, Friday 16 October to Saturday 24 April 2027."
+    )
+
+
+@VOICE
+def test_a_booking_behind_another_session_says_where_it_is(
+    db_session, rider, scripted_model, clock, voice
+):
+    """Today shows a day's first session only: the rider looking there for
+    the booking would not find it."""
+    _session(db_session, rider, title="Rest day", kind=WorkoutType.rest)
+    scripted_model.append(([], [_easy_spin(scripted_model.tool_use)]))
+    scripted_model.append((["Done."], ()))
+
+    _, said, _ = _send(db_session, rider, "Book me an easy ride on Monday", voice)
+
+    assert "as a second session that day after Rest day" in _results(scripted_model.calls[1])[0]
+    assert said == (
+        "Booked: Easy spin, Monday 19 October. It's on Goal, not Today: Rest day comes "
+        "first that day."
+    )
+
+
 def _safety_turn(why, db, user, tool):
     """A turn whose ending is the safety system's, with a change that goes
     in: the rider's message and the model's tool rounds."""
@@ -597,6 +882,22 @@ def _safety_turn(why, db, user, tool):
         _injured(db, user)
         w = _session(db, user)
         return "Skip Monday for me", [([], [tool("skip_workout", {"workout_id": w.id})])]
+    # The coach's own safety tools, on a message the regex finds nothing in
+    # (the classifier is offline in tests): the coach filed the turn as a
+    # crisis, a possible minor or a safety matter, or tried to hold the plan
+    # and was refused.
+    if why.startswith("coach flags"):
+        _, _, reason, *later = why.split()
+        flag = tool("flag_for_review", {"reason": reason, "note": "Sounded hopeless"})
+        if later:
+            return QUIET_CRISIS, [([], [_easy_spin(tool)]), ([], [flag])]
+        return QUIET_CRISIS, [([], [flag, _easy_spin(tool)])]
+    if why == "coach hold refused":
+        return "Felt a bit odd on the climb yesterday. Book me an easy spin Monday.", [
+            ([], [tool("apply_safety_hold", {
+                "level": "pause", "reason": "Odd on the climb", "red_flag": "chest_pain",
+            }), _easy_spin(tool)]),
+        ]
     assert why == "under 18"
     return "Book me an easy ride on Monday", [
         ([], [_easy_spin(tool)]),
@@ -606,19 +907,38 @@ def _safety_turn(why, db, user, tool):
     ]
 
 
+QUIET_CRISIS = (
+    "Sorted my will out and gave the dog to my sister, so the plan won't matter "
+    "after Sunday. Book me an easy spin Monday."
+)
+
+
+@pytest.mark.parametrize("message", [
+    QUIET_CRISIS, "Felt a bit odd on the climb yesterday. Book me an easy spin Monday.",
+])
+def test_the_coachs_own_safety_turns_are_ones_the_regex_misses(message):
+    """So in those turns the coach's tool is the only safety signal."""
+    assert safety_screen._detect(message) == []
+
+
 # What the stored reply's snapshot says about how it ended, and its cards.
 MARKS = ("fallback", "code_written", "safety_cards", "safety_card")
 
 
 @VOICE
 @pytest.mark.parametrize("fails", [False, True], ids=["done", "failed call"])
-@pytest.mark.parametrize("why", ["head knock", "crisis", "hold", "under 18"])
+@pytest.mark.parametrize("why", [
+    "head knock", "crisis", "hold", "under 18",
+    "coach flags crisis", "coach flags minor", "coach flags safety",
+    "coach flags crisis later", "coach hold refused",
+])
 def test_a_safety_turn_with_a_change_ends_as_it_always_has(
     db_session, rider, scripted_model, clock, monkeypatch, voice, fails, why
 ):
     """A red flag's, a hold's or an under-18 account's ending is the safety
-    system's, byte for byte: the same turn with the app's lines switched off
-    ends the same way, and neither lists the change."""
+    system's, byte for byte, and so is the ending of a turn the coach itself
+    flagged for review or tried to hold: the same turn with the app's lines
+    switched off ends the same way, and neither lists the change."""
     twin = User(email="twin@example.com", hashed_password="x", full_name="Sam Rider", ftp=250)
     db_session.add(twin)
     db_session.commit()

@@ -3472,23 +3472,41 @@ def _was_no_reply(msg: ChatMessage) -> bool:
 # tool ran. Over a session that was booked, the no-reply apology or "Try
 # sending that again" has the rider send it again and book it twice. So in
 # an ordinary turn those two endings say what went in instead: one line per
-# change, written here from the rows the plan and goal tools wrote, never
-# from the model's words. A turn with a red flag, a card, a hold or an
-# account held as under 18 keeps its ending exactly as it was.
+# session, goal or plan the turn changed, written here from the rows as the
+# turn found them and as it left them, never from the model's words. A turn
+# with a red flag, a card, a hold, an account held as under 18, or one of the
+# coach's own safety tools keeps its ending exactly as it was.
 
 # The failure line once a change went in: never "send it again".
 REPLY_FAILED_CHANGES = "I couldn't finish a reply just now. Here's what went in:"
+# After the lines, when a plan or goal call this turn did not go in and no
+# later call put it right, so the list never reads as the whole of what was
+# asked. No numbers in it: it is safe whatever the safety record says.
+CHANGES_NOT_ALL_IN = "Not everything went in. Ask me what didn't, and why."
 # What the next turn's history shows in place of the lines, so the coach
 # knows the change went in and that the words were the app's, not its own.
 _CHANGES_NOTE = (
     "[No answer was written to the message above. The app showed the rider "
     "what went in, from the plan as saved:\n{lines}]"
 )
-# What an update_workout can change besides the day: with none of these,
-# it is a move.
-_SESSION_EDITS = (
-    "title", "description", "workout_type", "planned_duration_seconds", "planned_tss", "steps",
-)
+# And, after them, what the tools said about the calls that did not go in,
+# so the coach can answer "what didn't?" from the tools' words.
+_NOT_IN_NOTE = "\nWhat the tools said about what did not go in:\n{results}"
+# A plan or goal tool's result when its change went in.
+_WENT_IN = {
+    "add_workout": "Booked",
+    "update_workout": "Updated",
+    "swap_workout_date": "Swapped",
+    "skip_workout": "Skipped",
+    "create_goal": "Filed the goal",
+    "update_goal": "Updated the goal",
+}
+# The coach's own safety tools: a turn that called one, whatever it
+# returned, ends as the safety system's turns do.
+_SAFETY_TOOLS = ("apply_safety_hold", "flag_for_review")
+# How many rows one line stands for, in words: "Booked: Easy spin, Monday
+# 19 October (two sessions)."
+_COUNTS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine"}
 
 
 def _was_changes_ending(msg: ChatMessage) -> bool:
@@ -3499,6 +3517,25 @@ def _was_changes_ending(msg: ChatMessage) -> bool:
         and isinstance(snapshot, dict)
         and snapshot.get("code_written") is True
     )
+
+
+def _texts(value) -> list[str] | None:
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return value
+    return None
+
+
+def _changes_note(msg: ChatMessage) -> str:
+    """The next turn's view of the app's lines: the lines alone (never the
+    AI disclosure a chat's first reply opens with), then what the tools said
+    about anything that did not go in."""
+    snapshot = msg.context_snapshot or {}
+    lines = _texts(snapshot.get("went_in")) or [msg.content or ""]
+    text = "\n".join(lines)
+    not_in = _texts(snapshot.get("not_in"))
+    if not_in:
+        text += _NOT_IN_NOTE.format(results="\n".join(f"- {r}" for r in not_in))
+    return _CHANGES_NOTE.format(lines=text)
 
 
 def _plain_name(text) -> str:
@@ -3524,28 +3561,121 @@ def _safety_decides_ending(db: Session, user: User, screen, guard) -> bool:
         return True
 
 
+class _SessionState(NamedTuple):
+    """A session as the rider sees it, for telling what a turn changed."""
+    day: date
+    skipped: bool
+    # What update_workout can change besides the day and the status, the
+    # on-hold label left out (the app writes that, not the coach).
+    edits: tuple
+    name: str
+
+
 class _TurnChanges:
-    """The plan and goal changes that went in this turn, as the rows the
-    tools wrote: a session booked (the rider's new booking), moved, changed
-    or skipped, a goal set or changed. Only a tool whose result says the
-    change went in counts, and a line is written only while its row still
-    shows the change."""
+    """The plan and goal changes that went in this turn, written from the
+    rows: each session, goal and plan a tool touched, as the turn found it
+    and as it left it. A session booked and then moved is one booking on its
+    new day, one moved and moved back is no change, and a call that changed
+    nothing gets no line. Calls that did not go in are kept too, so the list
+    says when it is not the whole story."""
 
     def __init__(self) -> None:
-        # (what, the row's id, the session's day before the tool ran)
-        self._went_in: list[tuple[str, str, date | None]] = []
+        # Each session and goal a tool touched, as the turn found it (None:
+        # new this turn), in the order they were first touched.
+        self._sessions: dict[str, _SessionState | None] = {}
+        self._goals: dict[str, tuple | None] = {}
+        # The active plans before the first goal tool ran (None: none ran).
+        self._plans: set[str] | None = None
+        # (round, tool, what it was aimed at, went in, result)
+        self._calls: list[tuple[int, str, object, bool, str]] = []
+        # One of the coach's own safety tools ran this turn.
+        self._safety_tool = False
+        # A row could not be read: the ending stays the apology.
+        self._unsure = False
+        # What the tools said about the calls that did not go in, once
+        # ending() has listed them.
+        self.not_in: list[str] = []
 
-    def run(self, db: Session, user: User, name: str, tool_input) -> str:
-        """_run_tool, noting what a plan or goal tool changed."""
+    def run(self, db: Session, user: User, name: str, tool_input, round_no: int = 0) -> str:
+        """_run_tool, noting what a plan or goal tool touched."""
+        if name in _SAFETY_TOOLS:
+            self._safety_tool = True
         args = tool_input if isinstance(tool_input, dict) else {}
-        before = self._before(db, user, name, args)
+        aim = self._before(db, user, name, args) if name in _WENT_IN else None
         result = _run_tool(db, user, name, tool_input)
-        if before is not None:
+        if aim is not None:
             try:
-                self._note(db, user, name, args, result or "", before)
+                self._after(db, user, name, result or "", aim, round_no)
             except Exception:
                 logger.exception("Noting what %s changed failed (user=%s)", name, user.id)
+                self._unsure = True
         return result
+
+    def snapshot(self, listed: list[str]) -> dict:
+        """What the stored reply carries when it is the app's lines."""
+        marks = {"code_written": True, "went_in": list(listed)}
+        if self.not_in:
+            marks["not_in"] = list(self.not_in)
+        return marks
+
+    # ── The rows ──
+
+    @staticmethod
+    def _session_states(db: Session, user: User, ids, visible: bool = False) -> dict:
+        """Each session's state by id; with visible, only the sessions the
+        rider's calendar shows."""
+        from app.models.training import WorkoutStep
+        from app.services.plan_service import _label_of
+
+        ids = [i for i in ids if i]
+        if not ids:
+            return {}
+        query = visible_workouts(db, user.id) if visible else db.query(Workout).filter(
+            Workout.user_id == user.id
+        )
+        rows = query.filter(Workout.id.in_(ids)).with_entities(
+            Workout.id, Workout.scheduled_date, Workout.status, Workout.title,
+            Workout.description, Workout.workout_type, Workout.planned_duration_seconds,
+            Workout.planned_tss, Workout.phase_id,
+        ).all()
+        steps: dict[str, list] = {}
+        for step in (
+            db.query(
+                WorkoutStep.workout_id, WorkoutStep.step_order, WorkoutStep.step_type,
+                WorkoutStep.duration_seconds, WorkoutStep.power_target_pct,
+                WorkoutStep.power_low_pct, WorkoutStep.power_high_pct,
+                WorkoutStep.cadence_target, WorkoutStep.repeat_count, WorkoutStep.notes,
+            )
+            .filter(WorkoutStep.workout_id.in_(ids))
+            .order_by(WorkoutStep.workout_id, WorkoutStep.step_order)
+        ):
+            steps.setdefault(step[0], []).append(tuple(step[1:]))
+        states = {}
+        for row in rows:
+            description = row.description or ""
+            label = _label_of(description)
+            kind = _type_value(row.workout_type)
+            states[row.id] = _SessionState(
+                day=row.scheduled_date,
+                skipped=_type_value(row.status) == WorkoutStatus.skipped.value,
+                edits=(
+                    row.title, description[len(label):] if label else description, kind,
+                    row.planned_duration_seconds, row.planned_tss, tuple(steps.get(row.id, ())),
+                ),
+                name=_plain_name(workout_display_name(kind, row.id, row.title, row.phase_id)),
+            )
+        return states
+
+    @staticmethod
+    def _goal_states(db: Session, user: User, ids=None) -> dict:
+        query = db.query(
+            GoalEvent.id, GoalEvent.event_name, GoalEvent.event_date, GoalEvent.event_type,
+            GoalEvent.priority, GoalEvent.why, GoalEvent.becoming, GoalEvent.notes,
+            GoalEvent.status, GoalEvent.target_duration_minutes,
+        ).filter(GoalEvent.user_id == user.id)
+        if ids is not None:
+            query = query.filter(GoalEvent.id.in_([i for i in ids if i]))
+        return {row[0]: tuple(row[1:]) for row in query}
 
     @staticmethod
     def _bookings(db: Session, user: User) -> set[str]:
@@ -3557,109 +3687,190 @@ class _TurnChanges:
         }
 
     @staticmethod
-    def _goals(db: Session, user: User) -> set[str]:
-        return {row.id for row in db.query(GoalEvent.id).filter(GoalEvent.user_id == user.id)}
+    def _active_plans(db: Session, user: User) -> set[str]:
+        from app.models.training import PlanStatus
+
+        return {
+            row.id for row in db.query(TrainingPlan.id).filter(
+                TrainingPlan.user_id == user.id, TrainingPlan.status == PlanStatus.active
+            )
+        }
 
     def _before(self, db: Session, user: User, name: str, args: dict):
-        """What the rows look like before the tool runs: the rider's
-        bookings or goals (a new one is the tool's), or the days of the
-        sessions it names. None for a tool that changes neither."""
+        """Note the rows the tool may change as they are before it runs, and
+        return (what it is aimed at: the session, sessions, day or goal it
+        names, or None when that is not a real one; the rows as they are
+        now, to tell a new one or a change from). None when they could not
+        be read."""
         try:
             if name == "add_workout":
-                return self._bookings(db, user)
-            if name == "create_goal":
-                return self._goals(db, user)
-            if name == "update_goal":
-                return {}
-            if name in ("update_workout", "swap_workout_date", "skip_workout"):
-                ids = [
-                    _str_id(args.get(key))
-                    for key in ("workout_id", "workout_id_a", "workout_id_b")
-                ]
-                return dict(
-                    db.query(Workout.id, Workout.scheduled_date)
-                    .filter(Workout.user_id == user.id, Workout.id.in_([i for i in ids if i]))
-                    .all()
-                )
+                try:
+                    day = date.fromisoformat(str(args.get("scheduled_date")))
+                except ValueError:
+                    day = None
+                return day, self._bookings(db, user)
+            if name in ("create_goal", "update_goal"):
+                if self._plans is None:
+                    self._plans = self._active_plans(db, user)
+                if name == "create_goal":
+                    return None, set(self._goal_states(db, user))
+                goal_id = _str_id(args.get("goal_id"))
+                found = self._goal_states(db, user, [goal_id]) if goal_id else {}
+                for gid, state in found.items():
+                    self._goals.setdefault(gid, state)
+                return (goal_id if found else None), found
+            keys = ("workout_id",)
+            if name == "swap_workout_date":
+                keys = ("workout_id_a", "workout_id_b")
+            ids = [_str_id(args.get(key)) for key in keys]
+            found = self._session_states(db, user, ids)
+            for wid in ids:
+                if wid in found:
+                    self._sessions.setdefault(wid, found[wid])
+            if not all(wid in found for wid in ids):
+                return None, found
+            return (frozenset(ids) if len(ids) > 1 else ids[0]), found
         except Exception:
             logger.exception("Reading the rows before %s failed (user=%s)", name, user.id)
-        return None
+            self._unsure = True
+            return None
 
-    def _note(self, db: Session, user: User, name: str, args: dict, result: str, before) -> None:
-        went_in = self._went_in.append
-        if name == "add_workout" and result.startswith("Booked"):
-            for workout_id in sorted(self._bookings(db, user) - before):
-                went_in(("booked", workout_id, None))
-        elif name == "create_goal" and result.startswith("Filed the goal"):
-            for goal_id in sorted(self._goals(db, user) - before):
-                went_in(("goal set", goal_id, None))
-        elif name == "update_goal" and result.startswith("Updated the goal"):
-            goal_id = _str_id(args.get("goal_id"))
-            if goal_id:
-                went_in(("goal changed", goal_id, None))
-        elif name == "skip_workout" and result.startswith("Skipped"):
-            workout_id = _str_id(args.get("workout_id"))
-            if workout_id in before:
-                went_in(("skipped", workout_id, before[workout_id]))
-        elif name == "update_workout" and result.startswith("Updated"):
-            workout_id = _str_id(args.get("workout_id"))
-            if workout_id in before:
-                moved = not any(key in args for key in _SESSION_EDITS)
-                went_in(("moved" if moved else "changed", workout_id, before[workout_id]))
-        elif name == "swap_workout_date" and result.startswith("Swapped"):
-            for key in ("workout_id_a", "workout_id_b"):
-                workout_id = _str_id(args.get(key))
-                if workout_id in before:
-                    went_in(("moved", workout_id, before[workout_id]))
+    def _after(self, db: Session, user: User, name: str, result: str, aim, round_no: int) -> None:
+        # The rows decide, whatever the result says: a tool that failed
+        # after saving still saved. A new row is the tool's, and a call went
+        # in when its result says so or the rows it named changed.
+        target, known = aim
+        went_in = result.startswith(_WENT_IN[name])
+        if name == "add_workout":
+            for wid in sorted(self._bookings(db, user) - known):
+                self._sessions.setdefault(wid, None)
+                went_in = True
+        elif name == "create_goal":
+            for gid in sorted(set(self._goal_states(db, user)) - known):
+                self._goals.setdefault(gid, None)
+                went_in = True
+        elif known and not went_in:
+            read = self._goal_states if name == "update_goal" else self._session_states
+            went_in = read(db, user, list(known)) != known
+        self._calls.append((round_no, name, target, went_in, result))
+
+    def _missed(self) -> list[str]:
+        """The results of the calls that did not go in, less any put right
+        by a later round: the same tool, on the same session, goal or day,
+        or on any when the first call's aim was not a real one."""
+        missed = []
+        for round_no, name, target, went_in, result in self._calls:
+            if went_in:
+                continue
+            if any(
+                later > round_no and other == name and ok and (target is None or aim == target)
+                for later, other, aim, ok, _ in self._calls
+            ):
+                continue
+            missed.append(result.strip()[:500])
+        return missed
+
+    # ── The lines ──
 
     def ending(self, db: Session, user: User, screen, guard) -> list[str]:
         """The lines for an ending that has no words for the change, or none
-        when nothing went in or the turn's ending is the safety system's."""
-        if not self._went_in or _safety_decides_ending(db, user, screen, guard):
+        when nothing changed, a row could not be read, or the turn's ending
+        is the safety system's (a turn where the coach flagged the rider for
+        review or tried to hold the plan included)."""
+        if self._unsure or self._safety_tool:
             return []
+        if not (self._sessions or self._goals or self._plans is not None):
+            return []
+        if _safety_decides_ending(db, user, screen, guard):
+            return []
+        try:
+            lines = self._lines(db, user)
+        except Exception:
+            logger.exception("Writing the lines for a turn's changes failed (user=%s)", user.id)
+            return []
+        if not lines:
+            return []
+        self.not_in = self._missed()
+        if self.not_in:
+            lines.append(CHANGES_NOT_ALL_IN)
+        return lines
+
+    def _lines(self, db: Session, user: User) -> list[str]:
+        # (the line, what a count of it counts, a new booking's id), one per
+        # session, goal and plan the turn changed
+        rows: list[tuple[str, str, str | None]] = []
+        now = self._session_states(db, user, list(self._sessions), visible=True)
+        for wid, start in self._sessions.items():
+            line = self._session_line(start, now.get(wid))
+            if line:
+                rows.append((line, "sessions", wid if start is None else None))
+        goals = self._goal_states(db, user, list(self._goals)) if self._goals else {}
+        for gid, start in self._goals.items():
+            end = goals.get(gid)
+            if end is None or end == start or not end[1]:
+                continue
+            label = "Goal set" if start is None else "Goal changed"
+            name, day = _plain_name(end[0]), end[1]
+            rows.append((f"{label}: {name}, {_say_day(day)} {day.year}.", "goals", None))
+        if self._plans is not None:
+            for plan in (
+                db.query(TrainingPlan)
+                .filter(TrainingPlan.id.in_(sorted(self._active_plans(db, user) - self._plans)))
+                .order_by(TrainingPlan.start_date)
+            ):
+                rows.append((
+                    f"New plan: {_plain_name(plan.name)}, {_say_day(plan.start_date)} to "
+                    f"{_say_day(plan.end_date)} {plan.end_date.year}.",
+                    "plans", None,
+                ))
+        # Two rows that read the same are two on the calendar: one line for
+        # both would hide a double booking, so it says how many.
+        counts = Counter(line for line, _, _ in rows)
         lines: list[str] = []
-        for what, row_id, day_before in self._went_in:
-            try:
-                line = self._line(db, user, what, row_id, day_before)
-            except Exception:
-                logger.exception("Writing the line for a change failed (user=%s)", user.id)
-                line = None
-            if line and line not in lines:
-                lines.append(line)
+        for line, noun, booked in rows:
+            many = counts[line]
+            if many > 1:
+                line = f"{line[:-1]} ({_COUNTS.get(many, str(many))} {noun})."
+                if line not in lines:
+                    lines.append(line)
+                continue
+            if booked:
+                line += self._behind(db, user, booked, now[booked].day)
+            lines.append(line)
         return lines
 
     @staticmethod
-    def _line(db: Session, user: User, what: str, row_id: str, day_before) -> str | None:
-        """One change, from its row as it is now; None once the row no
-        longer shows it."""
-        if what.startswith("goal"):
-            goal = (
-                db.query(GoalEvent)
-                .filter(GoalEvent.id == row_id, GoalEvent.user_id == user.id)
-                .first()
-            )
-            if goal is None or not goal.event_date:
-                return None
-            label = "Goal set" if what == "goal set" else "Goal changed"
-            return (
-                f"{label}: {_plain_name(goal.event_name)}, "
-                f"{_say_day(goal.event_date)} {goal.event_date.year}."
-            )
-        workout = (
-            db.query(Workout).filter(Workout.id == row_id, Workout.user_id == user.id).first()
-        )
-        if workout is None or workout.scheduled_date is None:
+    def _behind(db: Session, user: User, workout_id: str, day: date) -> str:
+        """Where a booking is when Today, which shows a day's first session
+        only, will not show it (_when)."""
+        sessions = [
+            w for w in get_workouts_by_date(db, user.id, target_date=day)
+            if _type_value(w.status) != WorkoutStatus.skipped.value
+        ]
+        if not sessions or sessions[0].id == workout_id:
+            return ""
+        first = _plain_name(_session_name(sessions[0]))
+        return f" It's on Goal, not Today: {first} comes first that day."
+
+    @staticmethod
+    def _session_line(start: _SessionState | None, end: _SessionState | None) -> str | None:
+        """One session's change, from how the turn found it to how it left
+        it; None when the calendar no longer shows it or nothing changed."""
+        if end is None:
             return None
-        name, day = _plain_name(_session_name(workout)), _say_day(workout.scheduled_date)
-        if what == "booked":
-            return f"Booked: {name}, {day}."
-        if what == "skipped":
-            skipped = _type_value(workout.status) == WorkoutStatus.skipped.value
-            return f"Skipped: {name}, {day}." if skipped else None
-        if what == "moved":
-            moved = workout.scheduled_date != day_before
-            return f"Moved: {name} to {day}." if moved else None
-        return f"Changed: {name}, {day}."
+        name, day = end.name, _say_day(end.day)
+        if start is None:
+            return None if end.skipped else f"Booked: {name}, {day}."
+        if end.skipped:
+            return None if start.skipped else f"Skipped: {name}, {day}."
+        if start.skipped:
+            return f"Back on the plan: {name}, {day}."
+        moved, changed = end.day != start.day, end.edits != start.edits
+        if moved and changed:
+            return f"Moved and changed: {name}, now on {day}."
+        if moved:
+            return f"Moved: {name} to {day}."
+        return f"Changed: {name}, {day}." if changed else None
 
 
 def _last_round_choice(
@@ -3884,7 +4095,7 @@ def _build_messages(
         if _was_no_reply(msg):
             return _NO_REPLY_NOTE
         if _was_changes_ending(msg):
-            return _CHANGES_NOTE.format(lines=msg.content)
+            return _changes_note(msg)
         return _with_shared_note(msg, shared_names)
 
     return [{"role": msg.role, "content": content(msg)} for msg in recent]
@@ -7451,7 +7662,7 @@ async def _stream_chat_turn(
                     if label:
                         yield _sse({"type": "status", "content": label})
                     result_text = changes.run(
-                        db, user, tool_block.name, tool_block.input
+                        db, user, tool_block.name, tool_block.input, round_no
                     )
                     turn.tool_done(tool_block.name, result_text)
                     ran.append((tool_block.name, result_text))
@@ -7574,7 +7785,7 @@ async def _stream_chat_turn(
         # shows them again.
         snapshot = _cards_snapshot(screen) if child_now else _snapshot(rider_context, screen)
         if listed:
-            snapshot = {**(snapshot or {}), "code_written": True}
+            snapshot = {**(snapshot or {}), **changes.snapshot(listed)}
         elif fell_back:
             snapshot = {**(snapshot or {}), "fallback": True}
         # Saved, logged and recorded before the fallback goes out, so a rider
@@ -8018,7 +8229,7 @@ async def _stream_voice_turn(
                     if label:
                         yield _sse({"type": "status", "content": label})
                     result_text = changes.run(
-                        db, user, tool_block.name, tool_block.input
+                        db, user, tool_block.name, tool_block.input, round_no
                     )
                     turn.tool_done(tool_block.name, result_text)
                     ran.append((tool_block.name, result_text))
@@ -8144,7 +8355,7 @@ async def _stream_voice_turn(
         saved = f"{intro} {full_response}" if intro else full_response
         snapshot = _cards_snapshot(screen) if child else _snapshot(rider_context, screen)
         if listed:
-            snapshot = {**(snapshot or {}), "code_written": True}
+            snapshot = {**(snapshot or {}), **changes.snapshot(listed)}
         elif fell_back:
             snapshot = {**(snapshot or {}), "fallback": True}
         # Saved, logged and recorded before the fallback goes out, so a rider
