@@ -3901,26 +3901,58 @@ _CONFIRM_HOLD_WORDS = r"hold applied|applied|that's applied"
 _CONFIRM_LEAD_RX = re.compile(
     r"^\W*(?:" + _CONFIRM_WORDS + "|" + _CONFIRM_HOLD_WORDS + r")\b[,.:;!]*\s*", re.I
 )
-# A sentence that is nothing but a confirmation, in the words above (never a
-# hold's) or the plan tools' own ("Booked."), matched on
-# _norm(sentence).strip(). It names nothing, so it is only true when a plan
-# change went in this turn and nothing else happened
-# (_CheckedReply._release_confirmation).
-_BARE_CONFIRM_RX = re.compile(
-    r"\W*(?:" + _CONFIRM_WORDS + r"|(?:all |that's |it's )?(?:booked|added|skipped|"
-    r"swapped|moved|updated)(?: in)?)\b[^\w:]*"
+# A sentence that only says a hold went on, in the coach's own words ("Hold
+# applied.", "Paused."), matched on _norm(sentence).strip(). The hold
+# sentence only ever comes from code, so these go in any round: one written
+# before apply_safety_hold ran went out whatever the tool then did.
+_BARE_HOLD_RX = re.compile(
+    r"\W*(?:all |that's |it's |now )?(?:" + _CONFIRM_HOLD_WORDS + r"|paused|on hold|held)"
+    r"\b[^\w:]*"
 )
-# The plan tools whose change each verb names, so "Skipped." never goes out
-# over a booking.
-_CONFIRM_VERB_TOOLS = {
-    "booked": {"add_workout"},
-    "added": {"add_workout"},
-    "skipped": {"skip_workout"},
-    "swapped": {"update_workout", "swap_workout_date"},
-    "moved": {"update_workout", "swap_workout_date"},
-    "updated": {"update_workout", "swap_workout_date"},
+# The day a short confirmation may name: "Booked in for Monday", "Scheduled
+# for Saturday the 24th", "Booked for Monday 19 October".
+_CONFIRM_DAY = (
+    r"(?:\s+(?:in\s+)?(?:for|on)\s+(?:(?:this |next )?(?:monday|tuesday|wednesday|"
+    r"thursday|friday|saturday|sunday)|today|tomorrow|tonight|(?:this |next |the )?weekend)"
+    r"(?:,?\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?(?:\s+(?:of\s+)?[a-z]+)?)?)?"
+)
+# A sentence that is nothing but a confirmation, in the words above (never a
+# hold's), the plan tools' own ("Booked.") or the rider's side of them
+# ("You're all set.", "Locked in."), with at most the day, matched on
+# _norm(sentence).strip(). Nothing in it is checked against a tool result,
+# so it is only true when a plan change went in this turn and nothing else
+# happened (_CheckedReply._confirmation_backed).
+_BARE_CONFIRM_RX = re.compile(
+    r"\W*(?:" + _CONFIRM_WORDS + r"|it's in|you're (?:all )?set|(?:all |that's |it's "
+    r"|you're |you are )?(?:booked|added|skipped|swapped|moved|updated|scheduled|"
+    r"pencill?ed|locked)(?: in)?)" + _CONFIRM_DAY + r"\b[^\w:]*"
+)
+# The changes each verb names (_plan_changes), so "Skipped." never goes out
+# over a booking and "Moved." never over a session left on its day. A moved
+# session is booked on its new day; a skip and a booking together replace
+# one session with another ("replace").
+_CONFIRM_VERB_CHANGES = {
+    "booked": {"add", "move"},
+    "scheduled": {"add", "move"},
+    "pencilled": {"add", "move"},
+    "penciled": {"add", "move"},
+    "added": {"add"},
+    "skipped": {"skip"},
+    "swapped": {"move", "retype", "replace"},
+    "moved": {"move", "replace"},
+    "updated": {"update"},
 }
-_CONFIRM_VERB_RX = re.compile(r"\b(?:" + "|".join(_CONFIRM_VERB_TOOLS) + r")\b")
+_CONFIRM_VERB_RX = re.compile(r"\b(?:" + "|".join(_CONFIRM_VERB_CHANGES) + r")\b")
+# What the rider gets when the model call fails after a plan change went in,
+# in place of REPLY_FAILED_MESSAGE: "Try sending that again" would book the
+# session twice.
+REPLY_FAILED_PLAN_CHANGED = (
+    "I couldn't finish a reply just now, but your plan has changed. Have a look "
+    "at it to see what went in."
+)
+# How a model call ends when the coach finished what it was writing. Any
+# other (the output allowance ran out) is cut off, like a call that failed.
+_WHOLE_STOPS = ("end_turn", "stop_sequence", "tool_use", None)
 
 
 def _plan_went_in(name: str, result: str) -> bool:
@@ -3931,6 +3963,27 @@ def _plan_went_in(name: str, result: str) -> bool:
     return name in safety_screen._GOAL_TOOLS and any(
         line in result for line in safety_screen._PLAN_REBUILT
     )
+
+
+def _plan_changes(name: str, tool_input) -> set[str]:
+    """What a plan change that went in did, for the verb a bare confirmation
+    names. update_workout moved its session only when the call gave it a
+    date (its result says where the session is, not where it was), and
+    retyped it only when the call gave a type."""
+    if name == "add_workout":
+        return {"add"}
+    if name == "skip_workout":
+        return {"skip"}
+    if name == "swap_workout_date":
+        return {"move", "update"}
+    if name == "update_workout":
+        given = tool_input if isinstance(tool_input, dict) else {}
+        return (
+            {"update"}
+            | ({"move"} if given.get("scheduled_date") is not None else set())
+            | ({"retype"} if given.get("workout_type") is not None else set())
+        )
+    return {"rebuild"}
 
 
 # A word the model opens a fresh message with after a tool call.
@@ -3951,6 +4004,14 @@ _PLAN_NOW_RX = re.compile(
     r"(?:putting|put|pencilling|penciling|pencil)(?=[^.!?\n]*\bin\b))\b[^.!?\n]{0,60}\b(?:session|ride|"
     r"workout|intervals?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"today|tomorrow|week|vo2|sweet spot|threshold|tempo)"
+)
+
+# The rider's side of a booking claim ("You're booked in for Monday", "It's
+# in your plan"), which _PLAN_CLAIM_RX's "I've booked" never sees: untrue
+# once a plan tool this turn changed nothing.
+_PLAN_YOURS_RX = re.compile(
+    r"\byou're\s+(?:now\s+|all\s+)?(?:booked|pencill?ed|scheduled|locked)\s+in\b"
+    r"|\b(?:it's|that's|this is)\s+(?:now\s+)?in\s+(?:the|your)\s+(?:plan|calendar|diary)\b"
 )
 
 # Talk about the training hold itself, which the app says in its own words.
@@ -4315,8 +4376,11 @@ class _CheckedReply(safety_screen.ReplyGuard):
         confirmations after a tool ("Done, that session's skipped",
         "Confirmed: ...") are taken out, a fresh message's "Ah," goes, and a
         sentence after a tool call that only repeats one already sent is
-        dropped; a bare "Done." goes out only as the coach's only words
-        since a plan change went in (_release_confirmation);
+        dropped; a bare "Done." goes out only when a plan change it names
+        went in this turn and nothing else happened (_confirmation_backed),
+        and a confirmation, or what "Done, ..." says after it, never stands
+        in for a red flag's fixed reply (_release_held); a hold is
+        never confirmed in the coach's own words ("Hold applied.");
       - a sentence said word for word a second time goes (live round 2: "Are
         you safe right now?" twice, R16 and L11);
       - "I'm skipping Tuesday's session" waits for the tool, like "I've
@@ -4376,16 +4440,26 @@ class _CheckedReply(safety_screen.ReplyGuard):
         self._change_done = False
         self._change_said = False
         # A sentence that is only a confirmation ("Done.", "All set."),
-        # held until the reply ends: what follows it says the change better,
-        # and with nothing after it, it is the reply (_release_confirmation).
+        # held until the coach goes on (it goes in front of its words when
+        # true) or the reply ends (_release_held).
         self._held_confirm = ""
+        # What a short "Done, ..." says after its "Done" once a change went
+        # in ("It's booked for Monday."), held the same way: as the coach's
+        # only words in a red-flag turn, it would stand in for the fixed
+        # reply. And a short "Done, ..." written before any tool, whole:
+        # with a tool call after it, it claimed a change before the change
+        # (before_tools). _hold_as names where the sentence being checked
+        # goes once checked ("_held_tail" or "_held_lead").
+        self._held_tail = ""
+        self._held_lead = ""
+        self._hold_as = ""
         # A tool this turn was refused, or did something other than change
         # the plan (a hold, a flag, a proposal, a file, a goal with no plan
         # rebuilt): a bare "Done." would then claim more than happened.
         self._done_overclaims = False
-        # The plan tools whose change went in, for the verb a bare
-        # confirmation names ("Booked.").
-        self._went_in: set[str] = set()
+        # What the plan changes that went in did (_plan_changes), for the
+        # verb a bare confirmation names ("Booked.", "Moved.").
+        self._changes: set[str] = set()
         # The coach's own words in this round so far, and any since a plan
         # change went in: a "Done." beside them is the second message glued
         # on (round 1), not the reply.
@@ -4411,6 +4485,13 @@ class _CheckedReply(safety_screen.ReplyGuard):
         return "crisis" in self.kinds and _norm(segment).strip() in _CRISIS_ENDING
 
     def _take(self, segment: str) -> str:
+        try:
+            return self._take_one(segment)
+        finally:
+            # Only the sentence it was set for, never one released later.
+            self._hold_as = ""
+
+    def _take_one(self, segment: str) -> str:
         if self._held_ending:
             if not segment.strip() or self._is_ending(segment):
                 self._held_ending.append(segment)
@@ -4453,6 +4534,10 @@ class _CheckedReply(safety_screen.ReplyGuard):
         return ""
 
     def after_tools(self, results) -> str:
+        """`results` are (name, result) or (name, result, the tool's input):
+        the input says what an update_workout changed (_plan_changes)."""
+        given = [tuple(r) for r in results]
+        results = [r[:2] for r in given]
         claimed = any(claim == "plan" for claim, _ in self._pending)
         out = super().after_tools(results)
         self._change_said = self._change_said or (claimed and self._plan_done)
@@ -4467,9 +4552,9 @@ class _CheckedReply(safety_screen.ReplyGuard):
             name not in _RIDE_LOOKUP_TOOLS and not _plan_went_in(name, result or "")
             for name, result in results
         )
-        self._went_in |= {
-            name for name, result in results if _plan_went_in(name, result or "")
-        }
+        for name, result, *tool_input in given:
+            if _plan_went_in(name, result or ""):
+                self._changes |= _plan_changes(name, tool_input[0] if tool_input else None)
         self._words_in_round = False
         self._after_change = self._plan_done
         return out
@@ -4482,38 +4567,97 @@ class _CheckedReply(safety_screen.ReplyGuard):
         self._drop_dangling_colon()
         return out + self._resolve(final=True)
 
-    def _release_confirmation(self) -> str:
-        """A bare confirmation nothing followed is the reply's last word on
-        the change. Always dropped, it left a booked session under the
-        no-reply apology. It goes out only when it is all the coach said
-        since a plan tool's change went in this turn, any verb in it names
-        that change, nothing was refused or done besides, the reply did not
-        say the change before the call, and the coach finished with its
-        tools in hand and its call whole. Before any tool, after a refusal,
-        a hold or a lookup alone, it is a claim nothing backs, and goes.
-        Never in a turn with a red flag: there a reply of nothing but "Done."
-        gets the whole fixed reply instead (_finish_tail), as it always has.
-        So it is decided once the classifier's time has run out
-        (finish_tail), never as the model stops: a verdict that landed after
-        "Done." had gone out left the rider "Done." and a few lines."""
-        held, self._held_confirm = self._held_confirm, ""
-        if not held.strip():
-            return ""
+    def _fixed_reply_at_stake(self) -> bool:
+        """A red flag whose fixed reply a confirmation would cut short, as
+        the coach's only words. Not the quiet kinds with no hold on record:
+        their fixed reply is the no-reply apology and their lines
+        (fallback_reply), which over a session that was booked tells the
+        rider to send it again."""
+        if not self.kinds:
+            return False
+        return not (self.kinds <= safety_screen.QUIET_KINDS and self._hold() is None)
+
+    def _confirmation_backed(self, held: str) -> bool:
+        """Whether a bare confirmation is true: a plan tool's change went in
+        this turn, any verb in it names what that change did, nothing was
+        refused or done besides, the reply said the change neither before
+        the call nor since, and the coach finished with its tools in hand
+        and its call whole. Before any tool, after a refusal, a hold or a
+        lookup alone, it is a claim nothing backs. Never where it would
+        stand in for a red flag's fixed reply."""
         verb = _CONFIRM_VERB_RX.search(_norm(held))
-        if (
+        changes = set(self._changes)
+        if {"add", "skip"} <= changes:
+            changes.add("replace")
+        return not (
             not self._plan_done or self._done_overclaims or self._change_said
-            or self._said_after_change or self.kinds or self.cut_off
+            or self._said_after_change or self._fixed_reply_at_stake() or self.cut_off
             or self.tools_withheld
-            or (verb and not _CONFIRM_VERB_TOOLS[verb.group()] & self._went_in)
-        ):
-            self._drop(held, "a confirmation no plan change backs")
-            return ""
-        return self._emit(held)
+            or (verb and not _CONFIRM_VERB_CHANGES[verb.group()] & changes)
+        )
+
+    def _release_held(self, *, last: bool = False) -> str:
+        """The held confirmations, once the coach goes on or the reply ends.
+
+        A bare one goes out when it is true (_confirmation_backed): in front
+        of the coach's next words ("Booked. Enjoy it.") it is the rider's
+        only word that the change went in, and as the last word, dropped, it
+        left a booked session under the no-reply apology. What a "Done, ..."
+        said goes out as it always did.
+
+        As the last word (`last`), neither stands in for a red flag's fixed
+        reply: a reply of nothing but "Done." or "Done, you're all set."
+        gets the whole fixed reply instead (_finish_tail), as it always has.
+        So that is decided once the classifier's time has run out
+        (finish_tail), never as the model stops: a verdict that landed after
+        "Done." had gone out left the rider "Done." and a few lines. With
+        words after it, it is decided as they go, since they go out whatever
+        a late verdict says."""
+        held, self._held_confirm = self._held_confirm, ""
+        tail, self._held_tail = self._held_tail, ""
+        lead, self._held_lead = self._held_lead, ""
+        out = ""
+        if held.strip():
+            if self._confirmation_backed(held):
+                out += self._emit(held)
+            else:
+                self._drop(held, "a confirmation no plan change backs")
+        for words in (tail, lead):
+            if not words.strip():
+                continue
+            if last and self._fixed_reply_at_stake():
+                self._drop(words, "a confirmation in place of a red flag's fixed reply")
+            else:
+                out += self._emit(words)
+        return out
+
+    def before_tools(self) -> str:
+        """A short "Done, ..." with a tool call after it, and nothing else
+        between, said the change was made before it was: it is held, whole,
+        like a bare "Done." written there, and goes out only if the change
+        went in ("Done, you're all set." before a booking the gate refused
+        told the rider they were booked)."""
+        out = super().before_tools()
+        lead, self._held_lead = self._held_lead, ""
+        if lead.strip():
+            if self._held_confirm.strip():
+                self._drop(self._held_confirm, "a confirmation said twice")
+            self._held_confirm = lead
+        return out
+
+    def fallback(self, extra_kinds: set[str] | None = None) -> str | None:
+        """The fixed reply, never telling the rider to send a message again
+        once a plan change went in: that would book the session twice."""
+        text = super().fallback(extra_kinds)
+        failed = safety_screen.REPLY_FAILED_MESSAGE
+        if text and self._plan_done and text.startswith(failed):
+            text = REPLY_FAILED_PLAN_CHANGED + text[len(failed):]
+        return text
 
     def finish_tail(self) -> str:
         """The whole fixed reply if nothing reached the rider in a safety
         turn; otherwise only what the code guarantees and the reply lacks."""
-        out = self._release_confirmation()
+        out = self._release_held(last=True)
         self._own_words = False
         try:
             return out + self._finish_tail()
@@ -4559,6 +4703,7 @@ class _CheckedReply(safety_screen.ReplyGuard):
 
     def _check(self, segment: str):
         first, self._round_start = self._round_start, False
+        self._hold_as = ""
         cleaned = self._without_artefacts(segment, first)
         if cleaned is None:
             return None
@@ -4585,6 +4730,11 @@ class _CheckedReply(safety_screen.ReplyGuard):
         if checked is None:
             return None
         claim, text = checked
+        if claim is None and self._plan_tried and not self._plan_done and (
+            _PLAN_YOURS_RX.search(_norm(text))
+        ):
+            self._drop(text, "a booking claim after the plan tools changed nothing")
+            return None
         if claim is None and not self._plan_done and _PLAN_NOW_RX.search(_norm(text)):
             return "plan", text
         return claim, text
@@ -4594,6 +4744,11 @@ class _CheckedReply(safety_screen.ReplyGuard):
         if _NARRATION_RX.search(low) or _FILLER_RX.fullmatch(low):
             self._drop(segment, "tool narration")
             return None
+        if _BARE_HOLD_RX.fullmatch(low):
+            # Before the tool too: "Hold applied." went out in round 0 when
+            # apply_safety_hold then failed.
+            self._drop(segment, "a hold confirmed in the coach's own words")
+            return None
         if _BARE_CONFIRM_RX.fullmatch(low):
             # Held, in any round: one written before the tool waits for it.
             # After the coach's own words in its round ("It's on Monday 19
@@ -4601,29 +4756,43 @@ class _CheckedReply(safety_screen.ReplyGuard):
             if self._held_confirm.strip():
                 self._drop(self._held_confirm, "a confirmation said twice")
                 self._held_confirm = ""
-            if self._words_in_round or self._pending or self._colon.strip():
+            if (
+                self._words_in_round or self._pending or self._colon.strip()
+                or self._held_tail.strip() or self._held_lead.strip()
+            ):
                 self._drop(segment, "a confirmation after the coach's own words")
                 return None
             self._held_confirm = segment
             return None
-        if self._round == 0:
-            return segment
         m = _CONFIRM_LEAD_RX.match(segment)
+        rest = segment[m.end():] if m else ""
+        brief = bool(m) and (
+            len(_WORD_RX.findall(_norm(rest))) <= 12
+            or bool(safety_screen._PLAN_CLAIM_RX.search(_norm(rest)))
+        )
+        colon = rest.rstrip().endswith(":")
+        free = not self._pending and not self._colon.strip()
+        if self._round == 0:
+            if brief and rest.strip() and not colon and free:
+                # Before any tool: as written, once checked, unless a tool
+                # call follows it (before_tools) or it would stand in for a
+                # red flag's fixed reply (_release_held).
+                self._hold_as = "_held_lead"
+            return segment
         if m:
-            rest = segment[m.end():]
             # After a change went in, "Done, it's booked for Monday 19
             # October" keeps what it says and loses its "Done": dropped whole,
             # a short answer left the rider with nothing but the fallback. A
             # hold confirmation always goes, since its sentence comes from code.
-            short = (not self._change_done or self._change_said) and (
-                len(_WORD_RX.findall(_norm(rest))) <= 12
-                or safety_screen._PLAN_CLAIM_RX.search(_norm(rest))
-            )
-            if not rest.strip() or (
-                not rest.rstrip().endswith(":") and (_hold_talk(rest) or short)
-            ):
+            short = (not self._change_done or self._change_said) and brief
+            if not rest.strip() or (not colon and (_hold_talk(rest) or short)):
                 self._drop(segment, "a confirmation after a tool call")
                 return None
+            if brief and not colon and free:
+                # Held like a bare one once checked (_emit): as the coach's
+                # only words, "You're all set." would stand in for a red
+                # flag's fixed reply.
+                self._hold_as = "_held_tail"
             return _capitalise(rest)
         if first:
             m = _INTERJECTION_RX.match(segment)
@@ -4645,19 +4814,23 @@ class _CheckedReply(safety_screen.ReplyGuard):
     def _emit(self, text: str) -> str:
         if not text:
             return ""
+        out = []
         if self._own_words and text.strip():
-            if self._held_confirm:
-                # The coach went on: its words say what is now true, and the
-                # "Done." goes, as a leading "Done," does.
-                self._drop(self._held_confirm, "a confirmation with words after it")
-                self._held_confirm = ""
+            if self._hold_as:
+                # A short "Done, ...", checked like any sentence, waits with
+                # the bare confirmations (_release_held).
+                name, self._hold_as = self._hold_as, ""
+                setattr(self, name, getattr(self, name) + text)
+                return ""
+            # The coach went on: a held confirmation goes in front of its
+            # words, or goes.
+            out.append(self._release_held())
             self._words_in_round = True
             self._said_after_change = self._said_after_change or self._after_change
         if self._break and text[:1] in (" ", "\t"):
             text = text.lstrip(" \t")
             if not text:
-                return ""
-        out = []
+                return "".join(out)
         for piece in _pieces(text):
             self._notice(piece)
             piece = self._lift_rewrite(self._hold_rewrite(piece))
@@ -5686,11 +5859,16 @@ def _reply_after_failure(
     card is up and any hold is on, and a rider with chest pain or in crisis
     needs to act, not retry. They get whatever was already written plus the
     lines the law requires, or the whole fixed reply (fallback_reply). An
-    ordinary turn gets an honest line after anything already written."""
+    ordinary turn gets an honest line after anything already written, which
+    never asks for the message again once a plan change went in."""
     out = _flush_after_failure(guard, scrub, after=so_far)
     if screen.hits and (so_far + out).strip():
         return out
     sep = "\n\n" if (so_far + out).strip() else ""
+    # Never "send it again" over a plan change that went in: it would go in
+    # twice.
+    if getattr(guard, "_plan_done", False):
+        return out + sep + REPLY_FAILED_PLAN_CHANGED
     return out + sep + safety_screen.REPLY_FAILED_MESSAGE
 
 
@@ -6005,6 +6183,8 @@ def _child_reply_after(guard: "safety_screen.ReplyGuard", scrub: StreamHumanizer
     guard._pending = []
     guard._colon = ""
     guard._held_confirm = ""
+    guard._held_tail = ""
+    guard._held_lead = ""
     return _child_reply(guard)
 
 
@@ -7326,6 +7506,11 @@ async def _stream_chat_turn(
                 ]
 
                 if not tool_use_blocks or final.stop_reason != "tool_use":
+                    if tool_use_blocks or final.stop_reason not in _WHOLE_STOPS:
+                        # Cut short at the output allowance, its tool calls
+                        # never run: the coach never finished ("Done." there
+                        # covers a change that never happened).
+                        guard.cut_off = True
                     # No tool calls, we're done
                     break
 
@@ -7360,7 +7545,8 @@ async def _stream_chat_turn(
                         db, user, tool_block.name, tool_block.input
                     )
                     turn.tool_done(tool_block.name, result_text)
-                    ran.append((tool_block.name, result_text))
+                    # The input too: what an update_workout changed (_plan_changes).
+                    ran.append((tool_block.name, result_text, tool_block.input))
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_block.id,
@@ -7787,7 +7973,9 @@ async def _stream_voice_turn(
                 match = _SENTENCE_END.search(sentence_buffer)
                 complete_sentence = sentence_buffer[:match.end()].strip()
                 sentence_buffer = sentence_buffer[match.end():]
-                if complete_sentence and len(complete_sentence) > 5:
+                # Any sentence with a word in it: a released "Done." or a
+                # "No." was shown and never heard.
+                if re.search(r"\w", complete_sentence):
                     try:
                         audio_b64 = base64.b64encode(
                             await text_to_speech(complete_sentence)
@@ -7886,6 +8074,8 @@ async def _stream_voice_turn(
                 ]
 
                 if not tool_use_blocks or final.stop_reason != "tool_use":
+                    if tool_use_blocks or final.stop_reason not in _WHOLE_STOPS:
+                        guard.cut_off = True  # cut short, as in stream_response
                     break
 
                 async for chunk in emit(guard.feed(scrub.flush()) + guard.before_tools()):
@@ -7915,7 +8105,8 @@ async def _stream_voice_turn(
                         db, user, tool_block.name, tool_block.input
                     )
                     turn.tool_done(tool_block.name, result_text)
-                    ran.append((tool_block.name, result_text))
+                    # The input too: what an update_workout changed (_plan_changes).
+                    ran.append((tool_block.name, result_text, tool_block.input))
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_block.id,
@@ -7973,9 +8164,7 @@ async def _stream_voice_turn(
                     yield chunk
 
             # Handle any remaining text in buffer
-            if voice_enabled and sentence_buffer.strip() and len(
-                sentence_buffer.strip()
-            ) > 5:
+            if voice_enabled and re.search(r"\w", sentence_buffer):
                 try:
                     audio_bytes = await text_to_speech(
                         sentence_buffer.strip()
